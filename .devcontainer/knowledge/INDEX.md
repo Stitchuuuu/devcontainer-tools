@@ -62,7 +62,6 @@ Sentinels that gate the lifecycle:
 
 | Sentinel | Set by | Purpose |
 |---|---|---|
-| `/tmp/.firewall-early-initialized` | `on-create.sh` | `post-start.sh` re-runs `init-firewall.sh` if this flag is missing (fallback when on-create failed) |
 | `.devcontainer/.configured-auth` | `initialize.sh` menu | gh auth mode (`standard` / `advanced`); deletion triggers re-prompt |
 | `.devcontainer/.configured-claude-mode` | `initialize.sh` menu | claude mode (`dev` / `reviewer`); `post-create.sh` symlinks accordingly |
 | `.devcontainer/.configured-firewall-mode` | `initialize.sh` (silent `strict`) | `off` / `basic` / `strict`; canonical mode source |
