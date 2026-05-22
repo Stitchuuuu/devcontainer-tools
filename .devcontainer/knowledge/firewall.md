@@ -1,5 +1,47 @@
 # Firewall — internals & strict mode (force-proxy)
 
+## Web search & research policy
+
+The main devcontainer firewall is **strict by default** (Niveau 1 strict —
+17-host Claude-only baseline). The three modes :
+
+| Mode | DNS filtering | L7 (mitmproxy) inspection | Outbound to non-allowlisted host |
+|---|---|---|---|
+| `strict` (default) | ✅ enforced | ✅ enforced | blocked |
+| `basic` (escape hatch) | ✅ enforced | ❌ off | blocked at DNS — still fails |
+| `off` (kill-switch) | ❌ off | ❌ off | allowed |
+
+**Key consequence** : even in `basic`, outbound to a host outside the
+baseline fails because DNS resolution is filtered. `WebFetch` / `WebSearch`
+against arbitrary hosts will silently fail in strict and basic alike.
+
+### Trigger for `/prepare-research`
+
+When the user asks for :
+- Up-to-date docs, web research, "explore X library", "read about Y"
+- Reading sources outside the 17-host baseline
+- Third-party API integration (POST to new hosts — Stripe, Linear, …)
+- Package evaluation involving registries beyond the baseline
+
+→ **Don't WebFetch/WebSearch silently and fail.** Surface the firewall
+constraint and offer one of two sanctioned paths :
+
+1. **Targeted allowlist addition** — propose appending the specific host(s)
+   to `firewall/domains.local.txt` (+ a `policy.local.d/<host>.yaml` if POST
+   needed). Suitable for : 1–2 read-only domains, ad-hoc single-session
+   lookup. The user must Rebuild Container for the change to take effect.
+2. **`/prepare-research`** (preferred when in doubt) — spawn a scoped
+   research devcontainer with its own expanded allowlist + isolated volumes.
+   Suitable for : multi-domain exploration, third-party API integration,
+   package evaluation, anything multi-session.
+
+**Default to `/prepare-research`** when the scope is unclear or non-trivial
+— it's the sanctioned, audited path that avoids polluting the main
+`domains.local.txt`. Reserve the targeted allowlist for genuinely
+single-host, single-session reads.
+
+---
+
 ## Firewall internals — pipeline compile
 
 `init-firewall.sh` at boot invokes:

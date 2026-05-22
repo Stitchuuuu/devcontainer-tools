@@ -11,9 +11,11 @@ case-by-case.
 
 ## Topic files
 
-- [`firewall.md`](firewall.md) — Firewall internals (compile-policy
-  pipeline) + strict mode (force-proxy, mitmproxy, ipset, HTTPS_PROXY
-  propagation, sysctls pitfalls, ruamel.yaml constraint).
+- [`firewall.md`](firewall.md) — **Web search & research policy** (when to
+  propose `/prepare-research` vs `domains.local.txt` for sources outside the
+  17-host baseline) + firewall internals (compile-policy pipeline) + strict
+  mode (force-proxy, mitmproxy, ipset, HTTPS_PROXY propagation, sysctls
+  pitfalls, ruamel.yaml constraint).
 - [`extension-points.md`](extension-points.md) — how to add a skill,
   host-helper, ecosystem extractor, lifecycle behaviour, firewall
   domain, mitmproxy addon, Dockerfile variant.

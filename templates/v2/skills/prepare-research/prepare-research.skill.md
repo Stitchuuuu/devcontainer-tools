@@ -1,5 +1,5 @@
 ---
-description: Generate a self-contained research bundle (.devcontainer + workspace files) for spawning a scoped research devcontainer via host cp -r
+description: Spawn a scoped research devcontainer with an expanded firewall allowlist. Use when the user asks for web research, up-to-date docs, library/package evaluation, third-party API integration, or any query needing sources outside the strict Niveau 1 baseline (17 hosts). The main firewall blocks most outbound — don't WebFetch/WebSearch silently and fail; propose this skill or a targeted firewall/domains.local.txt addition.
 argument-hint: "<description> | <template> <description>"
 ---
 
@@ -20,11 +20,26 @@ see §"Bundle identity" below.)
 
 ## When to use
 
+- The user asks for **web research, up-to-date docs, or sources** that go
+  beyond the 17-host Niveau 1 baseline (e.g. "recherche-moi X", "explore
+  Workflows", "read the latest about Y"). The main `WebFetch`/`WebSearch`
+  will silently fail on non-allowlisted hosts in both `strict` and `basic`
+  modes — don't try and fail, propose this skill instead.
+- The user wants to **read a third-party library / API** whose domain is not
+  in `firewall/domains.txt`.
 - The user says : "prépare une recherche", "intègre Stripe", "explore l'API
   Linear", "évalue le package X", or anything that requires POST / GET on a
   domain outside the baseline.
 - The user wants a clean, isolated workspace to experiment with a third-party
   API or library without touching the main project state.
+
+**Pivot vs targeted allowlist** : if the user only needs 1–2 read-only
+domains for a single-session lookup, propose adding them to
+`firewall/domains.local.txt` (+ `policy.local.d/<host>.yaml` if POST) and
+Rebuild Container. Reserve `/prepare-research` for multi-host, multi-session,
+or any POST to a third-party — it's the sanctioned, audited path and avoids
+polluting the main `domains.local.txt`. When in doubt, default to
+`/prepare-research`.
 
 If the user only needs to read more docs from already-allowlisted hosts, do
 NOT spawn a research bundle — answer directly. The bundle exists for genuine
