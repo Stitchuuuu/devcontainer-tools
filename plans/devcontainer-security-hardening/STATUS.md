@@ -12,7 +12,7 @@
 |---|---|---|---|
 | 1 | bake-firewall-config — bake whole `firewall/` dir (rules, addons, dnsmasq, **mode**, **direct-tcp-allow.txt**) + drop bind mount. Sudoers init-firewall.sh kept (Option A — session 2 hardens script). | ✅ | — |
 | 2 | drop-env-injection — remove `source /tmp/.firewall-env` + helper plumbing (obsolete after session 1) | ✅ | — |
-| 6 | adversarial-validation — replay all vectors + hunt new ones (red-team engagement) | 📋 | [→ prompt](sessions/session-6-adversarial-validation.md) |
+| 6 | adversarial-validation — replay all vectors + hunt new ones (red-team engagement) | ✅ | — |
 
 ## Optional defense-in-depth (deferred, NOT in critical path)
 
@@ -32,14 +32,16 @@ posture (anti-persistance, anti-token-leak).
 
 ## Progress
 
-- **Delivered** : 2 / 3 essential (sessions 4 mergées dans 1)
-- **Next focus** : session 6 (adversarial-validation — gate du rollout)
+- **Delivered** : 3 / 3 essential (sessions 4 mergées dans 1)
+- **Rollout** : ✅ **COMPLETE** (validated by session 6, 2026-05-22)
 
 ## Gate
 
-Session 6 (adversarial-validation) **gate** la fin du rollout. Si elle
-trouve ≥1 vecteur SUCCESS (violation d'un des 3 critères), un rollout
-`devcontainer-security-hardening-v2` est ouvert.
+Session 6 (adversarial-validation) **gate** la fin du rollout.
+**Résultat 2026-05-22** : 0 SUCCESS, 3 PARTIAL (gaps P3 explicitement
+acceptés par l'audit), 22 BLOCKED/TOLERATED. Détails dans
+[`adversarial-report.md`](adversarial-report.md). v2 NON requis par le
+threat model courant.
 
 ## Threat model — les 3 critères
 

@@ -92,21 +92,54 @@ grep -F test /etc/devcontainer-firewall/.poc            → no match (découplé
 
 ### Vecteurs identifiés (13 = 11 audit + 2 découverts en review)
 
+Statut post-session 6 (adversarial-validation, 2026-05-22) :
+
 | # | Vecteur | Viole critère | Status | Session |
 |---|---|---|---|---|
-| 1 | `domains.local.txt` + `policy.local.d/` poison | (2) (3) | 🟢 | 1 ✅ |
-| 2 | Injection Python dans `addons/*.py` (5 fichiers) | (2) (3) | 🟢 | 1 ✅ |
-| 3 | `dnsmasq.conf` poison (`address=`/`ipset=`) | (2) (3) | 🟢 | 1 ✅ |
-| 4 | `/tmp/.firewall-env` source-as-root (privesc → tout) | (2) (3) via root | 🟢 | 2 ✅ |
-| 5 | Hooks Claude `Stop`/`SessionEnd` (`settings.json`) | aucun (node-level) | ⚪ | 3 (optional) |
-| 6 | Scripts lifecycle bind-montés (`shell-init.sh` & co) | aucun (node-level) | ⚪ | accepted |
-| 7 | `vscode-settings.json` tasks/env auto-run | aucun (node-level) | ⚪ | accepted |
-| 8 | `policy.d/*.yaml` élargissement silencieux | (2) (3) | 🟢 | 1 ✅ |
-| 9 | Wildcard `*.statsig.com`/`*.githubusercontent.com` DNS exfil | (3) partiellement | ⚪ | gap P3 (out of scope) |
-| 10 | `firewall-blocks` runtime call (à confirmer) | (2) ? | ⚪ | session 6 investigate |
-| 11 | Logs mitmproxy lisibles par node (groupe `adm`) | aucun (lecture locale ≠ exfil) | ⚪ | 5 (optional) |
-| 12 | Toggle firewall-mode → off via `firewall/default-mode` (baked since session 1) | (2) (3) | 🟢 | 1 ✅ |
-| 13 | `CLAUDE_CODE_FIREWALL_ALLOWED=evil:443` migrated to baked `firewall/direct-tcp-allow.txt` | (2) (3) direct TCP | 🟢 | 1 ✅ |
+| 1 | `domains.local.txt` + `policy.local.d/` poison | (2) (3) | 🟢 BLOCKED (validé) | 1 ✅ |
+| 2 | Injection Python dans `addons/*.py` (5 fichiers) | (2) (3) | 🟢 BLOCKED (validé) | 1 ✅ |
+| 3 | `dnsmasq.conf` poison (`address=`/`ipset=`) | (2) (3) | 🟢 BLOCKED (validé) | 1 ✅ |
+| 4 | `/tmp/.firewall-env` source-as-root (privesc → tout) | (2) (3) via root | 🟢 BLOCKED (validé) | 2 ✅ |
+| 5 | Hooks Claude `Stop`/`SessionEnd` (`settings.json`) | aucun (node-level) | ⚪ TOLERATED | 3 (optional) |
+| 6 | Scripts lifecycle bind-montés (`shell-init.sh` & co) | aucun (node-level) | ⚪ TOLERATED | accepted |
+| 7 | `vscode-settings.json` tasks/env auto-run | aucun (node-level) | ⚪ TOLERATED | accepted |
+| 8 | `policy.d/*.yaml` élargissement silencieux | (2) (3) | 🟢 BLOCKED (validé) | 1 ✅ |
+| 9 | DNS exfil via dnsmasq forwarding (wildcards et au-delà) | (3) — gap P3 | 🟡 PARTIAL (audit-accepted) | gap P3 (v2 si threat model change) |
+| 10 | `firewall-blocks` runtime call (à confirmer) | aucun (observability only) | ⚪ TOLERATED (confirmé non-runtime par session 6) | accepted |
+| 11 | Logs mitmproxy lisibles par node (groupe `adm`) | aucun (lecture locale ≠ exfil) | ⚪ TOLERATED | 5 (optional) |
+| 12 | Toggle firewall-mode → off via `firewall/default-mode` (baked since session 1) | (2) (3) | 🟢 BLOCKED (validé) | 1 ✅ |
+| 13 | `CLAUDE_CODE_FIREWALL_ALLOWED=evil:443` migrated to baked `firewall/direct-tcp-allow.txt` | (2) (3) direct TCP | 🟢 BLOCKED (validé) | 1 ✅ |
+
+### Défenses-en-profondeur découvertes par session 6
+
+Non strictement nécessaires aux 3 critères (déjà tenus par sessions
+1+2), mais utiles à connaître :
+
+- **init-firewall.sh "already active" guard** (`/usr/local/bin/init-firewall.sh:14-18`) :
+  ```bash
+  if ipset list allowed-domains &>/dev/null && iptables -L OUTPUT -n 2>/dev/null | grep -q "DROP"; then
+    echo "✅ Firewall already active — skipping. To change rules: rebuild the container."
+    exit 0
+  fi
+  ```
+  Empêche un re-init accidentel qui flusherait iptables. Pas
+  bypassable par node (qui n'a pas les privs pour vider ipset/iptables).
+- **CapEff=0 pour node** : malgré `NET_ADMIN`/`NET_RAW` dans le
+  container, UID 1000 n'a aucune effective capability. Tout
+  passe par les 2 binaires sudo NOPASSWD.
+- **sudo env_reset par défaut** : `sudo VAR=x init-firewall.sh` est
+  refusé. Renforce session 2 (qui a déjà drop `source /tmp/...`).
+- **mitmproxy CA private key** (`/var/lib/mitmproxy/mitmproxy-ca.pem`)
+  mode 600 mitmproxy:mitmproxy. Node ne peut pas forger de cert HTTPS.
+- **`sudo iptables` / `sudo ipset` HORS sudoers** : node ne peut PAS
+  invoquer ces commandes directement. Inspection passe par
+  `test-firewall.sh` (read-only) ou `iptables-dump.txt` (root-written).
+- **VS Code "Allow Automatic Tasks" prompt** : barrière user-facing
+  contre `runOn:folderOpen` silencieux. Pas un mécanisme devcontainer
+  mais s'inscrit dans la posture défensive globale.
+- **Claude Code plugin discovery non-auto** : un plugin dropé dans
+  `~/.claude/plugins/` n'est pas exécuté ; il faut `/plugin install`
+  pour l'enregistrer dans `.claude.json:enabledPlugins`.
 
 ### Chaîne « kill-shot »
 

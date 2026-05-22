@@ -121,3 +121,94 @@
 - _V6_ : `bash /workspace/.devcontainer/tests/run.sh` → 61 pass / 0 fail / 4 skip (skips attendus : modes basic/off + claude-switch local hors-runtime active).
 
 **Commit** : proposé, pending user confirm.
+
+---
+
+## 6 — adversarial-validation
+
+**Date** : 2026-05-22
+
+**Files touched** :
+- `plans/devcontainer-security-hardening/adversarial-report.md` (NEW)
+- `plans/devcontainer-security-hardening/STATUS.md` (session 6 ✅ + gate result)
+- `plans/devcontainer-security-hardening/LOG.md` (this section)
+- `plans/devcontainer-security-hardening/EXISTING.md` (verdict colors updated)
+
+**What** : Red team engagement post-sessions 1+2. Replayed les 13
+vecteurs documentés du SECURITY-AUDIT-2026-05.md et exploré 12 groups
+de surfaces additionnelles (A-L). Pour chaque vecteur "edit + reload",
+PoC stagés via workspace, container reloaded par l'user, état runtime
+vérifié post-reload (init-firewall.sh re-run avec config baked).
+
+**Why** : Gate du rollout. La session 6 valide empiriquement que les
+sessions 1+2 tiennent face à un attaquant créatif jouant le rôle de
+`node` compromised (Claude prompt-injected ou SSH-direct).
+
+**Résultat global** : **0 SUCCESS**, 3 PARTIAL, 10 TOLERATED,
+12 BLOCKED.
+
+| Catégorie | Phase 1 (vecteurs) | Phase 2 (groups) |
+|---|---|---|
+| 🔴 SUCCESS | 0 | 0 |
+| 🟢 BLOCKED | #1, #2, #3, #4, #8, #12, #13 (7) | B, G, J, K, L (5) |
+| 🟡 PARTIAL | #9 (1) | A, E (2 — même root cause que #9 pour E) |
+| ⚪ TOLERATED | #5, #6, #7, #10, #11 (5) | C, D, F, H, I (5) |
+
+**Critères du threat model — tous tenus** :
+1. node ne peut PAS relancer la machine seul ✅
+2. node ne peut PAS modifier le firewall sans rebuild ✅ (validé via
+   cycle edit-workspace + reload, baked path inchangé, runtime
+   config compiled-from-baked)
+3. node ne peut PAS accéder à une ressource externe / exfiltrer sans
+   rebuild ✅ sauf #9 DNS exfil (gap P3 documented + accepted par audit)
+
+**Decisions** :
+- _Cycle edit + reload empirique_ : le user a demandé d'aller au-delà
+  du raisonnement statique (inode-diff). Un reload effectif a été
+  effectué après staging des 6 PoC reload-required de Phase 1 (#1, #2,
+  #3, #8, #12, #13) + un 2e reload pour Groups C et D. Verdict
+  empirique : baked files pristine, runtime config compiled-from-baked,
+  pas de pwned markers, evil.com/443 dropé par iptables.
+- _#9 DNS exfil = PARTIAL (audit reading)_ : strict reading du critère
+  3 considérerait #9 comme SUCCESS, mais l'audit acknowledges this
+  explicitly comme Gap P3 hors scope. v2 non requis sauf si threat
+  model évolue.
+- _init-firewall.sh "already active" guard découvert_ : ligne 14-18
+  refuse de re-run si ipset+iptables sont actifs. Defense-in-depth
+  intéressante, à mentionner dans EXISTING.md.
+- _Group D (VS Code tasks) BLOCKED en pratique_ : VS Code prompte
+  "Allow Automatic Tasks in Folder?" avant `runOn:folderOpen`. User
+  a laissé le prompt sans approuver → task n'a pas exécuté. Security
+  gate user-side fonctionne.
+- _Group C (Claude plugins) BLOCKED en pratique_ : plugins ne
+  s'auto-loadent pas depuis `~/.claude/plugins/`. Registration via
+  `/plugin install` requise (écriture dans `.claude.json` enabled
+  list).
+- _Aucun /prepare-plan v2_ : 0 SUCCESS → rollout complete.
+
+**Gotchas** :
+- `sudo iptables` / `sudo ipset` ne sont PAS dans la sudoers NOPASSWD
+  (seuls init-firewall.sh + test-firewall.sh le sont). Inspection du
+  firewall live nécessite de passer par test-firewall.sh.
+- `dig +short evil.com @127.0.0.53` retourne un IP réel (dnsmasq
+  forwarde) — confirme que la "DNS allowlist" est en réalité enforced
+  côté iptables (ipset population), pas côté dnsmasq. C'est le root
+  cause de #9.
+- `CapEff: 0000000000000000` pour node — les NET_ADMIN/NET_RAW du
+  container ne sont jamais effectifs pour UID 1000. Tout passe par
+  les 2 sudo NOPASSWD scripts.
+- mitmproxy CA private key (`mitmproxy-ca.pem`) est mode 600
+  mitmproxy:mitmproxy → node ne peut pas forger de cert HTTPS.
+
+**Tests** :
+- 25 PoC executés (13 vecteurs + 12 groups). Détails complets dans
+  `adversarial-report.md`.
+- 2 reload cycles : (1) après staging des 6 PoC Phase 1
+  reload-required, (2) après staging Groups C + D.
+- Verification post-reload : baked files pristine, runtime configs
+  compiled-from-baked, ipset/iptables sans evil entries, curl
+  evil.com:443 → DROP, test-firewall.sh "example.org blocked" (mode
+  strict).
+
+**Commit** : proposé, pending user confirm.
+`docs(security): adversarial validation report — 12 BLOCKED, 3 PARTIAL, 0 SUCCESS`
