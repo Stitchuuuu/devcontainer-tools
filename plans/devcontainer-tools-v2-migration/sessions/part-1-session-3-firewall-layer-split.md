@@ -208,10 +208,83 @@ DoD at end of this session :
    the rsync in commit message.
 `````
 
+## Migration manuelle pour les instances déjà déployées (v2-beta etc.)
+
+Les projets adoptants qui ont déjà installé v2-beta avant ce fix n'ont
+pas besoin de relancer `install.sh` pour bénéficier du split. **Les
+changements sont locaux à 2 fichiers Dockerfile du `.devcontainer/`** —
+rien d'autre à reconfigurer (`.env`, firewall data, marker, OAuth
+volume, host-helpers — tout intact).
+
+### Édits (~5 min, 2 fichiers)
+
+1. **`<instance>/.devcontainer/Dockerfile.base`** — supprimer :
+   - Les 4 `COPY firewall/...` (domains.txt, domains.local.txt.example,
+     policy.d/, policy.local.d.example/)
+   - Le `RUN touch /etc/devcontainer-firewall/domains.local.txt`
+   - Les chmod 755 pour `policy.d` + `policy.local.d.example` (si en
+     fin de RUN chmod)
+   - Cf. § "1. Edit `templates/v2/Dockerfile.base`" ci-dessus pour
+     localisations exactes.
+
+2. **`<instance>/.devcontainer/Dockerfile`** (ou `Dockerfile.php` si PHP)
+   — append le bloc `USER root` / COPY × 4 / chown / chmod / `USER node`
+   en fin de fichier. Cf. § "2. Edit `templates/v2/Dockerfile`"
+   ci-dessus pour le bloc complet.
+
+### Rebuild (~5-8 min cold cache)
+
+3. **Forcer le rebuild de la base image** (son contenu change) :
+   ```bash
+   docker image rm claude-devcontainer-base:${CLAUDE_CODE_VERSION}
+   # OU laisser initialize.sh détecter "Rebuild Container Without Cache"
+   # via le menu VS Code
+   ```
+
+4. **VS Code → "Rebuild Container Without Cache"** sur l'instance.
+   `initialize.sh` reconstruit la base (project-agnostic désormais),
+   puis le project layer COPY ses propres domaines.
+
+### Validation (~2 min)
+
+5. **Base project-agnostic** :
+   ```bash
+   docker run --rm claude-devcontainer-base:${VERSION} \
+       ls /etc/devcontainer-firewall/ 2>/dev/null
+   # → ne doit PAS lister domains.txt, policy.d, policy.local.d.example
+   # → doit lister addons/, tests/, dnsmasq.conf, compile-policy.py
+   ```
+
+6. **Project layer apporte ses domaines** :
+   ```bash
+   docker exec <ctr> cat /etc/devcontainer-firewall/domains.txt
+   # → doit matcher <instance>/.devcontainer/firewall/domains.txt
+   ```
+
+7. **Test isolation cross-projet** (optionnel mais utile) :
+   ```bash
+   docker image inspect claude-devcontainer-base:${VERSION} --format '{{.Id}}'
+   # Rebuild un autre projet avec domains.txt différent
+   # Re-inspect base ID → identique (sharing OK)
+   # Dans l'instance : cat /etc/devcontainer-firewall/domains.txt
+   #   → SES domaines, pas ceux de l'autre (isolation OK)
+   ```
+
+### Coût total
+- 2 fichiers édités, ~30 lignes touchées
+- 1 rebuild without-cache (~5-8 min cold)
+- Pas de re-prompt wizard, pas de reset `.env`, firewall data
+  (`domains.txt`, `policy.d/`, etc.) intacte
+
 ## Next session
 
-`part-1-session-4-fresh-install-test.md` — full `Reopen in Container`
-cycle on a sandbox project to validate the v2 baseline end-to-end
-(base image build, lifecycle, firewall up, sync-creds, sync-skills).
-Was originally session 3 ; renumbered when session-3 split was
-inserted.
+`part-1-session-3b-gitignore-architecture-refactor.md` —
+**indépendante** de cette session (peut partir en parallèle ou avant).
+Split du gitignore root / `.devcontainer/`, relocate LESSONS dans
+l'AI bundle, whitelist `.vscode/settings.json`.
+
+Suite chronologique : `part-1-session-4-fresh-install-test.md` — full
+`Reopen in Container` cycle on a sandbox project to validate the v2
+baseline end-to-end (base image build, lifecycle, firewall up,
+sync-creds, sync-skills). Was originally session 3 ; renumbered when
+session-3 split was inserted.

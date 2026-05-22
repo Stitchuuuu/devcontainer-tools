@@ -1,5 +1,100 @@
 # Changelog
 
+## 2.0.0 (2026-05-22)
+
+Major rewrite. v1.3 → v2.0 : one installer, scrubbed baseline, no
+auto-migration (see Part 2 when specced).
+
+### Breaking changes (drops)
+
+- `gh-secure/` (6 scripts) — superseded by the `/prepare-pr` skill.
+- `Dockerfile.node` — the generic `Dockerfile` covers Node projects.
+- `templates/master-review/` skill — superseded by `/prepare-pr`.
+- `templates/KNOWLEDGE.md` (single file) — superseded by the
+  `knowledge/` directory (6 files : INDEX, firewall, wtf,
+  extension-points, docker-base-image, ollama-local).
+- `templates/test-db.php` — unused.
+- `templates/gitignore-entries.txt` — `install.sh` ships
+  `.gitignore` content inline now (further refined in S3b — split
+  between `.devcontainer/.gitignore` and root-scope inline list).
+- `update.sh` — the full-resync script proved too fragile for a
+  major bump. Replaced by a paste-into-Claude migration prompt
+  (Part 2, deferred).
+
+### Renames / relocations
+
+- `templates/Dockerfile.custom` → `templates/v2/Dockerfile` (default
+  project layer).
+- `templates/` → `templates/v2/` (versioned scheme ; allows future
+  variants under `templates/v3/`, `templates/v2/minimal/`, etc.).
+- `LESSONS.md` / `LESSONS.local.md` : root → `.devcontainer/` with a
+  root symlink for `LESSONS.md` (mode 120000, same pattern as
+  `CLAUDE.md`).
+
+### New
+
+- 4-prompt wizard (down from 13) : PROJECT_ID, PROJECT_DISPLAY_NAME,
+  PROJECT_TYPE, shared creds volume.
+- Shell expansion (`${VAR:-default}`) replaces 11 sed placeholders.
+  Only `{{PROJECT_ID}}` and `{{PROJECT_DISPLAY_NAME}}` survive.
+- Detect-existing logic : v1.3 marker → abort with Part 2 pointer ;
+  v2 marker → reinstall / abort choice.
+- `Dockerfile.php` ships as a first-class variant
+  (PROJECT_TYPE=php).
+- `claude-bridge/` sidecar (UniClaudeProxy for local Ollama, opt-in
+  via `host-helpers/claude-switch`).
+- `host-helpers/` (12 host-side utilities incl. `claude-switch`,
+  `claude-bridge`, `verify-slim-base`, etc.).
+- Full `knowledge/` directory ships (6 files, replaces the single
+  `KNOWLEDGE.md`).
+- 4 docs ship (README + RUNBOOK + SECURITY + RESEARCH).
+- 5 generic skills ship + `sync-skills.sh` at post-start (excludes
+  `.local` skills, which stay per-user manual adds).
+- 13 baseline L7 policies in `firewall/policy.d/`.
+- Ollama online registry domains (`ollama.com`, `docs.ollama.com`,
+  `registry.ollama.ai`) added to the firewall allowlist for debug /
+  model-query from inside the container.
+- **Firewall layer split** (S3) : project-specific firewall data
+  (`domains.txt`, `policy.d/`) moved from `Dockerfile.base` to the
+  project layer (`Dockerfile` / `Dockerfile.php`) so
+  `claude-devcontainer-base:${VERSION}` stays project-agnostic and
+  shareable across projects pinning the same `CLAUDE_CODE_VERSION`.
+- **Gitignore architecture split** (S3b) : shipped
+  `.devcontainer/.gitignore` for `.devcontainer/`-scoped rules ;
+  `install.sh`'s `update_gitignore()` reduced to root-scope only ;
+  `.vscode/settings.json` + `.vscode/extensions.json` whitelisted
+  so the `post-start.sh` `skip-worktree` trick has tracked files
+  to act on.
+- **Security hardening** (S3c, delivered via parallel
+  `devcontainer-security-hardening` rollouts) — the in-container
+  firewall tampering vector is closed :
+  - **Firewall baked into the base image** : `firewall/` tree
+    (rules, addons, dnsmasq, mode, `direct-tcp-allow.txt`)
+    `COPY`'d into `/etc/devcontainer-firewall/` at build time.
+  - **Bind mount dropped** : the writable workspace mount no
+    longer exposes a path for the node user to tamper with
+    firewall config mid-session. Editing firewall config now
+    requires an image rebuild — the only audit trail.
+  - **Env injection path removed** : the `source /tmp/.firewall-env`
+    sudoer-context import is gone.
+  - **dnsmasq strict mode** : the catch-all `server=` upstream is
+    dropped ; unknown domains return `REFUSED`. Sibling resolve
+    generalised to loop over `direct-tcp-allow.txt`.
+  - Adversarial validation on HEAD `2cd3cd6` : PoC #9 returns
+    `REFUSED`, payload absent from mitmproxy logs ; all three
+    threat-model criteria hold (no restart, no firewall mod, no
+    exfil without rebuild).
+
+### Notes
+
+- `TEMPLATE_VERSION` is `"2.0.0"` ; the v1.3 detect path aborts
+  cleanly with a pointer to Part 2 for existing project upgrades.
+- Re-installing v2 over a v2 marker re-prompts for the wizard
+  values even though `.configured-setup` holds them ; flagged for
+  a follow-up patch (not blocking the v2.0.0 tag).
+
+---
+
 ## 1.3.0 (2026-04-28)
 
 ### Added

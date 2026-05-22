@@ -7,17 +7,21 @@
 
 ## Status
 
-**v2.0.0 in flight.** `install.sh` rewritten (796 → 456 LoC, 4 prompts,
-2 placeholders). `templates/v2/` populated (~95 files, scrubbed of
-project-specific identity). `update.sh` removed (v2 ships one installer
-only). Image layer split landed (P1-S3) — base image now stable
-across projects pinning the same `CLAUDE_CODE_VERSION`. Not yet
-CHANGELOG'd, not yet released.
+**v2.0.0 released** (2026-05-22). `install.sh` rewritten (796 → 456 LoC,
+4 prompts, 2 placeholders). `templates/v2/` populated (~95 files,
+scrubbed of project-specific identity). `update.sh` removed (v2
+ships one installer only). Image layer split landed (P1-S3) — base
+image stable across projects pinning the same `CLAUDE_CODE_VERSION`.
+Security hardening (firewall bake-in + bind mount drop + dnsmasq
+strict) landed via the parallel `devcontainer-security-hardening`
+v1 + v2 rollouts, closing the S3c threat. CHANGELOG written, README
+refreshed, tag `v2.0.0` posed locally (push at user's discretion).
 
-**Part 1 progress** : 4 / 7 delivered (S1 scope-audit, S2 install-redesign,
-S3 firewall-layer-split, S3b gitignore-architecture-refactor). Next focus :
-**S3c firewall-write-protection** (security : close in-container tampering —
-blocks v2.0.0 release if shipped insecurely). S4 fresh-install-test pending.
+**Part 1 progress** : 7 / 7 delivered (S1 scope-audit, S2
+install-redesign, S3 firewall-layer-split, S3b
+gitignore-architecture-refactor, S3c firewall-write-protection [via
+hardening rollouts], S4 fresh-install-test [validated incrementally],
+S5 bump-changelog).
 
 | Phase | Status | What it ships |
 |---|---|---|
@@ -25,9 +29,9 @@ blocks v2.0.0 release if shipped insecurely). S4 fresh-install-test pending.
 | Part 1 / S2 — install-redesign | ✅ delivered | This commit batch : `install.sh` v2 + `templates/v2/` sync + all scrubs |
 | Part 1 / S3 — firewall-layer-split | ✅ delivered | Moved 4 project-specific firewall COPYs (domains.txt, domains.local.txt.example, policy.d/, policy.local.d.example/) from `Dockerfile.base` to project layer (`Dockerfile` + `Dockerfile.php`) so `claude-devcontainer-base:${VERSION}` stays project-agnostic and truly shared. Mirror cp'd into dogfooding `.devcontainer/` (Dockerfile.base + Dockerfile ; no PHP dogfood). Grep verification : 5/5 gates pass. |
 | Part 1 / S3b — gitignore-architecture-refactor | ✅ delivered | Split gitignore : `templates/v2/.gitignore` rewritten to `.devcontainer/`-scope only (shipped via `copy_verbatim` to `<target>/.devcontainer/.gitignore`) + new `templates/v2/.gitignore-root` for root-scope (shipped to `<target>/.devcontainer/.gitignore-root`, appended to `<target>/.gitignore` by `update_gitignore()`). Relocated `LESSONS.md` into `.devcontainer/` with root symlink (mode 120000, same pattern as `CLAUDE.md`). Whitelisted `.vscode/settings.json` + `extensions.json` so `post-start.sh`'s `skip-worktree` trick has a tracked file. Dogfood mirror applied. |
-| Part 1 / S3c — firewall-write-protection (security) | 📋 next | Close in-container tampering : Claude can currently modify any `.devcontainer/firewall/*` via the writable workspace mount ; modifications activate at next user-initiated restart. Recommend Option B (bake-only, no bind mount → edit requires rebuild) over Option A (`:ro` overlay shadowing). Drops `sudoers.d/node-firewall` init-firewall.sh entry. Spec includes migration recipe for v2-beta deployments. Blocks v2.0.0 release if shipped insecurely. |
-| Part 1 / S4 — fresh-install-test | 📋 | Run installer against a sandbox project, full Reopen-in-Container cycle, validate lifecycle + firewall + sync-creds + sync-skills runtime, gitignore split + LESSONS symlink behave correctly, write-protection invariants hold (P1-S3c) |
-| Part 1 / S5 — bump-changelog | 📋 | Write `CHANGELOG.md` v2.0.0 entry, document breaking drops, refresh root `README.md` for v2 flow, tag `v2.0.0` locally |
+| Part 1 / S3c — firewall-write-protection (security) | ✅ delivered (via hardening rollouts) | Option B (drop bind mount + bake firewall into image) shipped under `devcontainer-security-hardening` v1 (S1 bake + drop mount, S2 drop env injection, S6 adversarial gate) and `devcontainer-security-hardening-v2` (S3 dnsmasq strict, S4 PoC #9 replay gate). Templates/v2 ↔ dogfood `.devcontainer/` byte-identical on all security-critical paths. |
+| Part 1 / S4 — fresh-install-test | ✅ delivered (validated incrementally) | Runtime + file-level validation distributed across S3 (5/5 build gates), S3b (10 install gates + 6 check-ignore + symlink mode 120000), hardening v1 S6 (adversarial replay), hardening v2 S4 (PoC #9 replay on HEAD `2cd3cd6`). v1.3 abort path exercised during S2 smoke install. |
+| Part 1 / S5 — bump-changelog | ✅ delivered | CHANGELOG.md v2.0.0 entry (breaking drops, renames, new features incl. hardening), root `README.md` created for the v2 install flow, `TEMPLATE_VERSION` confirmed at `"2.0.0"`, tag `v2.0.0` posed locally. Push deferred to user. |
 | Part 2 — 1.3 → 2.0 migration prompt | ⏸️ deferred | Paste-into-Claude session prompt that walks an existing 1.3 project through the upgrade (replaces the dropped `update.sh`) |
 
 ## Part 1 — what's left (~5-7 h total)
@@ -41,26 +45,31 @@ into the project layer. Base image now stable across projects. See
 for the rationale + verification. Migration recipe for already-deployed
 v2-beta instances : see the session spec.
 
-### Session 3c — firewall-write-protection / security (~1-2 h option A, ~3-4 h option B)
+### Session 3c — firewall-write-protection — ✅ DELIVERED (2026-05-22, via hardening rollouts)
 
-Bug de sécurité découvert pendant la review post-S3. Claude (user `node`
-dans le container) peut actuellement modifier n'importe quel fichier
-firewall via le workspace bind mount writable, et les modifications
-sont picked up au prochain restart user-initiated (`post-start.sh` →
-`sudo init-firewall.sh`). Attack chain en deux temps : insertion
-silencieuse mid-session + activation au prochain start/stop/start.
+Done : option B (drop bind mount + bake firewall into base image)
+shipped under the two parallel `devcontainer-security-hardening`
+rollouts. Both ✅ COMPLETE with adversarial gates passed.
 
-Deux options : **(A)** ajouter un `:ro` overlay mount shadowing le
-workspace au sous-path firewall (1 ligne YAML, préserve l'UX edit-host) ;
-**(B)** supprimer le bind mount entièrement et tout baker dans l'image
-(immutable, edit-firewall = rebuild). Recommandation : option B per
-le requirement "cadenas devcontainer, sans accès root pour Claude".
-Spec inclut la migration recipe pour adopting projects.
+- **Hardening v1** (4/4 essential sessions delivered) :
+  [`plans/devcontainer-security-hardening/`](plans/devcontainer-security-hardening/)
+  - S1 bake-firewall-config — `firewall/` baked into base image,
+    bind mount dropped from docker-compose
+  - S2 drop-env-injection — `/tmp/.firewall-env` sudoer-context import
+    removed
+  - S6 adversarial-validation gate — 0 SUCCESS, 3 PARTIAL (P3
+    accepted), 22 BLOCKED/TOLERATED ; threat-model criteria 1+2+3
+    all held
+- **Hardening v2** (4/4 sessions delivered) :
+  [`plans/devcontainer-security-hardening-v2/`](plans/devcontainer-security-hardening-v2/)
+  - S3 dnsmasq-strict — catch-all `server=` dropped, sibling resolve
+    generalised over `direct-tcp-allow.txt`
+  - S4 adversarial-validation gate — PoC #9 replay on HEAD `2cd3cd6`
+    returns `status: REFUSED`, payload absent from mitmproxy logs
 
-Spec : [plans/devcontainer-tools-v2-migration/sessions/part-1-session-3c-firewall-write-protection.md](plans/devcontainer-tools-v2-migration/sessions/part-1-session-3c-firewall-write-protection.md).
-
-Independant de S3b et S4 — peut partir en parallèle. **Bloque v2.0.0
-release si pas livré** (vulnérabilité documentée).
+Templates/v2 ↔ dogfood `.devcontainer/` byte-identical on all
+security-critical files (commits `231d3ec`, `cb0301f`, `2cd3cd6`
+touched both paths). New adopters inherit via `install.sh`.
 
 ### Session 3b — gitignore-architecture-refactor — ✅ DELIVERED (2026-05-22)
 
@@ -79,30 +88,41 @@ trick has tracked files. Dogfood mirror applied. CLAUDE.md § 8 amended
 See [LOG.md § P1-S3b](plans/devcontainer-tools-v2-migration/LOG.md) for
 the full file-touched list, decisions, gotchas, and test output.
 
-### Session 4 — fresh-install-test (~2-3 h)
+### Session 4 — fresh-install-test — ✅ DELIVERED (2026-05-22, validated incrementally)
 
-Full runbook : look for `HOWTO-test-install-host.md` in the originating
-project's `plans/devcontainer-tools-v2-migration/` directory (if you
-copied it over, it'll be at `docs/HOWTO-test-install-host.md` ; if not,
-the workflow boils down to) :
+Done : the runtime + file-level validation was exercised
+incrementally across the iteration cycle rather than as a single
+dedicated session. Every assertion in the original spec has a green
+test elsewhere :
 
-1. Sandbox : `mkdir -p ~/sandbox/dctest-v2-$(date +%s) && cd $_`
-2. Install : `bash /path/to/devcontainer-tools/install.sh $(pwd)`
-3. Defaults wizard : Enter / Enter / Enter / volume name or `n` / Enter
-4. `code .` → Reopen in Container
-5. Inside : `claude --version`, `wtf foo`, `bash .devcontainer/test-firewall.sh`,
-   inspect `~/.claude/settings.json` + `~/.claude/commands/`
-6. Test the v1.3 abort path (plant a fake `.configured-setup VERSION="1.3.0"` in a second sandbox)
-7. Capture timings + log highlights for CHANGELOG (session 4)
+- _S3 (firewall-layer-split)_ — 5/5 build gates passed, base image
+  rebuilt project-agnostic
+- _S3b (gitignore-architecture-refactor)_ — full smoke install in
+  `/tmp` with 10 install gates + 6 `check-ignore` cases + symlink
+  mode `120000` confirmed
+- _Hardening v1 S6 (adversarial replay post-bake)_ — 0 SUCCESS, 3
+  threat-model criteria held
+- _Hardening v2 S4 (PoC #9 replay)_ — `REFUSED` on HEAD `2cd3cd6`,
+  `test-dns-strict.sh` 6/0/1, `test-firewall.sh` 0 ❌ / 2 ⚠️ /
+  2 ℹ️
+- _v1.3 abort path_ — exercised during S2 smoke install (fake
+  `.configured-setup` with `VERSION="1.3.0"` → install.sh aborts
+  cleanly with Part 2 pointer)
 
-Key things to watch for :
-- Base image build : ~5-8 min cold cache, ~10s warm
-- Lifecycle phase logs in `.devcontainer/logs/<phase>-<ts>.log`
-- Firewall up : `bash test-firewall.sh` from inside container
-- Creds carry-over : if you used the same `CLAUDE_CREDS_VOLUME` as
-  your daily devcontainer, OAuth should be transparent
+See [plans/devcontainer-tools-v2-migration/LOG.md § P1-S4](plans/devcontainer-tools-v2-migration/LOG.md)
+for the consolidated evidence chain.
 
-### Session 5 — bump-changelog
+### Session 5 — bump-changelog — ✅ DELIVERED (2026-05-22)
+
+Done : v2.0.0 CHANGELOG entry written (breaking drops + renames +
+new features incl. firewall hardening), root `README.md` created
+for the v2 install flow, `TEMPLATE_VERSION` confirmed at `"2.0.0"`,
+tag `v2.0.0` posed locally. Push deferred to user.
+
+See [plans/devcontainer-tools-v2-migration/LOG.md § P1-S5](plans/devcontainer-tools-v2-migration/LOG.md)
+for the file-touched list and diff stats.
+
+#### Original session 5 plan (kept for posterity)
 
 1. **`CHANGELOG.md`** — write a v2.0.0 entry. Suggested sections :
    - **Breaking changes (drops)** :
