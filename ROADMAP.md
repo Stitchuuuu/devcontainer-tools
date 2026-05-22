@@ -10,31 +10,56 @@
 **v2.0.0 in flight.** `install.sh` rewritten (796 → 456 LoC, 4 prompts,
 2 placeholders). `templates/v2/` populated (~95 files, scrubbed of
 project-specific identity). `update.sh` removed (v2 ships one installer
-only). Not yet CHANGELOG'd, not yet released.
+only). Image layer split landed (P1-S3) — base image now stable
+across projects pinning the same `CLAUDE_CODE_VERSION`. Not yet
+CHANGELOG'd, not yet released.
+
+**Part 1 progress** : 3 / 6 delivered (S1 scope-audit, S2 install-redesign,
+S3 firewall-layer-split). Next focus : **S4 fresh-install-test** (depends
+on S3 ✅ + S3b) ; S3b gitignore-architecture-refactor still parallelisable.
 
 | Phase | Status | What it ships |
 |---|---|---|
 | Part 1 / S1 — scope-audit | ✅ delivered | Frozen file list (84-95 files), templating model (shell expansion + 2 `{{...}}` placeholders), drop list |
 | Part 1 / S2 — install-redesign | ✅ delivered | This commit batch : `install.sh` v2 + `templates/v2/` sync + all scrubs |
-| Part 1 / S3 — firewall-layer-split | 📋 next | Move 4 project-specific firewall COPYs (domains.txt, domains.local.txt.example, policy.d/, policy.local.d.example/) from `Dockerfile.base` to project layer (`Dockerfile` + `Dockerfile.php`) so `claude-devcontainer-base:${VERSION}` stays project-agnostic and truly shared. Discovered during fresh-install validation. |
-| Part 1 / S4 — fresh-install-test | 📋 | Run installer against a sandbox project, full Reopen-in-Container cycle, validate lifecycle + firewall + sync-creds + sync-skills runtime |
-| Part 1 / S5 — bump-changelog | 📋 | Write `CHANGELOG.md` v2.0.0 entry, document breaking drops, refresh root `README.md` for v2 flow |
+| Part 1 / S3 — firewall-layer-split | ✅ delivered | Moved 4 project-specific firewall COPYs (domains.txt, domains.local.txt.example, policy.d/, policy.local.d.example/) from `Dockerfile.base` to project layer (`Dockerfile` + `Dockerfile.php`) so `claude-devcontainer-base:${VERSION}` stays project-agnostic and truly shared. Mirror cp'd into dogfooding `.devcontainer/` (Dockerfile.base + Dockerfile ; no PHP dogfood). Grep verification : 5/5 gates pass. |
+| Part 1 / S3b — gitignore-architecture-refactor | 📋 parallel | Split gitignore : ship `.devcontainer/.gitignore` for internal rules, slim `update_gitignore()` to root-scope only ; relocate `LESSONS.md` into `.devcontainer/` with root symlink (same pattern as `CLAUDE.md`) ; whitelist `.vscode/settings.json` for the `skip-worktree` trick. Independent of S3 — can run in parallel. |
+| Part 1 / S4 — fresh-install-test | 📋 | Run installer against a sandbox project, full Reopen-in-Container cycle, validate lifecycle + firewall + sync-creds + sync-skills runtime, gitignore split + LESSONS symlink behave correctly |
+| Part 1 / S5 — bump-changelog | 📋 | Write `CHANGELOG.md` v2.0.0 entry, document breaking drops, refresh root `README.md` for v2 flow, tag `v2.0.0` locally |
 | Part 2 — 1.3 → 2.0 migration prompt | ⏸️ deferred | Paste-into-Claude session prompt that walks an existing 1.3 project through the upgrade (replaces the dropped `update.sh`) |
 
-## Part 1 — what's left (~3-5 h total)
+## Part 1 — what's left (~3-4 h total)
 
-### Session 3 — firewall-layer-split (~1-2 h)
+### Session 3 — firewall-layer-split — ✅ DELIVERED (2026-05-22)
 
-`Dockerfile.base` currently COPYs 4 project-specific firewall files
-into the shared `claude-devcontainer-base:${VERSION}` image, which
-breaks cross-project sharing (one project's rebuild contaminates
-siblings' image tag). Move them to the project layer so the base
-stays project-agnostic.
+Done : moved the 4 project-specific firewall COPYs out of `Dockerfile.base`
+into the project layer. Base image now stable across projects. See
+[LOG.md § P1-S3](plans/devcontainer-tools-v2-migration/LOG.md) and
+[KNOWLEDGE.md § Image layer split](plans/devcontainer-tools-v2-migration/KNOWLEDGE.md#image-layer-split-p1-s3-2026-05-22)
+for the rationale + verification. Migration recipe for already-deployed
+v2-beta instances : see the session spec.
 
-Spec : [plans/devcontainer-tools-v2-migration/sessions/part-1-session-3-firewall-layer-split.md](plans/devcontainer-tools-v2-migration/sessions/part-1-session-3-firewall-layer-split.md).
+### Session 3b — gitignore-architecture-refactor (~45 min — 1 h)
 
-Touches 6 files (3 Dockerfiles × 2 trees). Grep-only verification
-(no install.sh re-run — that's session 4's job).
+Trois problèmes surfacés pendant fresh-install validation : (1)
+`update_gitignore()` incomplet (~9 entrées manquantes), (2) `.vscode/`
+full-ignore en conflit avec le `skip-worktree` de `post-start.sh`
+(opération inopérante sur fichier non tracké), (3) `LESSONS.md`/
+`LESSONS.local.md` au root, seule exception dans un écosystème AI sinon
+contenu dans `.devcontainer/`.
+
+Le fix : ship un `.devcontainer/.gitignore` shipped depuis le template
+(scoped aux entrées internes), réduire `update_gitignore()` aux entrées
+root-only, relocate LESSONS dans `.devcontainer/` avec symlink root
+(même pattern que `CLAUDE.md` — `git ls-files -s` montre déjà mode 120000
+sur `CLAUDE.md`, le symlink commit OK), whitelist `.vscode/settings.json`
++ `.vscode/extensions.json` au root gitignore.
+
+Spec : [plans/devcontainer-tools-v2-migration/sessions/part-1-session-3b-gitignore-architecture-refactor.md](plans/devcontainer-tools-v2-migration/sessions/part-1-session-3b-gitignore-architecture-refactor.md).
+
+Touches ~5 files (install.sh + 2 nouveaux fichiers shipped dans
+templates/v2/ + CLAUDE.md amendement + optionnel mirror dogfood).
+**Indépendante de session 3** — peut partir en parallèle.
 
 ### Session 4 — fresh-install-test (~2-3 h)
 

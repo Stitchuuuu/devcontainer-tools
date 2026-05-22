@@ -1,9 +1,9 @@
 # -----------------------------------------------
-# Project DevContainer — PHP variant (v2.1-3).
+# Project DevContainer — PHP variant.
 # Slim layer on top of claude-devcontainer-base + PHP 8.2 + Composer.
-# Used by PHP projects via docker-compose:
+# Used by PHP projects via docker-compose :
 #   build.dockerfile: Dockerfile.php
-# Layer dedup is implicit: Docker reuses the PHP install layer across
+# Layer dedup is implicit : Docker reuses the PHP install layer across
 # any project that builds with the same FROM + same RUN.
 # -----------------------------------------------
 ARG CLAUDE_CODE_VERSION=2.1.145
@@ -11,11 +11,12 @@ FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}
 
 USER root
 
-# PHP 8.2 + 13 extensions. Debian bookworm slim (base image upstream)
-# ships php8.2-* in main, no PPA required. Distilled from the legacy
-# Dockerfile.php-2/Dockerfile.php8 drafts (both had this layer byte-identical).
+# PHP 8.2 + 13 extensions covering the common Laravel / Symfony /
+# CodeIgniter footprint (cli, fpm, curl, gd, mbstring, xml, zip, soap,
+# intl, mysql, readline, bcmath, sockets, phar). Debian bookworm-slim
+# (base image upstream) ships php8.2-* in main — no PPA required.
 # Drop unused extensions inline per-project rather than trimming the
-# shared layer.
+# shared layer here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       php8.2-cli \
       php8.2-fpm \
@@ -36,5 +37,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Composer 2.x latest (official image, multi-arch amd64 + arm64).
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+# Project-specific firewall data — rebuilds per-project ; does NOT affect
+# the shared claude-devcontainer-base image. firewall-docker-setup.sh
+# lives in the base image ; touches domains.local.txt + finalizes perms.
+# *.example files are NOT COPY'd : they're host-side reference only
+# (accessible from inside via /workspace/.devcontainer/firewall/ bind mount).
+COPY firewall/domains.txt /etc/devcontainer-firewall/domains.txt
+COPY firewall/policy.d/   /etc/devcontainer-firewall/policy.d/
+RUN /usr/local/bin/firewall-docker-setup.sh
 
 USER node

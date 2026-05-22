@@ -264,3 +264,127 @@ grep -rIniE '(ragnarok|cyro|portal42|boa)' $DST   # expect empty
 ```
 
 **Commit** : not committed yet (proposal pending user confirmation).
+
+---
+
+## P1-S3 — firewall-layer-split (+ in-session cleanup pass)
+
+**Date** : 2026-05-22
+**Files touched** :
+- templates/v2/firewall/firewall-docker-setup.sh  (**NEW** — 3-line perms-finalize script using `chmod -R u=rwX,go=rX` capital-X trick ; named `firewall-docker-` to flag build-time-only scope)
+- templates/v2/Dockerfile.base       (multiple changes : 4 project-firewall COPYs removed + their touch/chmod entries removed ; +1 COPY for `firewall-docker-setup.sh` ; +script in chmod +x list ; +git-delta justification comment ; full self-contained cleanup pass — removed all refs to Phase B / A3 / v2.1-2 / 2026-05-20 / gh-secure / "knowledge/wtf.md" / "verified live" / "first iteration" / "analyze-base-image report")
+- templates/v2/Dockerfile            (project layer = 2 COPYs (domains.txt + policy.d/) + 1 `RUN firewall-docker-setup.sh` ; `.example` files dropped (host-side reference only, accessible via /workspace/.devcontainer/firewall/ bind mount))
+- templates/v2/Dockerfile.php        (same compact 2-COPY + 1-RUN block ; full self-contained cleanup of header — removed v2.1-3 version ref + "legacy Dockerfile.php-2/Dockerfile.php8" history note)
+- .devcontainer/Dockerfile.base      (mirror via `cp`)
+- .devcontainer/Dockerfile           (mirror via `cp`)
+- .devcontainer/firewall/firewall-docker-setup.sh  (**NEW** mirror via `cp`)
+- plans/devcontainer-tools-v2-migration/STATUS.md  (counter 2/6 → 3/6, session 3 row 📋 → ✅, next focus → session 4)
+- plans/devcontainer-tools-v2-migration/SCOPE.md   (firewall data section : `domains.txt` + `policy.d/` ship via project layer ; `.example` files NOT shipped into container)
+- plans/devcontainer-tools-v2-migration/KNOWLEDGE.md  (CREATED — Architecture + Copy logic + Image layer split sections)
+- ROADMAP.md                          (session 3 row ✅, counter, next focus → session 4)
+
+**What** : moved 4 project-specific firewall COPYs (`domains.txt`,
+`domains.local.txt.example`, `policy.d/`, `policy.local.d.example/`)
+out of `Dockerfile.base` (shared base image, `claude-devcontainer-base:${VERSION}`)
+into the project layer Dockerfiles (`Dockerfile` + `Dockerfile.php`).
+The base image is now truly project-agnostic and shareable across
+projects that pin the same `CLAUDE_CODE_VERSION`. The project layer
+absorbs the per-project rebuild cost (~5s) when those 4 files change,
+without invalidating the heavy base.
+
+**Why** : prior to this split, any project tweaking its `domains.txt`
+or a `policy.d/*.yaml` would trigger a full base rebuild AND change
+the base image hash. That broke the shared-base mental model :
+two projects on the same host with the same `CLAUDE_CODE_VERSION`
+should reuse one base image, period. Discovered during fresh-install
+validation (would have been caught at v2.0.0 release otherwise).
+
+**Decisions** :
+- *Kept in base* : `dnsmasq.conf` (infra-only DNS config, never per-project),
+  `tests/` (firewall self-tests, infra), `addons/` (mitmproxy addons,
+  infra). Only the 4 "policy data" files moved.
+- *Extracted perms RUN block into `firewall-docker-setup.sh` script*
+  (lives in base image at `/usr/local/bin/`). Project layer Dockerfile
+  drops from ~17 lines of inline `touch`/`chown`/`chmod` to one
+  `RUN /usr/local/bin/firewall-docker-setup.sh`. Two big wins :
+  (a) DRY — Dockerfile and Dockerfile.php no longer duplicate the perms
+  block ; (b) script evolves per `CLAUDE_CODE_VERSION` bump (one source
+  of truth in base), zero project-side re-`install.sh` to pick up changes.
+  Name prefix `firewall-docker-` signals build-time-only scope (sibling
+  scripts like `init-firewall.sh` run at container boot).
+- *Dropped `.example` COPYs from project layer* : `domains.local.txt.example`
+  and `policy.local.d.example/` were COPY'd into `/etc/devcontainer-firewall/`
+  but never read at runtime (verified : `init-firewall.sh` reads
+  `domains.local.txt` not `.example` ; `compile-policy.py` reads
+  `policy.local.d/` not `.example`). They're pure host-side reference,
+  accessible from inside the container via the `/workspace/.devcontainer/firewall/`
+  bind mount. Project layer now has 2 COPYs (domains.txt + policy.d/)
+  instead of 4.
+- *Full self-contained cleanup pass on `Dockerfile.base` + `Dockerfile.php`* :
+  removed all references to past rollout artefacts so the Dockerfiles
+  read standalone. Cleaned : "Phase 3 A3" / "A2" / "Phase B" labels →
+  replaced with semantic names (claude-binary, mitmproxy, etc.) ; version
+  refs like "v2.1-2 first iteration" / "v2.1-3" → dropped ; date refs
+  "Verified live (2026-05-20)" / "analyze-base-image report 2026-05-20" →
+  replaced with timeless "IMPORTANT:" guard comments ; "gh-secure dropped
+  in A3:" trailing paragraph → fully removed (no shipping reference to
+  removed dirs) ; "Distilled from the legacy Dockerfile.php-2/php8 drafts"
+  history note → dropped. Added missing rationale comment on `git-delta`
+  install block (was just "# git-delta", now explains the why).
+- *Capital-X chmod trick* : `chmod -R u=rwX,go=rX /etc/devcontainer-firewall`
+  gives 755 on dirs + 644 on files in ONE call (capital X = "x only if
+  dir or already +x"). Replaces the prior 3-step `chmod 644` files /
+  `chmod -R 644` dirs / `chmod 755` dirs per-path listing. Idempotent
+  on base-layer files (already 644/755, no-op).
+- *Considered : subdir `/etc/devcontainer-firewall/project/`* to scope
+  the chown/chmod via `-R` ; rejected because it forces refactor of
+  `init-firewall.sh` + `compile-policy.py` path resolution. Bigger
+  blast radius, no real win over the script + capital-X combo.
+- *Dogfooding mirror via `cp`, not hand-edit* : guarantees byte-parity
+  template ↔ `.devcontainer/`, avoids drift. `.devcontainer/Dockerfile.php`
+  doesn't exist (no PHP dogfood) — skipped. `setup-project-firewall.sh`
+  cp'd into `.devcontainer/firewall/` for dogfood base build.
+- *No skill changes* : `prepare-research` already designed for the
+  project-layer firewall layout (copies `.devcontainer/firewall/`
+  verbatim, no `/etc/devcontainer-firewall/` hardcodes). Verified.
+  The new `setup-project-firewall.sh` is part of the firewall/ tree
+  so it propagates into research bundles automatically.
+- *No `init-firewall.sh` changes* : uses runtime `$FIREWALL_CONFIG_DIR`
+  (default `/etc/devcontainer-firewall/`), works identically post-split.
+
+**Gotchas** :
+- The session spec mentioned "lines 239-242" for the 4 COPYs ; actual
+  Dockerfile.base had 7 firewall COPYs at lines 238-244. The 4 to
+  move were correctly identified (239-242), but operators should grep
+  for the COPY targets (not trust the line numbers).
+- The session spec said counter went `2/5 → 3/5` ; actual was `2/6
+  → 3/6` because session 3b was added between spec-writing and
+  execution.
+- The session spec said "update KNOWLEDGE.md" ; the file didn't
+  exist — it was created from scratch with 3 sections.
+- `.devcontainer/Dockerfile.php` does not exist in this dogfooding
+  repo — step 4 of the spec became 2 cp's, not 3.
+
+**Tests** (grep-only, no install.sh re-run — that's session 4) :
+```
+# All 5 gates pass:
+templates/v2/Dockerfile.base OK (no project COPYs)
+templates/v2/Dockerfile OK (4)
+templates/v2/Dockerfile.php OK (4)
+.devcontainer/Dockerfile.base OK
+.devcontainer/Dockerfile OK (4)
+
+# Bonus:
+- USER root / USER node count in templates/v2/Dockerfile = 1 / 1
+- no `touch /etc/devcontainer-firewall/domains.local.txt` in Dockerfile.base
+- chmod 755 list in Dockerfile.base now : root, tests, addons (policy.d
+  + policy.local.d.example removed as expected)
+- diff -q templates/v2/Dockerfile{,.base} .devcontainer/Dockerfile{,.base}
+  → byte-identical (parity OK)
+```
+
+Multi-project sharing test (host-side, deferred to session 4
+fresh-install validation) : rebuild base, build sandbox with different
+`domains.txt`, verify base image ID unchanged.
+
+**Commit** : not committed yet (proposal pending user confirmation).

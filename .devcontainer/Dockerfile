@@ -14,3 +14,16 @@ FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}
 # Project-specific layer (empty by default — add project deps here).
 # Add `RUN apt-get install -y …` here for project apt deps that should NOT
 # live in the shared base image.
+
+USER root
+
+# Project-specific firewall data — rebuilds per-project ; does NOT affect
+# the shared claude-devcontainer-base image. firewall-docker-setup.sh
+# lives in the base image ; touches domains.local.txt + finalizes perms.
+# *.example files are NOT COPY'd : they're host-side reference only
+# (accessible from inside via /workspace/.devcontainer/firewall/ bind mount).
+COPY firewall/domains.txt /etc/devcontainer-firewall/domains.txt
+COPY firewall/policy.d/   /etc/devcontainer-firewall/policy.d/
+RUN /usr/local/bin/firewall-docker-setup.sh
+
+USER node

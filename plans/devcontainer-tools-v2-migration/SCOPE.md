@@ -84,13 +84,27 @@ Everything else copies verbatim.
 
 ### Firewall (29 entries)
 
+> **Layer split (P1-S3, 2026-05-22)** : the 2 runtime-read data files
+> (`firewall/domains.txt`, `firewall/policy.d/`) are now shipped via
+> the **project layer** (`Dockerfile` + `Dockerfile.php`), not baked
+> into `Dockerfile.base`. Keeps `claude-devcontainer-base:${VERSION}`
+> stable across all projects sharing the same `CLAUDE_CODE_VERSION`.
+> The `.example` files (`domains.local.txt.example`,
+> `policy.local.d.example/`) are NOT shipped into the container at
+> all — they're host-side reference only, accessible from inside the
+> container via the `/workspace/.devcontainer/firewall/` bind mount.
+> Infra files (scripts, addons, tests, dnsmasq.conf) + the new
+> `firewall-docker-setup.sh` perms-finalize helper stay in the base.
+> See [KNOWLEDGE.md § Copy logic](KNOWLEDGE.md#copy-logic) for the
+> per-file layer breakdown.
+
 Core scripts (9) :
 - `init-firewall.sh` — sudo, dnsmasq + iptables + mitmproxy
 - `firewall-mode.sh` — host, flip mode flag
 - `test-firewall.sh` — sudo smoke test
-- `firewall/dnsmasq.conf`
-- `firewall/domains.txt` — baseline 17 hosts (Claude only)
-- `firewall/domains.local.txt.example` — starter pack
+- `firewall/dnsmasq.conf` _(base layer)_
+- `firewall/domains.txt` — baseline 17 hosts (Claude only) _(project layer)_
+- `firewall/domains.local.txt.example` — starter pack _(project layer)_
 - `firewall/compile-policy.py` — parser
 - `firewall/mitm-init.sh` — mitmproxy daemon
 - `firewall/firewall-blocks` — iptables UDP/53 helper
@@ -104,10 +118,10 @@ in templates/ (debug-only)_ :
 - `firewall/addons/stream_sse.py`
 
 L7 policies baseline (`firewall/policy.d/`, 13 files) — **NOT
-auto-compiled** ; these ship default policies for the core
-allowlisted hosts (api.anthropic.com, github, mcp-proxy,
-registry.npmjs, sentry, statsig, vscode marketplace + cdn,
-mitmproxy targets, ollama, claude-bridge) :
+auto-compiled** ; ship via **project layer** since P1-S3. These ship
+default policies for the core allowlisted hosts (api.anthropic.com,
+github, mcp-proxy, registry.npmjs, sentry, statsig, vscode marketplace
++ cdn, mitmproxy targets, ollama, claude-bridge) :
 - `api.anthropic.com.yaml`
 - `api.github.com.yaml`
 - `claude-bridge.yaml`
@@ -123,7 +137,7 @@ mitmproxy targets, ollama, claude-bridge) :
 - `vsassets.io.yaml`
 
 L7 user-override starter pack (`firewall/policy.local.d.example/`,
-3 files) :
+3 files) — ship via **project layer** since P1-S3 :
 - `README.md`
 - `api.anthropic.com.warn.yaml`
 - `api.anthropic.com.yaml`
