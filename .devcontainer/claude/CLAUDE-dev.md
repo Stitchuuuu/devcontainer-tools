@@ -193,7 +193,23 @@ the plan open (reviewers, future-you, `git blame`). Plan IDs decay;
 the change description stays useful. Exception: the user explicitly
 asks for a plan reference in the message.
 
-## 11. Project context bridge
+## 11. Devcontainer signals
+
+Some skills ship a `hooks.json` that `sync-skills.sh` merges into
+Claude settings at container boot. SessionStart hooks can inject
+`<system-reminder>` context surfacing state Claude can't detect
+mid-conversation. Treat these signals as authoritative for the state
+they describe.
+
+Active signals :
+
+- **scan-deps signal: project npm manifests changed since last
+  firewall extract** → before any dependency-touching work, propose
+  `/scan-deps` to the user. Don't run it autonomously. If the user
+  declines or postpones, drop the topic and don't re-raise it the
+  same session.
+
+## 12. Project context bridge
 
 These guidelines describe *how* to do dev work. They are deliberately
 silent on stack, language, conventions, and environment — those are
