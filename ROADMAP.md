@@ -14,18 +14,17 @@ only). Image layer split landed (P1-S3) — base image now stable
 across projects pinning the same `CLAUDE_CODE_VERSION`. Not yet
 CHANGELOG'd, not yet released.
 
-**Part 1 progress** : 3 / 7 delivered (S1 scope-audit, S2 install-redesign,
-S3 firewall-layer-split). Next focus : **S3c firewall-write-protection**
-(security : close in-container tampering — blocks v2.0.0 release if
-shipped insecurely). S3b gitignore-architecture-refactor and S4
-fresh-install-test parallelisable / pending.
+**Part 1 progress** : 4 / 7 delivered (S1 scope-audit, S2 install-redesign,
+S3 firewall-layer-split, S3b gitignore-architecture-refactor). Next focus :
+**S3c firewall-write-protection** (security : close in-container tampering —
+blocks v2.0.0 release if shipped insecurely). S4 fresh-install-test pending.
 
 | Phase | Status | What it ships |
 |---|---|---|
 | Part 1 / S1 — scope-audit | ✅ delivered | Frozen file list (84-95 files), templating model (shell expansion + 2 `{{...}}` placeholders), drop list |
 | Part 1 / S2 — install-redesign | ✅ delivered | This commit batch : `install.sh` v2 + `templates/v2/` sync + all scrubs |
 | Part 1 / S3 — firewall-layer-split | ✅ delivered | Moved 4 project-specific firewall COPYs (domains.txt, domains.local.txt.example, policy.d/, policy.local.d.example/) from `Dockerfile.base` to project layer (`Dockerfile` + `Dockerfile.php`) so `claude-devcontainer-base:${VERSION}` stays project-agnostic and truly shared. Mirror cp'd into dogfooding `.devcontainer/` (Dockerfile.base + Dockerfile ; no PHP dogfood). Grep verification : 5/5 gates pass. |
-| Part 1 / S3b — gitignore-architecture-refactor | 📋 parallel | Split gitignore : ship `.devcontainer/.gitignore` for internal rules, slim `update_gitignore()` to root-scope only ; relocate `LESSONS.md` into `.devcontainer/` with root symlink (same pattern as `CLAUDE.md`) ; whitelist `.vscode/settings.json` for the `skip-worktree` trick. Independent of S3 — can run in parallel. |
+| Part 1 / S3b — gitignore-architecture-refactor | ✅ delivered | Split gitignore : `templates/v2/.gitignore` rewritten to `.devcontainer/`-scope only (shipped via `copy_verbatim` to `<target>/.devcontainer/.gitignore`) + new `templates/v2/.gitignore-root` for root-scope (shipped to `<target>/.devcontainer/.gitignore-root`, appended to `<target>/.gitignore` by `update_gitignore()`). Relocated `LESSONS.md` into `.devcontainer/` with root symlink (mode 120000, same pattern as `CLAUDE.md`). Whitelisted `.vscode/settings.json` + `extensions.json` so `post-start.sh`'s `skip-worktree` trick has a tracked file. Dogfood mirror applied. |
 | Part 1 / S3c — firewall-write-protection (security) | 📋 next | Close in-container tampering : Claude can currently modify any `.devcontainer/firewall/*` via the writable workspace mount ; modifications activate at next user-initiated restart. Recommend Option B (bake-only, no bind mount → edit requires rebuild) over Option A (`:ro` overlay shadowing). Drops `sudoers.d/node-firewall` init-firewall.sh entry. Spec includes migration recipe for v2-beta deployments. Blocks v2.0.0 release if shipped insecurely. |
 | Part 1 / S4 — fresh-install-test | 📋 | Run installer against a sandbox project, full Reopen-in-Container cycle, validate lifecycle + firewall + sync-creds + sync-skills runtime, gitignore split + LESSONS symlink behave correctly, write-protection invariants hold (P1-S3c) |
 | Part 1 / S5 — bump-changelog | 📋 | Write `CHANGELOG.md` v2.0.0 entry, document breaking drops, refresh root `README.md` for v2 flow, tag `v2.0.0` locally |
@@ -63,27 +62,22 @@ Spec : [plans/devcontainer-tools-v2-migration/sessions/part-1-session-3c-firewal
 Independant de S3b et S4 — peut partir en parallèle. **Bloque v2.0.0
 release si pas livré** (vulnérabilité documentée).
 
-### Session 3b — gitignore-architecture-refactor (~45 min — 1 h)
+### Session 3b — gitignore-architecture-refactor — ✅ DELIVERED (2026-05-22)
 
-Trois problèmes surfacés pendant fresh-install validation : (1)
-`update_gitignore()` incomplet (~9 entrées manquantes), (2) `.vscode/`
-full-ignore en conflit avec le `skip-worktree` de `post-start.sh`
-(opération inopérante sur fichier non tracké), (3) `LESSONS.md`/
-`LESSONS.local.md` au root, seule exception dans un écosystème AI sinon
-contenu dans `.devcontainer/`.
+Done : `templates/v2/.gitignore` rewritten to `.devcontainer/`-scope only
+(paths relative to `.devcontainer/`) and shipped via `copy_verbatim` to
+`<target>/.devcontainer/.gitignore`. New `templates/v2/.gitignore-root`
+carries root-scope rules, shipped as `<target>/.devcontainer/.gitignore-root`
+(visible source-of-truth) and appended by `update_gitignore()` to
+`<target>/.gitignore` (sentinel-based idempotence). `LESSONS.md` /
+`LESSONS.local.md` relocated into `.devcontainer/` with root symlink
+(`git ls-files -s LESSONS.md` → mode 120000 verified). `.vscode/settings.json`
++ `extensions.json` whitelisted so `post-start.sh`'s `skip-worktree`
+trick has tracked files. Dogfood mirror applied. CLAUDE.md § 8 amended
+(template + dogfood).
 
-Le fix : ship un `.devcontainer/.gitignore` shipped depuis le template
-(scoped aux entrées internes), réduire `update_gitignore()` aux entrées
-root-only, relocate LESSONS dans `.devcontainer/` avec symlink root
-(même pattern que `CLAUDE.md` — `git ls-files -s` montre déjà mode 120000
-sur `CLAUDE.md`, le symlink commit OK), whitelist `.vscode/settings.json`
-+ `.vscode/extensions.json` au root gitignore.
-
-Spec : [plans/devcontainer-tools-v2-migration/sessions/part-1-session-3b-gitignore-architecture-refactor.md](plans/devcontainer-tools-v2-migration/sessions/part-1-session-3b-gitignore-architecture-refactor.md).
-
-Touches ~5 files (install.sh + 2 nouveaux fichiers shipped dans
-templates/v2/ + CLAUDE.md amendement + optionnel mirror dogfood).
-**Indépendante de session 3** — peut partir en parallèle.
+See [LOG.md § P1-S3b](plans/devcontainer-tools-v2-migration/LOG.md) for
+the full file-touched list, decisions, gotchas, and test output.
 
 ### Session 4 — fresh-install-test (~2-3 h)
 

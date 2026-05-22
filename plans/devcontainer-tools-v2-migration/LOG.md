@@ -388,3 +388,153 @@ fresh-install validation) : rebuild base, build sandbox with different
 `domains.txt`, verify base image ID unchanged.
 
 **Commit** : not committed yet (proposal pending user confirmation).
+
+---
+
+## P1-S3b — gitignore-architecture-refactor
+
+**Date** : 2026-05-22
+**Files touched** :
+- `templates/v2/.gitignore` (rewrite — `.devcontainer/`-scope only, paths relative to `.devcontainer/`)
+- `templates/v2/.gitignore-root` (**NEW** — root-scope fragment ; appended to `<target>/.gitignore` by `update_gitignore()`)
+- `templates/v2/LESSONS.md` (**NEW** — baseline `- _No lessons yet._`)
+- `install.sh` : `install_files()` adds 2 `copy_verbatim` (`.gitignore` + `.gitignore-root`) + conditional LESSONS cp ; `update_gitignore()` retargeted from `$TEMPLATE_DIR/.gitignore` → `$DEST/.gitignore-root` ; new `link_lessons_root()` function ; `main()` wires the new symlink call after `write_v2_marker`
+- `templates/v2/claude/CLAUDE-dev.md` (§ 8 amendment — LESSONS paths now `.devcontainer/LESSONS.md` / `.devcontainer/LESSONS.local.md`)
+- `.devcontainer/claude/CLAUDE-dev.md` (mirror via `cp`)
+- `.devcontainer/.gitignore` (**NEW** dogfood — `cp templates/v2/.gitignore`)
+- `.devcontainer/.gitignore-root` (**NEW** dogfood — `cp templates/v2/.gitignore-root`)
+- `.devcontainer/LESSONS.md` (**NEW** dogfood — `cp templates/v2/LESSONS.md`)
+- `LESSONS.md` (**NEW** symlink at workspace root → `.devcontainer/LESSONS.md`)
+- `/workspace/.gitignore` (rewrite — root-scope entries + `**/` broadenings retained from `0544ead` for `templates/v2/` subtree)
+- `plans/devcontainer-tools-v2-migration/STATUS.md` (S3b flip 📋 → ✅, counter 3/7 → 4/7, next focus → S3c)
+- `plans/devcontainer-tools-v2-migration/LOG.md` (this entry)
+- `ROADMAP.md` (S3b row flip + counters)
+
+**What** : split the single shipped gitignore into two scope-isolated
+files. `templates/v2/.gitignore` (no rename) now contains only
+`.devcontainer/`-scoped rules (paths relative to `.devcontainer/`),
+shipped via `copy_verbatim` to `<target>/.devcontainer/.gitignore` —
+same overwrite-on-install pattern as every other template file. New
+`templates/v2/.gitignore-root` carries the root-scope rules ; shipped
+as `<target>/.devcontainer/.gitignore-root` (visible source-of-truth)
+then **appended** by `update_gitignore()` to the project's root
+`.gitignore` with sentinel-based idempotence. Relocates `LESSONS.md` /
+`LESSONS.local.md` into `.devcontainer/` with a root symlink — same
+pattern as `CLAUDE.md`, mode 120000 confirmed via `git ls-files -s`.
+
+**Why** : three problems surfaced during fresh-install validation
+(P1-S2 → P1-S4 prep). (1) The shipped `.gitignore` mixed root-scope
+(`.claude/`, `.vscode/`, `.DS_Store`) and `.devcontainer/`-prefixed
+entries (`.devcontainer/.env`, `.devcontainer/logs/`, etc.) all
+appended to the project's root `.gitignore` — asymmetric with the
+rest of the devcontainer ecosystem (claude/, knowledge/, skills/,
+claude-bridge/ all live inside `.devcontainer/`). (2) The root
+gitignore had `.vscode/` as a full block-ignore, breaking
+[post-start.sh:30](../../templates/v2/post-start.sh#L30)'s
+`git update-index --skip-worktree .vscode/settings.json` (operation
+inopérante sur fichier non tracké) — the bind-mount needs a tracked
+file. (3) `LESSONS.md` at the repo root was the lone exception to
+the "`.devcontainer/`-scoped AI ecosystem" convention.
+
+**Decisions** :
+- *No rename of `templates/v2/.gitignore`* — content rewrite only.
+  Keeps the existing file as the canonical `.devcontainer/`-scope
+  artefact (which it now logically is, since it's what's copied
+  there). Avoids churning the install.sh source path *and* the file
+  identity in one change.
+- *Two files in `.devcontainer/` after install* (`.gitignore` +
+  `.gitignore-root`) — the root-scope fragment lives **inside**
+  `.devcontainer/` as a visible source-of-truth alongside its
+  `.devcontainer/`-scope sibling. Re-runs of `install.sh` overwrite
+  both (classic `copy_verbatim` pattern). The fragment is then
+  appended into `<target>/.gitignore` from its post-copy location
+  (`$DEST/.gitignore-root`), keeping the dependency on `install_files`
+  having run first (already the order in `main()`).
+- *`.devcontainer/.gitignore` overwrite, not append* — same pattern
+  as every other `.devcontainer/` file. Paths are relative to
+  `.devcontainer/`, so overwrite is safe (no leak risk, no merging
+  needed). User customisations to `.devcontainer/.gitignore` are not
+  preserved on re-install — flagged in CHANGELOG (S5).
+- *Root `<target>/.gitignore` still uses append-with-sentinel* —
+  preserves any pre-existing project `.gitignore` content, idempotent
+  re-run, sentinel = `# DevContainer (v2) — root-scope` (first line of
+  the fragment).
+- *`.vscode/*` + whitelist `settings.json` + `extensions.json`* —
+  fine-grained replacement for the previous `.vscode/` block-ignore.
+  Whitelisted files become trackable, unblocking the `skip-worktree`
+  trick. Other `.vscode/` files (keybindings.json, launch.json, etc.)
+  remain ignored.
+- *`LESSONS.md` symlinked, `LESSONS.local.md` plain gitignored* —
+  matches the `CLAUDE.md` symlink convention. Symlink commits as
+  mode 120000 (verified : `git ls-files -s LESSONS.md` →
+  `120000 9afcadc...`). On re-install, `[ -f "$DEST/LESSONS.md" ] || cp`
+  preserves accumulated lessons.
+- *Dogfood mirror full-parity* — `/workspace/.devcontainer/` gets the
+  three new files via `cp` (no install.sh re-run on /workspace). Root
+  `/workspace/.gitignore` becomes byte-identical to
+  `templates/v2/.gitignore-root` (the canonical root-scope fragment).
+- *Discovered serendipitous dual-purpose of `templates/v2/.gitignore`* :
+  since its paths (`firewall/domains.local.txt`, `skills/**/*.local.skill.md`,
+  etc.) are also valid paths under `templates/v2/`, the file
+  effectively gitignores its own subtree too. The `**/` broadenings
+  previously in `/workspace/.gitignore` (from `0544ead`) become
+  redundant and are dropped — `templates/v2/.gitignore` itself
+  catches `templates/v2/firewall/domains.local.txt` &c.
+- *Pattern cleanup pass* — three pre-existing pattern issues fixed
+  while touching these files (in scope because we're rewriting the
+  gitignore content anyway, root-cause not band-aid) :
+  - `tests/diagnose.log` + `tests/diag-a2-*.log` → consolidated to
+    `firewall/tests/*.log`. Two reasons : (a) the actual log dir is
+    `.devcontainer/firewall/tests/`, not `.devcontainer/tests/` —
+    the old patterns matched the wrong path. (b) the glob is broader
+    and future-proof against new test log names.
+  - `firewall-blocks.*.log` moved from root-scope to
+    `.devcontainer/`-scope. Firewall internals belong inside
+    `.devcontainer/`. Note : no script currently writes this file
+    (the `firewall-blocks` binary is extensionless and reads
+    `/var/log/mitmproxy-blocks.log`). Pattern kept defensively as
+    likely legacy from v1.x.
+  - Removed redundant `**/` broadenings from `/workspace/.gitignore`
+    (see point above).
+
+**Gotchas** :
+- *Smoke install heredoc input had one too many empty lines* — the
+  session spec's example wedged "n" into the "Proceed ?" prompt,
+  aborting the install. Correct shape : `testproj\nTest Proj\n\nn\ny\n`
+  (5 lines : ID, name, type-default, creds=n, proceed=y). Flagged for
+  S5 doc cleanup.
+- *Re-install (Reinstall option 1) re-prompts for ID/name/type/creds*
+  even though those are stored in `.configured-setup`. `detect_existing_devcontainer`
+  only branches on the marker, doesn't restore previously-chosen
+  values. Not in scope for S3b but worth flagging.
+- *Symlink portability on Windows* — `git config core.symlinks true`
+  required on Windows for the LESSONS.md symlink to materialise as a
+  symlink rather than a text file containing the target path. Same
+  caveat as `CLAUDE.md` symlink, already documented elsewhere.
+
+**Tests** (all 10 install gates + 6 check-ignore + symlink-mode) :
+```
+✓ .devcontainer/.gitignore shipped
+✓ .devcontainer/.gitignore-root shipped
+✓ .devcontainer/LESSONS.md shipped
+✓ root LESSONS.md is a symlink
+✓ symlink target correct
+✓ root .gitignore has .vscode/*
+✓ root .gitignore whitelists settings.json
+✓ root .gitignore no longer has .devcontainer/* prefix entries
+✓ .devcontainer/.gitignore has logs/ (unprefixed)
+✓ .gitignore-root in .devcontainer/ byte-identical to template
+✓ Re-run reports ".gitignore already up to date" (sentinel match, no growth)
+
+git check-ignore -v cascade (dogfood) :
+  .devcontainer/logs/foo.log         → .devcontainer/.gitignore:6:logs/
+  .devcontainer/LESSONS.local.md     → .devcontainer/.gitignore:33:LESSONS.local.md
+  .claude/foo                        → .gitignore:4:.claude/
+  .vscode/keybindings.json           → .gitignore:7:.vscode/*
+  .vscode/settings.json              → .gitignore:8:!.vscode/settings.json (negation)
+  templates/v2/firewall/domains.local.txt → templates/v2/.gitignore:19:firewall/domains.local.txt
+
+git ls-files -s LESSONS.md          → 120000 9afcadc... LESSONS.md (mode confirmed)
+```
+
+**Commit** : not committed yet (proposal pending user confirmation).
