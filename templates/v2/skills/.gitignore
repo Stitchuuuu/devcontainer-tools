@@ -1,0 +1,13 @@
+# templates/v2/skills/ — local-only gitignore overlay.
+#
+# The parent templates/v2/.gitignore ignores `skills/**/*.local{,.skill.md}` —
+# correct behaviour when that file is copied verbatim as `.devcontainer/.gitignore`
+# in target projects (their runtime *.local skills must stay gitignored).
+#
+# In THIS dev-tools repo, templates/v2/skills/*.local/ is the source-of-truth
+# for personal skills (hours.local, master-review.local, ...). Re-include them
+# here. This file is NOT shipped: install.sh only copies named skill subdirs
+# (`copy_dir "skills/$s"`) and `templates/v2/.gitignore`, never this file.
+
+!*.local.skill.md
+!*.local/
