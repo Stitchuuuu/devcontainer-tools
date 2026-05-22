@@ -1,0 +1,120 @@
+# npm-docs-mapping.txt — curated docs sites per popular dep
+# Format: <dep_prefix><TAB><host>[<TAB><note>]
+# Prefix match : "typescript@5" or "typescript-foo" both match "typescript".
+# First match wins. @scope/ entries match any package in the scope.
+
+typescript	www.typescriptlang.org
+@types/	www.typescriptlang.org	type definitions
+ts-node	typestrong.org
+tsx	tsx.is
+
+react	react.dev
+react-dom	react.dev
+@reduxjs/	redux.js.org
+redux	redux.js.org
+react-router	reactrouter.com
+
+vue	vuejs.org
+@vue/	vuejs.org
+@vitejs/	vitejs.dev
+vite	vitejs.dev
+
+next	nextjs.org
+nuxt	nuxt.com
+@nuxt/	nuxt.com
+svelte	svelte.dev
+@sveltejs/	svelte.dev
+
+nest	docs.nestjs.com
+@nestjs/	docs.nestjs.com
+express	expressjs.com
+fastify	fastify.dev
+@fastify/	fastify.dev
+koa	koajs.com
+@koa/	koajs.com
+hono	hono.dev
+
+eslint	eslint.org
+@eslint/	eslint.org
+@typescript-eslint/	typescript-eslint.io
+prettier	prettier.io
+@prettier/	prettier.io
+biome	biomejs.dev
+@biomejs/	biomejs.dev
+stylelint	stylelint.io
+
+jest	jestjs.io
+@jest/	jestjs.io
+vitest	vitest.dev
+@vitest/	vitest.dev
+mocha	mochajs.org
+chai	chaijs.com
+sinon	sinonjs.org
+playwright	playwright.dev
+@playwright/	playwright.dev
+puppeteer	pptr.dev
+cypress	docs.cypress.io
+testing-library	testing-library.com
+@testing-library/	testing-library.com
+
+webpack	webpack.js.org
+@webpack/	webpack.js.org
+rollup	rollupjs.org
+@rollup/	rollupjs.org
+esbuild	esbuild.github.io
+@esbuild/	esbuild.github.io
+parcel	parceljs.org
+@parcel/	parceljs.org
+turbo	turbo.build
+@turbo/	turbo.build
+swc	swc.rs
+@swc/	swc.rs
+
+electron	electronjs.org
+electron-builder	www.electron.build
+
+mongoose	mongoosejs.com
+mongodb	www.mongodb.com
+@mongodb/	www.mongodb.com
+typeorm	typeorm.io
+prisma	www.prisma.io
+@prisma/	www.prisma.io
+sequelize	sequelize.org
+drizzle-orm	orm.drizzle.team
+knex	knexjs.org
+pg	node-postgres.com
+redis	redis.io
+
+axios	axios-http.com
+undici	undici.nodejs.org
+
+graphql	graphql.org
+@graphql/	graphql.org
+apollo-server	www.apollographql.com
+@apollo/	www.apollographql.com
+
+zod	zod.dev
+joi	joi.dev
+ajv	ajv.js.org
+
+lodash	lodash.com
+lodash-es	lodash.com
+underscore	underscorejs.org
+ramda	ramdajs.com
+date-fns	date-fns.org
+dayjs	day.js.org
+moment	momentjs.com
+
+socket.io	socket.io
+@socket.io/	socket.io
+
+cheerio	cheerio.js.org
+@cheerio/	cheerio.js.org
+puppeteer-core	pptr.dev
+
+terser	terser.org
+babel	babeljs.io
+@babel/	babeljs.io
+
+
+yargs	yargs.js.org

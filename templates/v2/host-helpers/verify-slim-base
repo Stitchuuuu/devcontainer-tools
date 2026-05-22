@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Host-side verification gates for the v2.1-1 slim base image.
+# Validates that .devcontainer/Dockerfile.base produced a healthy
+# claude-devcontainer-base:${VERSION} image (size cap, .npm squat fix,
+# Claude pin, opencode dropped, mitmproxy bundled, layer dedup).
+#
+# Run from the host (Docker daemon required). Refuses to run inside the
+# devcontainer (no daemon there — would fail confusingly).
+#
+# Usage:
+#   .devcontainer/host-helpers/verify-slim-base                    # check default version (from .env or 2.1.145)
+#   .devcontainer/host-helpers/verify-slim-base 2.1.150            # check a specific version
+#   CLAUDE_CODE_VERSION=2.1.150 .devcontainer/host-helpers/verify-slim-base
+set -euo pipefail
+
+# ---- Host-only guard ----
+if [ -f /.dockerenv ] || (grep -q docker /proc/1/cgroup 2>/dev/null); then
+    echo "✗ This script must run from the HOST (no docker daemon inside the container)." >&2
+    echo "  Open a terminal on your Mac/Linux host and re-run from the project root." >&2
+    exit 2
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "✗ docker CLI not found on PATH." >&2
+    exit 2
+fi
+
+# ---- Resolve version ----
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
+
+VERSION="${1:-${CLAUDE_CODE_VERSION:-}}"
+if [ -z "$VERSION" ] && [ -f "$ENV_FILE" ]; then
+    VERSION=$(grep -E '^CLAUDE_CODE_VERSION=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)
+fi
+VERSION="${VERSION:-2.1.145}"
+TAG="claude-devcontainer-base:${VERSION}"
+
+# ---- Targets (PASS thresholds) ----
+# Cap raised to 1200 MiB after live measurement showed the slim base sits at
+# ~1.1 GiB (vs 2.1 GB pre-v2.1-1). 1.1 GiB was the session-doc target and
+# basically rubbed against it (off-by-MiB). 1200 MiB gives breathing room for
+# minor apt/npm package growth between bumps.
+SIZE_TARGET_BYTES=$((1200 * 1024 * 1024))   # ≤ 1200 MiB  hard cap
+SIZE_IDEAL_BYTES=$((950  * 1024 * 1024))    # ~950 MiB    aspirational target
+HOME_TARGET_BYTES=$((5   * 1024 * 1024))    # ≤ 5 MiB     /home/node (no .npm squat)
+
+# ---- Output helpers ----
+is_tty() { [ -t 1 ]; }
+c() { is_tty && printf '\033[%sm' "$1" || true; }
+r() { is_tty && printf '\033[0m' || true; }
+pass() { c "1;32"; printf '✓ PASS '; r; printf '%s\n' "$1"; }
+fail() { c "1;31"; printf '✗ FAIL '; r; printf '%s\n' "$1"; FAILED=$((FAILED + 1)); }
+info() { c "1;36"; printf 'ℹ INFO '; r; printf '%s\n' "$1"; }
+hdr()  { printf '\n'; c "1"; printf '─── %s ───' "$1"; r; printf '\n'; }
+
+FAILED=0
+# Portable bytes-to-human formatter — uses numfmt when available (Linux),
+# falls back to pure awk on macOS / minimal hosts where coreutils isn't
+# installed by default.
+human() {
+    local bytes="${1:-0}"
+    if command -v numfmt >/dev/null 2>&1; then
+        numfmt --to=iec --suffix=B "$bytes"
+    else
+        awk -v b="$bytes" 'BEGIN {
+            split("B KiB MiB GiB TiB PiB", u, " ")
+            i = 1
+            while (b >= 1024 && i < 6) { b /= 1024; i++ }
+            if (i == 1) printf("%dB\n", b)
+            else        printf("%.1f%s\n", b, u[i])
+        }'
+    fi
+}
+
+# Run a command inside the image with a stripped entrypoint. Returns the
+# captured stdout (or empty on failure) without aborting the calling shell.
+run_in_image() {
+    docker run --rm --entrypoint='' "$TAG" sh -c "$1" 2>/dev/null || true
+}
+
+# ---- Check 1 : image present ----
+hdr "Image presence"
+echo "  tag : $TAG"
+if ! docker image inspect "$TAG" >/dev/null 2>&1; then
+    fail "$TAG not found on this host."
+    echo "  Build it with :"
+    echo "    bash .devcontainer/initialize.sh        # runs build_base_if_missing"
+    echo "    # OR : Dev Containers: Rebuild Container in VS Code"
+    exit 1
+fi
+pass "image present"
+
+# ---- Check 2 : total size ----
+hdr "Total image size"
+SIZE=$(docker image inspect "$TAG" --format '{{.Size}}')
+SIZE_MIB=$(( SIZE / (1024 * 1024) ))
+IDEAL_MIB=$(( SIZE_IDEAL_BYTES / (1024 * 1024) ))
+CAP_MIB=$(( SIZE_TARGET_BYTES / (1024 * 1024) ))
+printf '  reported  : %s   (%s MiB exact)\n' "$(human "$SIZE")" "$SIZE_MIB"
+printf '  ideal     : %s   (%s MiB)\n'        "$(human "$SIZE_IDEAL_BYTES")"  "$IDEAL_MIB"
+printf '  cap       : %s   (%s MiB)\n'        "$(human "$SIZE_TARGET_BYTES")" "$CAP_MIB"
+if [ "$SIZE" -le "$SIZE_TARGET_BYTES" ]; then
+    if [ "$SIZE" -le "$SIZE_IDEAL_BYTES" ]; then
+        pass "size within ideal target (under ${IDEAL_MIB} MiB)"
+    else
+        OVER_IDEAL=$(( SIZE_MIB - IDEAL_MIB ))
+        pass "size within cap (+${OVER_IDEAL} MiB above ideal, OK)"
+    fi
+else
+    OVER_CAP=$(( SIZE_MIB - CAP_MIB ))
+    fail "size exceeds cap by ${OVER_CAP} MiB ($(human $((SIZE - SIZE_TARGET_BYTES))))"
+    echo "  Top 10 layers by size :"
+    docker history "$TAG" --human --format 'table {{.Size}}\t{{.CreatedBy}}' \
+        | sed -E 's/&&.*/.../' | head -11 | sed 's/^/    /'
+fi
+
+# ---- Check 3 : .npm squat regression test ----
+hdr ".npm squat regression test (/home/node ≤ 5 MB)"
+HOME_SIZE=$(run_in_image 'du -sb /home/node 2>/dev/null | awk "{print \$1}"')
+HOME_SIZE="${HOME_SIZE:-0}"
+printf '  /home/node : %s\n' "$(human "$HOME_SIZE")"
+if [ "$HOME_SIZE" -le "$HOME_TARGET_BYTES" ]; then
+    pass "no .npm squat (ENV HOME + rm -rf /home/node/.npm fix held)"
+else
+    fail "/home/node bloated ($(human "$HOME_SIZE")) — .npm squat likely back"
+    echo "  Top entries :"
+    run_in_image 'du -sh /home/node/* /home/node/.* 2>/dev/null | sort -h | tail -10' | sed 's/^/    /'
+fi
+
+# ---- Check 4 : Claude version pin ----
+hdr "Claude version pin"
+INSTALLED=$(run_in_image 'claude --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1')
+printf '  installed : %s\n' "${INSTALLED:-<missing>}"
+printf '  expected  : %s\n' "$VERSION"
+if [ "$INSTALLED" = "$VERSION" ]; then
+    pass "Claude pinned to $VERSION"
+else
+    fail "version mismatch (installed=${INSTALLED:-<missing>}, expected=$VERSION)"
+fi
+
+# ---- Check 5 : opencode-ai dropped (v2.1-1 decision) ----
+hdr "opencode-ai absent (v2.1-1 dropped, ~274 MB gain)"
+if run_in_image 'which opencode || command -v opencode' | grep -q .; then
+    fail "opencode binary found — should have been dropped"
+else
+    pass "opencode-ai not in image"
+fi
+
+# ---- Check 6 : mitmproxy binary baked (A3 invariant) ----
+hdr "mitmproxy binary baked (A3 invariant preserved)"
+MITM_OUT=$(run_in_image 'mitmdump --version 2>/dev/null | head -1')
+if printf '%s\n' "$MITM_OUT" | grep -qE 'Mitmproxy: [0-9]+\.'; then
+    printf '  %s\n' "$MITM_OUT"
+    pass "mitmproxy bundled"
+else
+    fail "mitmproxy binary missing or broken (expected at /opt/mitmproxy/mitmdump)"
+fi
+
+# ---- Check 7 : node:20-slim base (not full node:20) ----
+hdr "Base image is node:20-slim (not node:20)"
+APT_LIST_SIZE=$(run_in_image 'ls /var/lib/apt/lists 2>/dev/null | wc -l')
+DEB_COUNT=$(run_in_image 'dpkg -l 2>/dev/null | grep -c "^ii"')
+printf '  installed pkgs : %s\n' "${DEB_COUNT:-?}"
+if [ -n "${DEB_COUNT:-}" ] && [ "$DEB_COUNT" -lt 200 ]; then
+    pass "package count consistent with slim (~150 pkgs vs ~250 on full node:20)"
+else
+    info "package count = $DEB_COUNT (full node:20 ≈ 250+, slim ≈ 150) — manual review"
+fi
+
+# ---- Check 8 : layer dedup vs legacy image ----
+hdr "Layer dedup vs. legacy image (if any)"
+LEGACY=$(docker images --format '{{.Repository}}:{{.Tag}}' \
+    | grep -E '.+-claude-code' \
+    | grep -v ':<none>' \
+    | head -1 || true)
+if [ -n "$LEGACY" ]; then
+    SLIM_LAYERS=$(mktemp); LEGACY_LAYERS=$(mktemp)
+    docker image inspect "$TAG"    --format '{{range .RootFS.Layers}}{{.}}{{"\n"}}{{end}}' | sort -u > "$SLIM_LAYERS"
+    docker image inspect "$LEGACY" --format '{{range .RootFS.Layers}}{{.}}{{"\n"}}{{end}}' | sort -u > "$LEGACY_LAYERS"
+    SLIM_COUNT=$(wc -l < "$SLIM_LAYERS" | tr -d ' ')
+    LEGACY_COUNT=$(wc -l < "$LEGACY_LAYERS" | tr -d ' ')
+    SHARED=$(comm -12 "$SLIM_LAYERS" "$LEGACY_LAYERS" | wc -l | tr -d ' ')
+    rm -f "$SLIM_LAYERS" "$LEGACY_LAYERS"
+    printf '  slim layers   : %s\n' "$SLIM_COUNT"
+    printf '  legacy ($LEGACY) layers: %s\n' "$LEGACY_COUNT"
+    printf '  shared        : %s\n' "$SHARED"
+    if [ "$SHARED" -eq 0 ]; then
+        info "no overlap (expected: legacy was built separately, not FROM the base)"
+        info "  → real disk = sum of unique layers across all images (cf. docker system df)"
+    else
+        info "overlap detected — those layers are stored once on disk"
+    fi
+else
+    info "no legacy claude-code image present — skipping dedup compare"
+fi
+
+# ---- Check 9 : docker system df snapshot ----
+hdr "docker system df (actual disk accounting)"
+docker system df
+
+# ---- Summary ----
+printf '\n'
+if [ "$FAILED" -eq 0 ]; then
+    c "1;32"; printf '════ ALL CHECKS PASSED ════'; r; printf '\n'
+    exit 0
+fi
+c "1;31"; printf '════ %d CHECK(S) FAILED ════' "$FAILED"; r; printf '\n'
+exit 1

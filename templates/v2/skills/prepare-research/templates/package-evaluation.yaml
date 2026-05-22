@@ -1,0 +1,75 @@
+template: package-evaluation
+description: Evaluate an npm/composer/pip/cargo/go package before adoption — GET on registry + repo + docs
+
+prompts_for_user:
+  - var: package_name
+    label: "Package name (ex: zod, fastify, requests)"
+  - var: registry
+    label: "Registry (npm | composer | pip | cargo | go)"
+  - var: eval_dir
+    label: "Eval dir inside /workspace (default: scratch/)"
+    default: "scratch/"
+
+# domains_local_additions is computed by the skill from the registry choice:
+#   npm      → registry.npmjs.org, github.com/<owner>/<repo>, <homepage>
+#   composer → packagist.org, repo.packagist.org, github.com/<owner>/<repo>
+#   pip      → pypi.org, files.pythonhosted.org, github.com/<owner>/<repo>
+#   cargo    → crates.io, static.crates.io, github.com/<owner>/<repo>
+#   go       → proxy.golang.org, sum.golang.org, github.com/<owner>/<repo>
+# The skill prompts the user for the exact repo URL and docs domain before
+# emitting domains_local_additions.
+domains_local_additions: []
+
+policy_local_d_files: []
+
+files_to_copy:
+  - "package.json"
+
+instructions_md: |
+  # Evaluate package: {{package_name}} ({{registry}})
+
+  ## Goals
+  - Install {{package_name}} into /workspace/{{eval_dir}}.
+  - Read the source / examples / tests.
+  - Evaluate fit for the project across these axes :
+      - Security (recent CVEs, maintainer reputation, dependency tree)
+      - Maintenance (commit cadence, open issues, last release)
+      - API quality (ergonomics, TypeScript types if applicable, docs)
+      - Bundle size / runtime cost (if frontend)
+  - Output a verdict in /workspace/result/OUTPUT.md with a clear recommend /
+    reject decision and a one-paragraph rationale.
+
+  ## Constraints
+  - Install with `--ignore-scripts` (Phase 3 default — no post-install code).
+  - No production data, no live API calls — eval only.
+  - This research container has an isolated claude-config volume : project
+    skills are NOT available here.
+
+  ## Success criteria
+  - /workspace/result/OUTPUT.md exists with a clear verdict and rationale.
+
+  ## Back-copy
+  At the end of the session, propose this two-step procedure for the user,
+  to run on the host from the main project root:
+
+      # 1. Archive result into the bundle source (snapshot, gitignored) :
+      cp -r ../{{bundle_id}}/result/. ./.devcontainer/research-bundles/{{bundle_id}}/result/
+
+      # 2. Promote the verdict, e.g. :
+      #    cp ../{{bundle_id}}/result/OUTPUT.md ./docs/research/{{task_slug}}-verdict.md
+
+secrets_template:
+  - "# No secrets needed for package evaluation."
+
+initial_prompt: |
+  Tu démarres une research session dans le bundle {{bundle_id}}.
+
+  1. Lis /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
+  2. Si /workspace/result/PROGRESS.md existe, lis-le et reprends depuis. Sinon, crée-le.
+  3. Installe {{package_name}} dans /workspace/{{eval_dir}} avec --ignore-scripts ({{registry}}).
+  4. Évalue selon les axes de INSTRUCTIONS.md : sécu (CVE, deps), maintenance (cadence, last release), API quality, bundle size si applicable.
+  5. Verdict + rationale dans /workspace/result/OUTPUT.md.
+  6. Update /workspace/result/PROGRESS.md à chaque étape.
+  7. Quand le verdict est prêt, propose la commande de back-copy depuis INSTRUCTIONS.md.
+
+  Package : {{package_name}} ({{registry}})

@@ -1,0 +1,64 @@
+{
+  "name": "{{PROJECT_DISPLAY_NAME}} — Claude Code Sandbox",
+  "dockerComposeFile": "docker-compose.yml",
+  "overrideCommand": false,
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // anthropic.claude-code is pre-baked in Dockerfile.base via VSIX
+        // download (v2.1-2). The pin here is the runtime fallback : if the
+        // build-time VSIX download failed (Marketplace down / version retired),
+        // VS Code installs it at container start through the firewall-allowed
+        // Marketplace path. Keep the version in sync with CLAUDE_CODE_VERSION
+        // in .devcontainer/.env — bumping one without the other will trigger
+        // a redownload of ~250 MB per container start.
+        "anthropic.claude-code@2.1.145",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "eamodio.gitlens"
+      ],
+      "settings": {
+        "extensions.autoUpdate": false,
+        "extensions.autoCheckUpdates": false,
+        "editor.formatOnSave": false,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "bash",
+            "icon": "terminal-bash"
+          },
+          "zsh": {
+            "path": "zsh"
+          }
+        },
+        "window.title": "{{PROJECT_DISPLAY_NAME}} [${localWorkspaceFolderBasename}] - Claude Code Sandbox - ${activeEditorShort}"
+      }
+    }
+  },
+  "remoteUser": "node",
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096 --use-openssl-ca",
+    // CLAUDE_CONFIG_DIR is intentionally NOT pinned here — `.env` (via
+    // docker-compose env_file) is the single source of truth so
+    // host-helpers/claude-switch can toggle local↔cloud by editing one file.
+    // containerEnv applies AFTER env_file in the compose chain and would
+    // override .env (verified live : with the hardcoded line, claude-switch
+    // local had no effect — PID 1's env stayed at .claude). When commented
+    // out in .env, the var is unset and Claude defaults to ~/.claude
+    // (the cloud path). When uncommented, it points at ~/.claude-local for
+    // mode isolation. See knowledge/ollama-local.md § Audit & observability.
+    "GH_CONFIG_DIR": "/home/node/.claude/gh",
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+  },
+  "initializeCommand": "bash .devcontainer/initialize.sh",
+  "onCreateCommand": "bash .devcontainer/on-create.sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "bash .devcontainer/post-start.sh",
+  "waitFor": "postStartCommand"
+}

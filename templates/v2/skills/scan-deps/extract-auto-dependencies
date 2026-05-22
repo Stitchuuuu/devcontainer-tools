@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# extract-auto-dependencies — deterministic project dependency extractor.
+#
+# Walks the workspace, identifies the ecosystems in use, and writes one
+# .devcontainer/firewall/domains.d/<eco>.txt per detected ecosystem.
+# These files are picked up additively by compile-policy.py at firewall
+# init, on top of the Claude-only baseline in firewall/domains.txt.
+#
+# F2 scope : npm is implemented. composer / python / cargo / go fall back
+# to /scan-deps (Claude skill with AI review) until F3+.
+#
+# Usage :
+#   bash .devcontainer/skills/scan-deps/extract-auto-dependencies \
+#        [--ecosystem npm|all] [--dry-run] [--root /workspace]
+#
+# Output : domains.d/<eco>.txt files (committed — firewall permissions),
+# plus a stdout summary. Idempotent. Offline only (no network calls).
+#
+# After running this script, rebuild the container OR re-run init-firewall
+# to pick up the new allowlist :
+#   sudo /usr/local/bin/init-firewall.sh
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXTRACTORS_DIR="$SCRIPT_DIR/extractors"
+
+ECOSYSTEM="all"
+SEARCH_ROOT="/workspace"
+DRY_RUN=0
+
+usage() {
+  cat <<EOF
+Usage : $(basename "$0") [OPTIONS]
+
+Options :
+  --ecosystem <eco>   Limit to one ecosystem (npm). Default: all.
+  --root <path>       Search root (default: /workspace).
+  --dry-run           Show what would be done, don't write files.
+  -h, --help          This help.
+
+Currently supported ecosystems (F2) :
+  npm — package.json + package-lock.json + node_modules walk
+        → writes firewall/domains.d/npm.txt + ecosystem-docs.txt
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ecosystem) ECOSYSTEM="$2"; shift 2 ;;
+    --root)      SEARCH_ROOT="$2"; shift 2 ;;
+    --dry-run)   DRY_RUN=1; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [ ! -d "$SEARCH_ROOT" ]; then
+  echo "extract-auto-dependencies: search root does not exist: $SEARCH_ROOT" >&2
+  exit 2
+fi
+
+run_npm=0
+case "$ECOSYSTEM" in
+  npm|all) run_npm=1 ;;
+  composer|python|cargo|go)
+    echo "extract-auto-dependencies: '$ECOSYSTEM' not yet implemented in F2." >&2
+    echo "Use /scan-deps (Claude skill) for $ECOSYSTEM ecosystems for now." >&2
+    exit 0
+    ;;
+  *)
+    echo "extract-auto-dependencies: unknown ecosystem '$ECOSYSTEM'." >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [ $DRY_RUN -eq 1 ]; then
+  echo "DRY-RUN — would invoke extractors :"
+  [ $run_npm -eq 1 ] && echo "  npm: $EXTRACTORS_DIR/npm.sh $SEARCH_ROOT"
+  exit 0
+fi
+
+if [ $run_npm -eq 1 ]; then
+  bash "$EXTRACTORS_DIR/npm.sh" "$SEARCH_ROOT"
+fi
+
+echo
+echo "Done. Reload the firewall to pick up the new allowlist :"
+echo "  sudo /usr/local/bin/init-firewall.sh"
+echo "Or rebuild the container from VS Code."

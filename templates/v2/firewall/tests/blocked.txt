@@ -1,0 +1,25 @@
+# Domaines à vérifier comme BLOQUÉS au boot.
+# Format: un host par ligne (lignes vides et commentaires #-prefixés ignorés).
+# Chaque host est testé en TCP/443 ; doit échouer (sinon ❌ et exit 1).
+#
+# Mécanique: ces hosts ne sont PAS dans domains.conf.d/, donc dnsmasq les
+# résout via Docker DNS (fallback), mais l'IP retournée n'est PAS dans
+# l'ipset allowed-domains → iptables REJECT.
+
+# Référence universelle
+example.com
+
+# Sites web populaires (pour s'assurer qu'on ne fuit pas vers le grand internet)
+example.org
+google.com
+duckduckgo.com
+
+# Pastebins / file sharing (vecteurs classiques d'exfiltration)
+pastebin.com
+gist.runkit.io
+0x0.st
+transfer.sh
+
+# Webhooks / discord (alerte si une lib ou IA envoie des données)
+discord.com
+hooks.slack.com

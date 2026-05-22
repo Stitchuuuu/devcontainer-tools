@@ -1,0 +1,461 @@
+#!/usr/bin/env bash
+# DevContainer Template Installer — v2
+# Drops the v2 baseline (~95 files) into a project's .devcontainer/.
+set -euo pipefail
+
+TEMPLATE_VERSION="2.0.0"
+
+# -----------------------------------------------
+# Colors & messaging
+# -----------------------------------------------
+if [ -t 1 ]; then
+    BOLD=$'\033[1m'; DIM=$'\033[2m'
+    GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; RED=$'\033[0;31m'; CYAN=$'\033[0;36m'
+    RESET=$'\033[0m'
+else
+    BOLD='' DIM='' GREEN='' YELLOW='' RED='' CYAN='' RESET=''
+fi
+
+info()    { echo -e "${CYAN}ℹ${RESET}  $1"; }
+success() { echo -e "${GREEN}✓${RESET}  $1"; }
+warn()    { echo -e "${YELLOW}⚠${RESET}  $1"; }
+error()   { echo -e "${RED}✗${RESET}  $1" >&2; }
+header()  { echo -e "\n${BOLD}=== $1 ===${RESET}\n"; }
+
+# -----------------------------------------------
+# Generic bash helpers
+# -----------------------------------------------
+ask() {
+    local prompt="$1" default="$2" var="$3"
+    if [ -n "$default" ]; then
+        read -r -p "  $prompt [$default]: " _val
+        eval "$var=\"\${_val:-$default}\""
+    else
+        read -r -p "  $prompt: " _val
+        eval "$var=\"\$_val\""
+    fi
+}
+
+slugify() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-//; s/-$//'
+}
+
+titlecase() {
+    echo "$1" | tr '-' ' ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1'
+}
+
+# Escape sed replacement chars (|, &, \)
+sed_escape() {
+    printf '%s' "$1" | sed -e 's/[\/&|\\]/\\&/g'
+}
+
+# Portable in-place sed (BSD vs GNU)
+if sed --version >/dev/null 2>&1; then
+    sedi() { sed -i "$@"; }
+else
+    sedi() { sed -i '' "$@"; }
+fi
+
+# -----------------------------------------------
+# Copy helpers (operate relative to TEMPLATE_DIR and DEST)
+# -----------------------------------------------
+copy_verbatim() {
+    # $1 = relative path under templates/ (and under DEST)
+    local src="$TEMPLATE_DIR/$1" dst="$DEST/$1"
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+}
+
+copy_templated() {
+    # $1 = relative path ; runs sed for the 2 placeholders
+    local src="$TEMPLATE_DIR/$1" dst="$DEST/$1"
+    mkdir -p "$(dirname "$dst")"
+    sed -e "s|{{PROJECT_ID}}|${PROJECT_ID_ESC}|g" \
+        -e "s|{{PROJECT_DISPLAY_NAME}}|${DISPLAY_NAME_ESC}|g" \
+        "$src" > "$dst"
+}
+
+copy_dir() {
+    # $1 = relative dir ; recursive copy preserving structure
+    local src="$TEMPLATE_DIR/$1" dst="$DEST/$1"
+    mkdir -p "$dst"
+    cp -r "$src/." "$dst/"
+}
+
+chmod_exec() {
+    chmod +x "$@" 2>/dev/null || true
+}
+
+# -----------------------------------------------
+# Locate template directory
+# -----------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# templates/ is plural to allow future flavours — currently only v2 ships.
+# Override with TEMPLATE_VARIANT=<name> to switch (when alternatives exist).
+TEMPLATE_VARIANT="${TEMPLATE_VARIANT:-v2}"
+TEMPLATE_DIR="$SCRIPT_DIR/templates/$TEMPLATE_VARIANT"
+if [ ! -d "$TEMPLATE_DIR" ]; then
+    error "Template directory not found: $TEMPLATE_DIR"
+    error "  (TEMPLATE_VARIANT=$TEMPLATE_VARIANT — set the env var to pick a different one)"
+    exit 1
+fi
+
+# -----------------------------------------------
+# Wizard phases
+# -----------------------------------------------
+banner() {
+    cat <<BANNER
+${BOLD}DevContainer Template Installer v${TEMPLATE_VERSION}${RESET}
+${DIM}Drops the v2 baseline (Claude Code + firewall + skills + sidecar)
+into a target project's .devcontainer/.${RESET}
+
+BANNER
+}
+
+resolve_target_dir() {
+    # CLI arg overrides ; falls back to current dir.
+    TARGET_DIR="${1:-$(pwd)}"
+    if [ ! -d "$TARGET_DIR" ]; then
+        error "Target directory does not exist: $TARGET_DIR"
+        exit 1
+    fi
+    TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
+    DEST="$TARGET_DIR/.devcontainer"
+}
+
+_offer_reinstall_or_abort() {
+    warn ".devcontainer/ already exists at $TARGET_DIR"
+    echo "  [1] Reinstall (overwrite files ; preserve .env if present)"
+    echo "  [2] Abort"
+    read -r -p "  Choose [1/2] (default: 2): " _c
+    case "${_c:-2}" in
+        1) info "Proceeding with reinstall — .env will be preserved if present." ;;
+        *) info "Aborted."; exit 0 ;;
+    esac
+}
+
+detect_existing_devcontainer() {
+    [ -d "$DEST" ] || return 0
+
+    if [ -f "$DEST/.configured-setup" ]; then
+        local _v
+        _v="$(grep -E '^VERSION=' "$DEST/.configured-setup" 2>/dev/null \
+              | head -1 | sed -E 's/^VERSION=//; s/"//g' || echo unknown)"
+        case "$_v" in
+            2.*) _offer_reinstall_or_abort ;;
+            1.*|unknown)
+                error "Detected legacy v1 devcontainer (marker VERSION=$_v)"
+                echo
+                echo "  install.sh v2 does NOT auto-migrate from v1.3."
+                echo "  The Part 2 migration prompt is not yet specced — see"
+                echo "    /workspace/plans/devcontainer-tools-v2-migration/ROLLOUT.md"
+                echo "  Workarounds : back up .env, rm -rf .devcontainer, re-run install."
+                exit 1
+                ;;
+        esac
+    else
+        # .devcontainer/ exists but no marker — treat as partial v2
+        _offer_reinstall_or_abort
+    fi
+}
+
+wizard_project_id() {
+    header "Project identifier"
+    local _default _slug_re
+    _default="$(slugify "$(basename "$TARGET_DIR")")"
+    _slug_re='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+    ask "Project slug (used as DC_PROJECT in .env)" "$_default" PROJECT_ID
+    if ! echo "$PROJECT_ID" | grep -qE "$_slug_re"; then
+        error "Invalid slug — lowercase letters, digits, hyphens ; cannot start/end with '-'"
+        exit 1
+    fi
+}
+
+wizard_display_name() {
+    header "Display name"
+    local _default
+    _default="$(titlecase "$PROJECT_ID")"
+    ask "Display name (for VS Code title)" "$_default" PROJECT_DISPLAY_NAME
+}
+
+wizard_project_type() {
+    header "Project type"
+    echo "  [1] Node.js   (default — generic project layer, FROM base)"
+    echo "  [2] PHP       (PHP 8.2 + Composer, FROM base)"
+    echo "  [3] Custom    (base only, edit Dockerfile post-install)"
+    read -r -p "  Choose [1/2/3] (default: 1): " _t
+    case "${_t:-1}" in
+        1) PROJECT_TYPE="node" ;;
+        2) PROJECT_TYPE="php"  ;;
+        3) PROJECT_TYPE="custom" ;;
+        *) error "Invalid choice"; exit 1 ;;
+    esac
+}
+
+wizard_creds_volume() {
+    header "Shared Claude credentials volume"
+    echo "  Sharing the OAuth volume across devcontainers means one login"
+    echo "  per machine instead of per project."
+    echo ""
+    local _found _default _v
+    _found="$(docker volume ls --format '{{.Name}}' 2>/dev/null \
+              | grep -E '^claude-creds-' | sort -u || true)"
+    if [ -n "$_found" ]; then
+        echo "  Existing claude-creds-* volumes on this host :"
+        echo "$_found" | sed 's/^/    /'
+        echo ""
+        _default="$(echo "$_found" | head -1)"
+    else
+        info "No existing claude-creds-* volume found."
+        _default="claude-credentials-shared"
+    fi
+    echo "  Enter a volume name (created if absent), or 'n' for per-project isolation."
+    read -r -p "  Volume [$_default]: " _v
+    _v="${_v:-$_default}"
+    case "$(echo "$_v" | tr 'A-Z' 'a-z')" in
+        n|no|none) CLAUDE_CREDS_VOLUME="" ;;
+        *)         CLAUDE_CREDS_VOLUME="$_v" ;;
+    esac
+}
+
+summary_and_confirm() {
+    header "Summary"
+    echo "  Target          : $TARGET_DIR"
+    echo "  Project ID      : $PROJECT_ID"
+    echo "  Display name    : $PROJECT_DISPLAY_NAME"
+    echo "  Project type    : $PROJECT_TYPE"
+    if [ -n "$CLAUDE_CREDS_VOLUME" ]; then
+        echo "  Creds volume    : $CLAUDE_CREDS_VOLUME (shared)"
+    else
+        echo "  Creds volume    : (per-project — DC_PROJECT-derived default)"
+    fi
+    echo ""
+    read -r -p "  Proceed ? [Y/n]: " _ok
+    case "${_ok:-y}" in
+        n|N|no|No) info "Aborted."; exit 0 ;;
+    esac
+}
+
+# -----------------------------------------------
+# Install phase
+# -----------------------------------------------
+install_files() {
+    header "Installing v$TEMPLATE_VERSION baseline → $DEST"
+    mkdir -p "$DEST"
+
+    # ── Templated (2 files, 2 placeholders) ────────────────────
+    copy_templated devcontainer.json
+    copy_templated .env.example
+
+    # ── Build ──────────────────────────────────────────────────
+    copy_verbatim Dockerfile.base
+    case "$PROJECT_TYPE" in
+        node|custom) cp "$TEMPLATE_DIR/Dockerfile"     "$DEST/Dockerfile" ;;
+        php)         cp "$TEMPLATE_DIR/Dockerfile.php" "$DEST/Dockerfile" ;;
+    esac
+    copy_verbatim docker-compose.yml
+    copy_verbatim vscode-settings.json
+
+    # ── Lifecycle (6) ──────────────────────────────────────────
+    for f in initialize on-create post-create post-start shell-init install-extensions; do
+        copy_verbatim "${f}.sh"
+    done
+
+    # ── Firewall core (9) ──────────────────────────────────────
+    for f in init-firewall.sh firewall-mode.sh test-firewall.sh; do
+        copy_verbatim "$f"
+    done
+    for f in dnsmasq.conf compile-policy.py mitm-init.sh domains.txt \
+             domains.local.txt.example firewall-blocks; do
+        copy_verbatim "firewall/$f"
+    done
+    # ── Firewall trees (4 dirs) ────────────────────────────────
+    copy_dir firewall/addons
+    copy_dir firewall/policy.d
+    copy_dir firewall/policy.local.d.example
+    copy_dir firewall/tests
+
+    # ── Claude (5 files) ───────────────────────────────────────
+    copy_dir claude
+
+    # ── Knowledge (full dir) ───────────────────────────────────
+    copy_dir knowledge
+
+    # ── Docs (4 files) ─────────────────────────────────────────
+    for f in README RUNBOOK SECURITY RESEARCH; do
+        copy_verbatim "${f}.md"
+    done
+
+    # ── Local-backend sidecar ──────────────────────────────────
+    copy_dir claude-bridge
+    copy_dir host-helpers
+    copy_verbatim diag-ollama-local.sh
+
+    # ── Skills (sync + 5 generic) ──────────────────────────────
+    copy_verbatim skills/sync-skills.sh
+    for s in prepare-pr watch-log prepare-research scan-deps prepare-plan; do
+        copy_dir "skills/$s"
+    done
+
+    success "Baseline installed"
+}
+
+# -----------------------------------------------
+# Post-install : .env, .gitignore, exec perms, marker
+# -----------------------------------------------
+generate_env() {
+    local env="$DEST/.env"
+    if [ -f "$env" ]; then
+        success ".env preserved from previous install"
+        return 0
+    fi
+    cp "$DEST/.env.example" "$env"
+    # Uncomment the templated DC_PROJECT line (becomes `#DC_PROJECT=<PROJECT_ID>`
+    # after `copy_templated`)
+    sedi -E "s|^#DC_PROJECT=${PROJECT_ID_ESC}\$|DC_PROJECT=${PROJECT_ID_ESC}|" "$env"
+    # CLAUDE_CREDS_VOLUME : set if shared, leave commented otherwise
+    if [ -n "$CLAUDE_CREDS_VOLUME" ]; then
+        local _esc; _esc="$(sed_escape "$CLAUDE_CREDS_VOLUME")"
+        sedi -E "s|^#?CLAUDE_CREDS_VOLUME=.*|CLAUDE_CREDS_VOLUME=${_esc}|" "$env"
+    fi
+    success ".env created from .env.example"
+}
+
+update_gitignore() {
+    local gi="$TARGET_DIR/.gitignore"
+    touch "$gi"
+
+    local entries=(
+        "# DevContainer (v2)"
+        ".devcontainer/.env"
+        ".devcontainer/.configured-*"
+        ".devcontainer/logs/"
+        ".devcontainer/pending/"
+        ".devcontainer/pr-drafts/"
+        ".devcontainer/research-bundles/"
+        ".devcontainer/scan-deps/"
+        ".devcontainer/firewall/domains.local.txt"
+        ".devcontainer/firewall/policy.local.d/"
+        ".devcontainer/skills/**/*.local/"
+        ".vscode/"
+        ".claude/"
+    )
+
+    local added=0
+    for e in "${entries[@]}"; do
+        if ! grep -qxF "$e" "$gi" 2>/dev/null; then
+            echo "$e" >> "$gi"
+            added=$((added + 1))
+        fi
+    done
+    if [ "$added" -gt 0 ]; then
+        success ".gitignore updated ($added entries added)"
+    else
+        success ".gitignore already up to date"
+    fi
+}
+
+set_exec_perms() {
+    # Root .sh
+    chmod_exec "$DEST"/initialize.sh "$DEST"/on-create.sh "$DEST"/post-create.sh \
+               "$DEST"/post-start.sh "$DEST"/shell-init.sh "$DEST"/install-extensions.sh
+    chmod_exec "$DEST"/init-firewall.sh "$DEST"/firewall-mode.sh "$DEST"/test-firewall.sh
+    chmod_exec "$DEST"/diag-ollama-local.sh
+
+    # Firewall internals
+    chmod_exec "$DEST"/firewall/mitm-init.sh
+    chmod_exec "$DEST"/firewall/firewall-blocks
+    chmod_exec "$DEST"/firewall/compile-policy.py
+
+    # Claude
+    chmod_exec "$DEST"/claude/sync-creds.sh
+
+    # claude-bridge
+    chmod_exec "$DEST"/claude-bridge/healthcheck.sh
+
+    # host-helpers (all 12 are extensionless executables)
+    chmod_exec "$DEST"/host-helpers/*
+
+    # Skills
+    chmod_exec "$DEST"/skills/sync-skills.sh
+    if [ -d "$DEST/skills/scan-deps" ]; then
+        [ -f "$DEST/skills/scan-deps/extract-auto-dependencies" ] && \
+            chmod_exec "$DEST"/skills/scan-deps/extract-auto-dependencies
+        if [ -d "$DEST/skills/scan-deps/extractors" ]; then
+            chmod_exec "$DEST"/skills/scan-deps/extractors/*
+        fi
+    fi
+
+    success "Executable permissions set"
+}
+
+write_v2_marker() {
+    cat > "$DEST/.configured-setup" <<EOF
+# Auto-generated by install.sh v$TEMPLATE_VERSION — do not edit.
+VERSION="$TEMPLATE_VERSION"
+PROJECT_ID="$PROJECT_ID"
+PROJECT_DISPLAY_NAME="$PROJECT_DISPLAY_NAME"
+PROJECT_TYPE="$PROJECT_TYPE"
+CLAUDE_CREDS_VOLUME="$CLAUDE_CREDS_VOLUME"
+INSTALLED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+EOF
+    success ".configured-setup written (v$TEMPLATE_VERSION)"
+}
+
+final_summary() {
+    header "Done"
+    cat <<SUMMARY
+  ${GREEN}✓${RESET} .devcontainer/ installed at $DEST
+  ${GREEN}✓${RESET} Project ID    : $PROJECT_ID
+  ${GREEN}✓${RESET} Display name  : $PROJECT_DISPLAY_NAME
+  ${GREEN}✓${RESET} Project type  : $PROJECT_TYPE
+  ${GREEN}✓${RESET} Marker        : .devcontainer/.configured-setup (v$TEMPLATE_VERSION)
+
+${BOLD}Next steps${RESET}
+
+  1. Open the project in VS Code :
+     ${CYAN}code "$TARGET_DIR"${RESET}
+
+  2. Run "Reopen in Container" from the Command Palette
+     (${DIM}Cmd/Ctrl+Shift+P → "Dev Containers: Reopen in Container"${RESET})
+
+  3. First boot builds the base image (~5 min, one-off per
+     CLAUDE_CODE_VERSION). Subsequent boots reuse the cached image.
+
+  4. Optional ${CYAN}.env${RESET} tweaks (post-install, gitignored) :
+     - ${CYAN}EXTRA_NETWORK${RESET}              — attach to an external docker network
+     - ${CYAN}CLAUDE_CODE_FIREWALL_ALLOWED${RESET} — extend allowed host:port (firewall)
+     - firewall mode : flip via ${CYAN}.devcontainer/firewall-mode.sh${RESET}
+
+  5. Read ${CYAN}.devcontainer/README.md${RESET} for the full operational reference.
+
+SUMMARY
+}
+
+# -----------------------------------------------
+# Main
+# -----------------------------------------------
+main() {
+    banner
+    resolve_target_dir "$@"
+    detect_existing_devcontainer
+
+    wizard_project_id
+    wizard_display_name
+    wizard_project_type
+    wizard_creds_volume
+    summary_and_confirm
+
+    # Pre-compute sed-safe escapes for the 2 placeholders
+    PROJECT_ID_ESC="$(sed_escape "$PROJECT_ID")"
+    DISPLAY_NAME_ESC="$(sed_escape "$PROJECT_DISPLAY_NAME")"
+
+    install_files
+    generate_env
+    update_gitignore
+    set_exec_perms
+    write_v2_marker
+    final_summary
+}
+
+main "$@"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Cleanup .devcontainer/pending/ entries older than 60 min.
+# Idempotent. Called from post-start.sh at each container start so stale
+# scripts/logs from previous /watch-log runs do not accumulate.
+PENDING=/workspace/.devcontainer/pending
+[ -d "$PENDING" ] || exit 0
+find "$PENDING" -type f \( -name "*.sh" -o -name "*.log" -o -name "*.meta" \) \
+  -mmin +60 -delete 2>/dev/null
+exit 0
