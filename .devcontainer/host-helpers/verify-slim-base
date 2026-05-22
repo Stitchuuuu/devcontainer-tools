@@ -116,8 +116,11 @@ else
 fi
 
 # ---- Check 3 : .npm squat regression test ----
-hdr ".npm squat regression test (/home/node ≤ 5 MB)"
-HOME_SIZE=$(run_in_image 'du -sb /home/node 2>/dev/null | awk "{print \$1}"')
+# Excludes .vscode-server (baked VSIX, ~240 MB, expected) so the 5 MiB cap
+# stays meaningful as a .npm squat detector — VSIX-baking was introduced in
+# v2.1-1 and the test predates it.
+hdr ".npm squat regression test (/home/node minus .vscode-server ≤ 5 MB)"
+HOME_SIZE=$(run_in_image 'du -sb --exclude=.vscode-server /home/node 2>/dev/null | awk "{print \$1}"')
 HOME_SIZE="${HOME_SIZE:-0}"
 printf '  /home/node : %s\n' "$(human "$HOME_SIZE")"
 if [ "$HOME_SIZE" -le "$HOME_TARGET_BYTES" ]; then
@@ -157,15 +160,15 @@ else
     fail "mitmproxy binary missing or broken (expected at /opt/mitmproxy/mitmdump)"
 fi
 
-# ---- Check 7 : node:20-slim base (not full node:20) ----
-hdr "Base image is node:20-slim (not node:20)"
+# ---- Check 7 : node:24-bookworm-slim base (not full node:24) ----
+hdr "Base image is node:24-bookworm-slim (not node:24)"
 APT_LIST_SIZE=$(run_in_image 'ls /var/lib/apt/lists 2>/dev/null | wc -l')
 DEB_COUNT=$(run_in_image 'dpkg -l 2>/dev/null | grep -c "^ii"')
 printf '  installed pkgs : %s\n' "${DEB_COUNT:-?}"
-if [ -n "${DEB_COUNT:-}" ] && [ "$DEB_COUNT" -lt 200 ]; then
-    pass "package count consistent with slim (~150 pkgs vs ~250 on full node:20)"
+if [ -n "${DEB_COUNT:-}" ] && [ "$DEB_COUNT" -lt 300 ]; then
+    pass "package count consistent with slim (~255 pkgs on node:24-slim/bookworm vs ~400+ on full node:24)"
 else
-    info "package count = $DEB_COUNT (full node:20 ≈ 250+, slim ≈ 150) — manual review"
+    info "package count = $DEB_COUNT (full node:24 ≈ 400+, slim ≈ 255) — manual review"
 fi
 
 # ---- Check 8 : layer dedup vs legacy image ----

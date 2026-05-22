@@ -145,7 +145,7 @@ A few signals are shown at every container start. None are blocking; all give th
 
 ```
 .devcontainer/
-├── Dockerfile.base             [v2.1] heavy base image (~1.1 GB) — node:20-slim + apt
+├── Dockerfile.base             [v2.1] heavy base image (~1.1 GB) — node:24-bookworm-slim + apt
 │                               + mitmproxy binary baked + gh + Claude VSIX + Phase B symlink
 │                               + firewall scripts COPY. Tagged claude-devcontainer-base:${VERSION}.
 │                               Built once per CLAUDE_CODE_VERSION by initialize.sh.

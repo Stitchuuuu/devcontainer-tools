@@ -7,7 +7,7 @@
 
 | Session | Brief | Status | Prompt |
 |---|---|---|---|
-| 1 | bump-and-verify — edit 6 files (Dockerfile.base, Dockerfile.php +Sury, verify-slim-base, 3 docs) then host rebuild + 9-gate verify | 📋 | [→ prompt](sessions/session-1-bump-and-verify.md) |
+| 1 | bump-and-verify — dual-mirror edit of Dockerfile.base (FROM pin to node:24-bookworm-slim), Dockerfile.php (Sury wire-up future-proof), verify-slim-base (npm-squat + pkg-count recalibration), 3 docs ; 2 host rebuilds + 9/9 PASS confirmed | ✅ | — |
 
 ## Legend
 
@@ -15,5 +15,5 @@
 
 ## Progress
 
-- **Delivered** : 0 / 1
-- **Next focus** : session 1 (bump-and-verify)
+- **Delivered** : 1 / 1
+- **Next focus** : rollout complete

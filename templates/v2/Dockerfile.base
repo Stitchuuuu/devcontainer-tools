@@ -4,7 +4,7 @@
 # tagged `claude-devcontainer-base:${CLAUDE_CODE_VERSION}`. The project
 # Dockerfile is a thin `FROM claude-devcontainer-base:${VERSION}` shell.
 # -----------------------------------------------
-FROM node:20-slim
+FROM node:24-bookworm-slim
 
 ARG TZ
 ENV TZ="$TZ"
@@ -114,7 +114,7 @@ RUN set -eux; \
     wtf --help >/dev/null
 
 # -----------------------------------------------
-# User setup (node already exists in node:20-slim)
+# User setup (node already exists in node:24-bookworm-slim)
 # -----------------------------------------------
 ENV USERNAME=node
 ENV HOME=/home/$USERNAME

@@ -49,7 +49,7 @@ From least → most volatile :
 
 | # | Layer | Invalidated by | Approx. size |
 |---|---|---|---|
-| 1 | `FROM node:20-slim` | Debian/Node base bump | ~140 MB |
+| 1 | `FROM node:24-bookworm-slim` | Debian/Node base bump | ~140 MB |
 | 2 | apt minimal + `build-essential libssl-dev` + locale/man/doc purge + `curl wget` explicit | apt deps change | ~200 MB |
 | 3 | mitmproxy binary baked (`/opt/mitmproxy/`) — A3 | `MITM_VERSION` bump | ~80 MB |
 | 4 | gh CLI | gh repo update | ~40 MB |
@@ -62,7 +62,7 @@ Bumping `CLAUDE_CODE_VERSION` only invalidates layer 7 (~30s rebuild on arm64). 
 
 ## Why Debian slim (not Alpine)
 
-Glibc preserved → Claude binary (Bun-compiled, ~240 MB) + iptables/ipset/dnsmasq + npm postinstalls (sharp, bcrypt) work identically. `node:20-slim` drops ~500 MB of inherited build-deps we don't use (libxml2-dev, libpq-dev, libmagickwand-dev). We add back only what's needed: `build-essential python3 libssl-dev` for node-gyp.
+Glibc 2.36 (Debian bookworm) preserved → Claude binary (Bun-compiled, ~240 MB) + iptables/ipset/dnsmasq + npm postinstalls (sharp, bcrypt) work identically. We pin to `node:24-bookworm-slim` rather than the floating `node:24-slim` to keep the Debian base explicit — Docker Hub may rebase `node:24-slim` to a future trixie at some point, and we'd rather make that a deliberate bump than discover it via a silent CI break. `node:24-bookworm-slim` drops ~500 MB of inherited build-deps we don't use (libxml2-dev, libpq-dev, libmagickwand-dev). We add back only what's needed: `build-essential python3 libssl-dev` for node-gyp.
 
 ## Host helpers (build-time observability)
 
