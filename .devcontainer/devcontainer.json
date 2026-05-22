@@ -17,7 +17,8 @@
         "anthropic.claude-code@2.1.145",
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
-        "eamodio.gitlens"
+        "eamodio.gitlens",
+        "barnim.markdown-code-copy-button"
       ],
       "settings": {
         "extensions.autoUpdate": false,
