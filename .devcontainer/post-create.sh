@@ -26,8 +26,19 @@ echo "  log:   ${LOG#/workspace/}"
 echo "  trace: $TRACE_LOC"
 
 MODE_FLAG="/workspace/.devcontainer/.configured-claude-mode"
+ENV_FILE="/workspace/.devcontainer/.env"
 
-if [ -f "$MODE_FLAG" ]; then
+# Two orthogonal signals decide which CLAUDE.md to symlink :
+#   1. claude-switch mode (set in .env via host-helper) — local / local-proxy
+#      use CLAUDE-local-dev.md ; cloud falls through to signal 2.
+#   2. .configured-claude-mode flag — picks the cloud variant (CLAUDE-dev.md
+#      vs CLAUDE-reviewer.md).
+# Without checking signal 1, every rebuild would clobber a claude-switch
+# selection back to the cloud variant. claude-switch updates the symlink
+# directly, but post-create runs after rebuild and re-writes blindly.
+if grep -qE '^ANTHROPIC_BASE_URL=http://(ollama\.internal:11434|claude-bridge)' "$ENV_FILE" 2>/dev/null; then
+	CLAUDE_FILE="CLAUDE-local-dev.md"
+elif [ -f "$MODE_FLAG" ]; then
 	CLAUDE_FILE=$(cat "$MODE_FLAG")
 else
 	CLAUDE_FILE="CLAUDE-dev.md"
