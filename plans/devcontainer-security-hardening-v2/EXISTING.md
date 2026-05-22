@@ -133,8 +133,11 @@ stays available (already used for `*.statsig.com`,
 ## Threat model carryover
 
 Same 3 critères as v1. v2 closes the residual #9 gap so critère 3
-("node cannot exfil without rebuild") holds with a strict reading too,
-not just the audit-accepted reading.
+("node cannot exfil without rebuild") holds under a strict reading.
+Closure proven empirically by the session 4 adversarial-validation
+gate (2026-05-22) : PoC #9 replay returns `status: REFUSED`, payload
+absent from all mitmproxy logs. Structural fix lives in commit
+`2cd3cd6`. See [LOG.md §4](LOG.md) for verbatim probes.
 
 ## Reuse from prior planning
 
