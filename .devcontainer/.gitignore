@@ -26,8 +26,10 @@ firewall-blocks.*.log
 !firewall/policy.local.d/.keep
 
 # Skills — local personal variants
-skills/**/*.local.skill.md
-skills/**/*.local/
+# This repo OWNS the source for *.local skills (hours.local, master-review.local,
+# etc.) so they ARE committed here. The matching patterns stay in
+# templates/v2/.gitignore so target projects still gitignore their personal
+# variants — only this devcontainer-tools repo diverges.
 
 # claude-bridge sidecar runtime config (bootstrapped from .example.json)
 claude-bridge/config.json

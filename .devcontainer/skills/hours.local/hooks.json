@@ -1,0 +1,17 @@
+{
+  "SessionStart": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "sh /workspace/.devcontainer/skills/hours.local/hours-log.sh session_start"}]}
+  ],
+  "SessionEnd": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "sh /workspace/.devcontainer/skills/hours.local/hours-log.sh session_end"}]}
+  ],
+  "UserPromptSubmit": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "sh /workspace/.devcontainer/skills/hours.local/hours-log.sh prompt"}]}
+  ],
+  "Stop": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "sh /workspace/.devcontainer/skills/hours.local/hours-log.sh stop"}]}
+  ],
+  "PostToolUse": [
+    {"matcher": "", "hooks": [{"type": "command", "command": "sh /workspace/.devcontainer/skills/hours.local/hours-log.sh tool"}]}
+  ]
+}
