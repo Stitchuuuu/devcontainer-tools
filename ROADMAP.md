@@ -14,9 +14,11 @@ only). Image layer split landed (P1-S3) — base image now stable
 across projects pinning the same `CLAUDE_CODE_VERSION`. Not yet
 CHANGELOG'd, not yet released.
 
-**Part 1 progress** : 3 / 6 delivered (S1 scope-audit, S2 install-redesign,
-S3 firewall-layer-split). Next focus : **S4 fresh-install-test** (depends
-on S3 ✅ + S3b) ; S3b gitignore-architecture-refactor still parallelisable.
+**Part 1 progress** : 3 / 7 delivered (S1 scope-audit, S2 install-redesign,
+S3 firewall-layer-split). Next focus : **S3c firewall-write-protection**
+(security : close in-container tampering — blocks v2.0.0 release if
+shipped insecurely). S3b gitignore-architecture-refactor and S4
+fresh-install-test parallelisable / pending.
 
 | Phase | Status | What it ships |
 |---|---|---|
@@ -24,11 +26,12 @@ on S3 ✅ + S3b) ; S3b gitignore-architecture-refactor still parallelisable.
 | Part 1 / S2 — install-redesign | ✅ delivered | This commit batch : `install.sh` v2 + `templates/v2/` sync + all scrubs |
 | Part 1 / S3 — firewall-layer-split | ✅ delivered | Moved 4 project-specific firewall COPYs (domains.txt, domains.local.txt.example, policy.d/, policy.local.d.example/) from `Dockerfile.base` to project layer (`Dockerfile` + `Dockerfile.php`) so `claude-devcontainer-base:${VERSION}` stays project-agnostic and truly shared. Mirror cp'd into dogfooding `.devcontainer/` (Dockerfile.base + Dockerfile ; no PHP dogfood). Grep verification : 5/5 gates pass. |
 | Part 1 / S3b — gitignore-architecture-refactor | 📋 parallel | Split gitignore : ship `.devcontainer/.gitignore` for internal rules, slim `update_gitignore()` to root-scope only ; relocate `LESSONS.md` into `.devcontainer/` with root symlink (same pattern as `CLAUDE.md`) ; whitelist `.vscode/settings.json` for the `skip-worktree` trick. Independent of S3 — can run in parallel. |
-| Part 1 / S4 — fresh-install-test | 📋 | Run installer against a sandbox project, full Reopen-in-Container cycle, validate lifecycle + firewall + sync-creds + sync-skills runtime, gitignore split + LESSONS symlink behave correctly |
+| Part 1 / S3c — firewall-write-protection (security) | 📋 next | Close in-container tampering : Claude can currently modify any `.devcontainer/firewall/*` via the writable workspace mount ; modifications activate at next user-initiated restart. Recommend Option B (bake-only, no bind mount → edit requires rebuild) over Option A (`:ro` overlay shadowing). Drops `sudoers.d/node-firewall` init-firewall.sh entry. Spec includes migration recipe for v2-beta deployments. Blocks v2.0.0 release if shipped insecurely. |
+| Part 1 / S4 — fresh-install-test | 📋 | Run installer against a sandbox project, full Reopen-in-Container cycle, validate lifecycle + firewall + sync-creds + sync-skills runtime, gitignore split + LESSONS symlink behave correctly, write-protection invariants hold (P1-S3c) |
 | Part 1 / S5 — bump-changelog | 📋 | Write `CHANGELOG.md` v2.0.0 entry, document breaking drops, refresh root `README.md` for v2 flow, tag `v2.0.0` locally |
 | Part 2 — 1.3 → 2.0 migration prompt | ⏸️ deferred | Paste-into-Claude session prompt that walks an existing 1.3 project through the upgrade (replaces the dropped `update.sh`) |
 
-## Part 1 — what's left (~3-4 h total)
+## Part 1 — what's left (~5-7 h total)
 
 ### Session 3 — firewall-layer-split — ✅ DELIVERED (2026-05-22)
 
@@ -38,6 +41,27 @@ into the project layer. Base image now stable across projects. See
 [KNOWLEDGE.md § Image layer split](plans/devcontainer-tools-v2-migration/KNOWLEDGE.md#image-layer-split-p1-s3-2026-05-22)
 for the rationale + verification. Migration recipe for already-deployed
 v2-beta instances : see the session spec.
+
+### Session 3c — firewall-write-protection / security (~1-2 h option A, ~3-4 h option B)
+
+Bug de sécurité découvert pendant la review post-S3. Claude (user `node`
+dans le container) peut actuellement modifier n'importe quel fichier
+firewall via le workspace bind mount writable, et les modifications
+sont picked up au prochain restart user-initiated (`post-start.sh` →
+`sudo init-firewall.sh`). Attack chain en deux temps : insertion
+silencieuse mid-session + activation au prochain start/stop/start.
+
+Deux options : **(A)** ajouter un `:ro` overlay mount shadowing le
+workspace au sous-path firewall (1 ligne YAML, préserve l'UX edit-host) ;
+**(B)** supprimer le bind mount entièrement et tout baker dans l'image
+(immutable, edit-firewall = rebuild). Recommandation : option B per
+le requirement "cadenas devcontainer, sans accès root pour Claude".
+Spec inclut la migration recipe pour adopting projects.
+
+Spec : [plans/devcontainer-tools-v2-migration/sessions/part-1-session-3c-firewall-write-protection.md](plans/devcontainer-tools-v2-migration/sessions/part-1-session-3c-firewall-write-protection.md).
+
+Independant de S3b et S4 — peut partir en parallèle. **Bloque v2.0.0
+release si pas livré** (vulnérabilité documentée).
 
 ### Session 3b — gitignore-architecture-refactor (~45 min — 1 h)
 
