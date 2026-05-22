@@ -8,14 +8,12 @@
 .claude/
 
 # Skills — local (personal) variants and runtime files
-# (broadened with **/ so the templates/v2/ subtree is also protected)
-**/skills/**/*.local.skill.md
-**/skills/**/*.local/
+.devcontainer/skills/**/*.local.skill.md
+.devcontainer/skills/**/*.local/
 
 # Firewall — local overrides, runtime logs, and Python cache
-# (broadened with **/ so the templates/v2/ subtree is also protected)
-**/firewall/domains.local.txt
-**/firewall/policy.local.d/
+.devcontainer/firewall/domains.local.txt
+.devcontainer/firewall/policy.local.d/
 .devcontainer/firewall/addons/__pycache__/
 .devcontainer/tests/diagnose.log
 .devcontainer/tests/diag-a2-*.log
@@ -37,8 +35,7 @@ firewall-blocks.*.log
 
 # UniClaudeProxy sidecar — per-user runtime config (bootstrapped from
 # config.example.json by initialize.sh).
-# (broadened with **/ so the templates/v2/ subtree is also protected)
-**/claude-bridge/config.json
+.devcontainer/claude-bridge/config.json
 
 # Lessons — personal / not-yet-generalisable patterns (committed sibling is LESSONS.md)
 LESSONS.local.md
