@@ -2,8 +2,8 @@
 # integration/test-firewall-modes.sh — verify the baked mode is in effect.
 #
 # Each `test_mode_*` skips unless the baked mode matches its expected value.
-# To exercise all 3 modes, follow the multi-rebuild sequence in
-# plans/devcontainer-security-hardening/TEST-PLAN.md.
+# To exercise all 3 modes, rebuild the container once per mode (off / basic
+# / strict) and re-run this suite.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 

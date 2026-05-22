@@ -16,7 +16,7 @@ Other modes:
   --parse-only FILE [FILE...] [--json]    parse files, emit entries (testing)
   --list-hosts  FILE [FILE...]            flat deduped hostnames (used by init-firewall.sh shim)
 
-Syntax — see /workspace/robrowser/plans/devcontainer/phase3-rollout/docs/POLICY-MODEL.md
+Syntax:
   Format 1: bare host                 -> docs.anthropic.com
   Format 2: methods inline            -> [GET,POST] api.anthropic.com
   Format 3: multi-line indented paths -> [*] api.anthropic.com\n  /v1/messages

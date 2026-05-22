@@ -45,17 +45,16 @@ secrets_template:
   - "# No secrets required for documentation research."
 
 # Prompt that the user copy-pastes into Claude after opening the research
-# container in VS Code. Kept in FR per project chat convention (CLAUDE.md
-# `French chat / English code`). Claude's reply will follow the user's
-# language. Substitution placeholders : {{bundle_id}}, {{topic}}, {{doc_domains}}.
+# container in VS Code. Claude's reply will follow the user's language.
+# Substitution placeholders: {{bundle_id}}, {{topic}}, {{doc_domains}}.
 initial_prompt: |
-  Tu démarres une research session dans le bundle {{bundle_id}}.
+  You are starting a research session in bundle {{bundle_id}}.
 
-  1. Lis /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
-  2. Si /workspace/result/PROGRESS.md existe, lis-le et reprends depuis. Sinon, crée-le.
-  3. Effectue la recherche en GET-only sur les domaines allowlistés ({{doc_domains}}).
-  4. Synthèse incrémentale dans /workspace/result/OUTPUT.md.
-  5. Update /workspace/result/PROGRESS.md à chaque étape (done / remaining).
-  6. Si les success criteria sont atteints, propose la commande de back-copy depuis INSTRUCTIONS.md.
+  1. Read /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
+  2. If /workspace/result/PROGRESS.md exists, read it and resume from there. Otherwise, create it.
+  3. Run the research GET-only on the allowlisted domains ({{doc_domains}}).
+  4. Incremental synthesis in /workspace/result/OUTPUT.md.
+  5. Update /workspace/result/PROGRESS.md at every step (done / remaining).
+  6. If success criteria are met, propose the back-copy command from INSTRUCTIONS.md.
 
-  Topic : {{topic}}
+  Topic: {{topic}}

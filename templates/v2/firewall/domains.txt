@@ -1,13 +1,13 @@
 # =============================================================================
 # Firewall allowlist — Claude-only baseline (A1.1, 2026-05-14)
 # =============================================================================
-# Cible : Claude Code lui-même + ses docs + ses plugins/extensions OFFICIELS
-# Anthropic. Tout le reste (npm public, GitHub global, MDN, packagist, php.net,
-# nodejs.org, DDG, registries non-npm) est en opt-in via domains.local.txt
-# (cf. domains.local.txt.example pour starter pack commenté).
+# Target: Claude Code itself + its docs + its OFFICIAL Anthropic
+# plugins/extensions. Everything else (public npm, GitHub global, MDN,
+# packagist, php.net, nodejs.org, DDG, non-npm registries) is opt-in via
+# domains.local.txt (see domains.local.txt.example for a commented starter pack).
 #
 # -----------------------------------------------------------------------------
-# Syntax — 5 formats, retro-compatible avec A1
+# Syntax — 5 formats, retro-compatible with A1
 # -----------------------------------------------------------------------------
 #   Format 1 — bare host (defaults: GET only)
 #     docs.anthropic.com
@@ -148,9 +148,8 @@ docs.anthropic.com                     # Documentation publique Anthropic — 30
 
 console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
-# Claude Code CDNs surfaced by session 2 empirical audit (cf. plans/devcontainer-
-# security-hardening-v2/LOG.md §2). Subdomain-literal, no wildcard parent
-# promotion (cf. ROLLOUT.md 2026-05-22 decision).
+# Claude Code CDNs surfaced by empirical audit. Subdomain-literal, no
+# wildcard parent promotion.
 [GET] bridge.claudeusercontent.com     # Claude Code Chrome bridge CDN (computer use artifacts)
   /chrome/*                            #   per-session UUID-keyed assets
 
@@ -159,9 +158,9 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
 
 # === Telemetry — OPTIONAL ====================================================
-# Statsig + Sentry sont utilisés par Claude Code pour feature-flags et error
-# reporting. Pour tester sans télémétrie (debug, suspicion d'impact réseau),
-# copier dans domains.local.txt :
+# Statsig + Sentry are used by Claude Code for feature-flags and error
+# reporting. To test without telemetry (debug, suspected network impact),
+# copy into domains.local.txt:
 #     !disable *.statsig.com
 #     !disable *.sentry.io
 
@@ -178,8 +177,8 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
 
 # === Distribution Claude Code — VS Code Marketplace + Extensions ============
-# CDNs MS Marketplace identifiés empiriquement (A1.1 baseline généreuse, A2
-# restreindra par path quand l'enforcement runtime sera live).
+# MS Marketplace CDNs empirically identified (A1.1 generous baseline; A2 will
+# restrict by path once runtime enforcement goes live).
 
 [GET] marketplace.visualstudio.com     # VS Code Marketplace — extension catalog API (reads)
   /_apis/public/gallery/publishers/anthropic/*   # publisher catalog (Anthropic only)
@@ -198,7 +197,7 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
 # === GitHub Anthropic — skills, MCP servers, claude-code releases ===========
 # A2 pending — path filter `/anthropics/*` not enforced yet (host-wide for now).
-# Pragmatique : skills GitHub-hosted installables dès A1.1 ; A2 va resserrer.
+# Pragmatic: GitHub-hosted skills installable from A1.1; A2 will tighten.
 
 [GET] github.com                       # Anthropic repos browse + git capability negotiation
   /anthropics/*                        #   repo HTML + .git/info/refs (cf. policy.d/)

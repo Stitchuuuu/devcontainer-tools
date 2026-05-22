@@ -109,7 +109,7 @@ case "$MODE" in
   basic)
     echo "DNS allowlist only (Phase 1). No mitmproxy." ;;
   strict)
-    echo "DNS + mitmproxy force-proxy + A2 addons enforcement (sécu max baseline)." ;;
+    echo "DNS + mitmproxy force-proxy + A2 addons enforcement (max-security baseline)." ;;
 esac
 echo
 # Bold yellow rebuild reminder — last line so it's the call-to-action the

@@ -130,7 +130,7 @@ Allowlist sources (compiled at boot by `compile-policy.py`):
 - `firewall/policy.d/<host>.yaml` — advanced rules per host (max_body, query schemas, blocked paths)
 - `firewall/domains.local.txt` + `firewall/policy.local.d/` — per-dev overrides (gitignored OR committed)
 
-See [POLICY-MODEL.md in the rollout docs](../plans/devcontainer-v2/phase3-rollout/docs/POLICY-MODEL.md) for the full syntax and precedence rules.
+For the full syntax and precedence rules, see the policy compiler at `firewall/compile-policy.py`.
 
 ## Layer 2-6 — mitmproxy enforcement (strict mode only)
 

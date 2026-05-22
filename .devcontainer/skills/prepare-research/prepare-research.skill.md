@@ -162,7 +162,7 @@ keyword match) :
 
 Pick the highest score. If two templates are tied OR no template scores ≥ 1, use
 `AskUserQuestion` with the 3 templates as options (header `Template`, question
-"Quel type de research correspond le mieux ?", each option lists template name
+"Which research type fits best?", each option lists template name
 + one-line use case). DO NOT silently pick a template when ambiguous.
 
 #### 1b. Task-slug derivation from description
@@ -527,9 +527,9 @@ If the template has no `initial_prompt` field (older / hand-written template),
 fall back to a generic prompt :
 
 ```
-Lis /workspace/INSTRUCTIONS.md et démarre la recherche. Si
-/workspace/result/PROGRESS.md existe, reprends depuis. Synthèse incrémentale
-dans /workspace/result/OUTPUT.md.
+Read /workspace/INSTRUCTIONS.md and start the research. If
+/workspace/result/PROGRESS.md exists, resume from it. Incremental synthesis
+in /workspace/result/OUTPUT.md.
 ```
 
 #### 3i. Write `bundle/.claude/settings.json`

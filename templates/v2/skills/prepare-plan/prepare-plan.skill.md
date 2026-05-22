@@ -5,11 +5,11 @@ argument-hint: "<feature-name> [<free-text scope description>]"
 
 # /prepare-plan — scaffold a multi-session rollout
 
-This is a **meta-skill** that industrialises the rollout pattern used in
-`/workspace/plans/devcontainer-v2/phase3-rollout/` (ROLLOUT.md + STATUS.md +
-LOG.md + EXISTING.md + sessions/session-NN.md). Given a feature name and a
-free-text scope description, it generates a self-contained planning
-directory ready to drive multiple Claude Code sessions.
+This is a **meta-skill** that industrialises a rollout pattern: ROLLOUT.md
++ STATUS.md + LOG.md + EXISTING.md + sessions/session-NN.md, all under
+`/workspace/plans/<feature>/`. Given a feature name and a free-text scope
+description, it generates a self-contained planning directory ready to
+drive multiple Claude Code sessions.
 
 The output directory follows a strict convention so that **every session
 prompt prescribes its own DoD** (update STATUS / LOG / EXISTING in-line at
@@ -194,7 +194,7 @@ Contents :
 
 To run session 1 :
   1. Open sessions/session-1-{{first_session_slug}}.md
-  2. Copy the "Prompt à coller" block (between the 4-backtick fences)
+  2. Copy the "Prompt to paste" block (between the 4-backtick fences)
   3. Paste into a new Claude Code session
   4. When that session is done, its DoD prescribes the STATUS / LOG updates
 
@@ -363,7 +363,7 @@ formatted as sections.
 ## Prompt to paste
 
 `````
-Je démarre la session 1 du rollout `{{feature_name}}`.
+I'm starting session 1 of the `{{feature_name}}` rollout.
 
 Entry point : `/workspace/plans/{{feature_name}}/ROLLOUT.md`
 Read also :

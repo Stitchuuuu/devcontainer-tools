@@ -7,9 +7,8 @@
 # Rationale : Claude Code emits identical request shapes against all 3 targets
 # (same Anthropic SDK, same headers, same body schema). A constraint on cloud
 # but not on the local fallbacks = silent security regression on mode switch.
-# See plans/uniclaudeproxy-integration/ROLLOUT.md "Locked decisions" for the
-# full rule ; .devcontainer/knowledge/INDEX.md section "Policy parity across Claude
-# Code targets" once the docs-verif session lands.
+# See .devcontainer/knowledge/INDEX.md section "Policy parity across Claude
+# Code targets" for the cross-target rule.
 
 # Purpose: advanced rules for the Anthropic API runtime (Claude Code chat + files).
 # Consumed by A2 mitmproxy addons. Merged on top of methods + paths declared in domains.txt.

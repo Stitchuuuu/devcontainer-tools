@@ -1,20 +1,20 @@
-# direct-tcp-allow.txt — services autorisés en TCP direct (bypass mitmproxy)
+# direct-tcp-allow.txt — services allowed via direct TCP (mitmproxy bypass)
 #
-# Format : host:port par ligne. Commentaires : # en début de ligne ou
-# en inline. Mot-clé spécial : "host" = host.docker.internal.
+# Format: host:port per line. Comments: # at start of line or inline.
+# Special keyword: "host" = host.docker.internal.
 #
-# ⚠ Mettre ici UNIQUEMENT des services non-HTTP. Pour HTTP/HTTPS sur
-# n'importe quel port : utiliser domains.txt (mitmproxy s'en occupe).
+# ⚠ Put ONLY non-HTTP services here. For HTTP/HTTPS on any port, use
+# domains.txt (mitmproxy handles it).
 #
-# Par défaut RIEN n'est actif (cloud mode). Pour switcher :
-#   .devcontainer/host-helpers/claude-switch local-bridge   (puis rebuild)
-#   .devcontainer/host-helpers/claude-switch local-direct   (puis rebuild)
-#   .devcontainer/host-helpers/claude-switch cloud          (puis rebuild)
+# By default NOTHING is active (cloud mode). To switch:
+#   .devcontainer/host-helpers/claude-switch local-bridge   (then rebuild)
+#   .devcontainer/host-helpers/claude-switch local-direct   (then rebuild)
+#   .devcontainer/host-helpers/claude-switch cloud          (then rebuild)
 #
-# Exemples (décommenter manuellement OU laisser claude-switch les gérer) :
+# Examples (uncomment manually OR let claude-switch manage them):
 
-# Sidecar Claude bridge (UniClaudeProxy) — utilisé en mode local-bridge
+# Claude bridge sidecar (UniClaudeProxy) — used in local-bridge mode
 # claude-bridge:9223
 
-# Ollama serveur sur l'host (port 11434) — utilisé en mode local-direct
+# Ollama server on the host (port 11434) — used in local-direct mode
 # host:11434

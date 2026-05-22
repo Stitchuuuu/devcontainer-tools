@@ -20,9 +20,8 @@
 # Usage :
 #   [host] bash .devcontainer/host-helpers/claude-bridge {up|down|restart|status|logs}
 #
-# See plans/uniclaudeproxy-integration/ROLLOUT.md for the sidecar
-# architecture, and .devcontainer/knowledge/ollama-local.md for the mode toggle docs
-# (the "Mode local-proxy (sidecar)" section lands in session 2 docs-verif).
+# See .devcontainer/knowledge/ollama-local.md for the sidecar architecture
+# and the mode-toggle docs ("Mode local-proxy (sidecar)").
 set -euo pipefail
 
 if [ -f /.dockerenv ] || [ -n "${REMOTE_CONTAINERS:-}" ]; then

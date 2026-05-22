@@ -514,9 +514,8 @@ Claude Code  ──▶  mitmproxy (audit)  ──▶  claude-bridge:9223
   [`.devcontainer/claude-bridge/ucp-overlay/app/`](claude-bridge/ucp-overlay/)
   (5 Python files) — vendored fix that re-injects Ollama 0.9+
   `reasoning` SSE deltas as `<think>` markers (upstream UCP master drops
-  them silently as of 2026-05). Tracked in
-  [upstream-issue-ucp-think.md](../plans/uniclaudeproxy-integration-local-opti/upstream-issue-ucp-think.md) ;
-  the overlay is shipped here pending the upstream PR.
+  them silently as of 2026-05). The overlay is shipped here pending the
+  upstream PR.
 - **Audit boundary** : inbound leg (Claude Code → `claude-bridge:9223`)
   is mitm-audited like every other host. Outbound leg (`claude-bridge`
   → `host.docker.internal:11434`) skips mitm — same trade-off accepted
@@ -681,8 +680,7 @@ wrapper :
 
 The sidecar boots <10 s thanks to the dedicated
 [`Dockerfile`](claude-bridge/Dockerfile) baking apt + UCP clone + pip
-install as cached layers (pivoted from a boot-time bash chain in
-[rollout session 1](../plans/uniclaudeproxy-integration-local-opti/LOG.md)).
+install as cached layers (pivoted from a boot-time bash chain).
 First image build is ~60-90 s ; subsequent rebuilds hit the layer cache
 and complete in <5 s.
 
@@ -690,10 +688,9 @@ and complete in <5 s.
 
 `CLAUDE-local-dev.md` carries instructions Claude Code prepends to every
 prompt in local-mode (concise output, no markdown headers, pause before
-tool use, …). The shipped version is tuned for the
-[`uniclaudeproxy-integration-local-opti` rollout's reference hardware](../plans/uniclaudeproxy-integration-local-opti/LOG.md)
-(Apple M-series + qwen3.5:9b through the sidecar). On a different
-hardware + model combination, you may want to re-tune the directives.
+tool use, …). The shipped version is tuned for Apple M-series + qwen3.5:9b
+through the sidecar. On a different hardware + model combination, you may
+want to re-tune the directives.
 
 The workflow below uses two scripts shipped in `.devcontainer/tests/`,
 plus the mitm capture helper. It's a **manual** loop today — a
@@ -754,8 +751,7 @@ Shipped variants :
   the raw "small reasoning model" wrapper of `CLAUDE-local-dev.md`)
 - `--variant 1` — `explicit-tiny-model` (5 directives : concise, no
   gratuitous headers, pause before tool use, ask for clarification,
-  don't list options) — the current shipped default after
-  [rollout session F2](../plans/uniclaudeproxy-integration-local-opti/LOG.md)
+  don't list options) — the current shipped default.
 
 No-arg → prints the current state (active variant, marker presence,
 symlink target) and the list of available variants. Doesn't mutate.
@@ -768,8 +764,7 @@ measurements.
 
 ### 4. Iterate until "potable"
 
-Re-run step 2 after each variant. Success criteria (immutable per
-[ROLLOUT.md decisions](../plans/uniclaudeproxy-integration-local-opti/ROLLOUT.md)) :
+Re-run step 2 after each variant. Success criteria :
 
 - **ping** : ≤ 100 chars on-topic + ≤ 30 s
 - **reasoning** : contains `391` (= 17 × 23) + `thinking` block in
@@ -781,22 +776,19 @@ model. A 9-billion-parameter reasoning model on 16 GB unified RAM has
 fundamental latency floors that no prompt directive can move below.
 
 Record the variant history (V0 → V1 → … and the deltas) in your own
-notes. The
-[rollout's LOG.md session F2](../plans/uniclaudeproxy-integration-local-opti/LOG.md)
-documents one worked example : V0 baseline (1k tokens, "potable" at
+notes. One worked example: V0 baseline (1k tokens, "potable" at
 17.4 s / 41.9 s) → V1-explicit-tiny-model (13 lines, 3.9 s / 14.8 s,
 **-78% ping, -65% reasoning**, no quality regression).
 
 ### Tuning roadmap
 
 The 4-step loop above is the **current ad-hoc workflow**. A discoverable
-`/tune-claude-local` skill that automates the iteration (proposes
-variants from a profile + hardware survey, runs the diag, suggests the
-next directive change, applies it, repeats until potable) is scaffolded
-in [`plans/tune-claude-local-skill/`](../plans/tune-claude-local-skill/ROLLOUT.md)
-and **deferred to a future rollout**. Users who want to tune for a new
-hardware + model combo today follow the manual 4-step loop above ;
-when the skill ships, this section will point at it instead.
+`/tune-claude-local` skill that would automate the iteration (propose
+variants from a profile + hardware survey, run the diag, suggest the
+next directive change, apply it, repeat until potable) is **deferred to
+a future rollout**. Users who want to tune for a new hardware + model
+combo today follow the manual 4-step loop above ; when the skill ships,
+this section will point at it instead.
 
 ## Opening additional host ports (MySQL, Redis, …)
 
@@ -834,7 +826,7 @@ rule posed BEFORE the RFC1918 REJECT.
 | `claude-bridge` reports `unhealthy` | uvicorn died — config error or upstream Ollama unreachable (rare since Dockerfile pivot baked the boot deps) | `bash .devcontainer/host-helpers/claude-bridge logs` → look for the last Python stack trace. Common : `config.json` references an Ollama alias that doesn't exist on the host (`ollama list` then `ollama cp <real> claude-opus-4-7`). |
 | `claude-bridge/config.json: No such file` at sidecar boot | First container open after a fresh clone — `initialize.sh` auto-bootstraps `config.json` from `config.example.json`, but a manual `git clean -fdx` would wipe both copies if the example is gitignored locally | Restore : `cp .devcontainer/claude-bridge/config.example.json .devcontainer/claude-bridge/config.json`. Normally handled automatically — verify `initialize.sh` ran (look for `claude-bridge/config.json bootstrapped` in `/tmp/initialize.log` on host). |
 | mitm misbehaves on SSE streaming through the sidecar | mitmproxy 12.x SSE handling regression, or a custom addon mutating the stream | Switch to the bypass alias : edit `.env` → `ANTHROPIC_BASE_URL=http://claude-bridge.local:9223` (see [§ Bypass audit — claude-bridge.local](#bypass-audit--claude-bridgelocal-debug-only)) + Rebuild Container. Translation stays intact (the sidecar logic is the same) ; only audit + policy enforcement are dropped. Investigate the addon while the bypass keeps you unblocked. |
-| `local-proxy` responses are low quality on my model | `CLAUDE-local-dev.md` tuned for a different hardware + model combo | Re-run the manual tuning workflow — see [§ Tuning the local prompt](#tuning-the-local-prompt-for-your-hardware-current-ad-hoc-workflow). One worked example in [rollout session F2](../plans/uniclaudeproxy-integration-local-opti/LOG.md) (qwen3.5:9b on M-series : V0 → V1, -78% ping latency, -65% reasoning latency). |
+| `local-proxy` responses are low quality on my model | `CLAUDE-local-dev.md` tuned for a different hardware + model combo | Re-run the manual tuning workflow — see [§ Tuning the local prompt](#tuning-the-local-prompt-for-your-hardware-current-ad-hoc-workflow). One worked example: qwen3.5:9b on M-series, V0 → V1, -78% ping latency, -65% reasoning latency. |
 
 ## Capture & replay (mitmproxy debug addon)
 

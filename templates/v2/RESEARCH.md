@@ -10,11 +10,6 @@
 > No temporary grants. No `domains.local.txt` edit-in-the-main shortcuts. The
 > research bundle is the one and only door.
 
-For the higher-level architecture (3-container model) see
-[docs/ARCHITECTURE.md](../plans/devcontainer-v2/phase3-rollout/docs/ARCHITECTURE.md).
-For the cycle diagram see
-[docs/WORKFLOWS.md](../plans/devcontainer-v2/phase3-rollout/docs/WORKFLOWS.md#research-workflow--élargissement-scope-contrôlé).
-
 ## End-to-end cycle
 
 ```

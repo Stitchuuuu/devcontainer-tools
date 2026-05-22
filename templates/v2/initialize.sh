@@ -519,7 +519,7 @@ prompt_claude_mode() {
 
 write_firewall_default() {
 	# Default since A4 : strict (DNS allowlist + mitmproxy force-proxy + addons).
-	# No prompt — the choice is intentional (sécu-max baseline). To flip to a
+	# No prompt — the choice is intentional (max-security baseline). To flip to a
 	# looser mode, use `firewall-mode.sh basic` or `firewall-mode.sh off` then
 	# rebuild. Legacy mode names `paranoid`/`okeish` remain accepted as aliases.
 	echo "strict" > "$FW_FLAG"
@@ -557,7 +557,7 @@ print_summary() {
 	fi
 	echo "──────────────────────────────────"
 	echo "  Flip firewall mode (then rebuild):"
-	echo "    .devcontainer/firewall-mode.sh strict   # default (sécu max)"
+	echo "    .devcontainer/firewall-mode.sh strict   # default (max security)"
 	echo "    .devcontainer/firewall-mode.sh basic    # DNS allowlist only"
 	echo "    .devcontainer/firewall-mode.sh off      # kill-switch (no filter)"
 	echo "  Reconfigure (each can be reset independently):"

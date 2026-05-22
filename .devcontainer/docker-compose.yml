@@ -63,7 +63,7 @@ services:
   # .devcontainer/host-helpers/claude-bridge {up|down|restart|status|logs}.
   # Image built from claude-bridge/Dockerfile : apt+clone+pip baked as cached
   # layers (boot <10 s after first build). HEALTHCHECK + CMD live in the
-  # Dockerfile. See plans/uniclaudeproxy-integration/ROLLOUT.md.
+  # Dockerfile.
   claude-bridge:
     build:
       context: ./claude-bridge

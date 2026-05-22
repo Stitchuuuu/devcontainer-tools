@@ -62,14 +62,14 @@ secrets_template:
   - "# No secrets needed for package evaluation."
 
 initial_prompt: |
-  Tu démarres une research session dans le bundle {{bundle_id}}.
+  You are starting a research session in bundle {{bundle_id}}.
 
-  1. Lis /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
-  2. Si /workspace/result/PROGRESS.md existe, lis-le et reprends depuis. Sinon, crée-le.
-  3. Installe {{package_name}} dans /workspace/{{eval_dir}} avec --ignore-scripts ({{registry}}).
-  4. Évalue selon les axes de INSTRUCTIONS.md : sécu (CVE, deps), maintenance (cadence, last release), API quality, bundle size si applicable.
-  5. Verdict + rationale dans /workspace/result/OUTPUT.md.
-  6. Update /workspace/result/PROGRESS.md à chaque étape.
-  7. Quand le verdict est prêt, propose la commande de back-copy depuis INSTRUCTIONS.md.
+  1. Read /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
+  2. If /workspace/result/PROGRESS.md exists, read it and resume from there. Otherwise, create it.
+  3. Install {{package_name}} into /workspace/{{eval_dir}} with --ignore-scripts ({{registry}}).
+  4. Evaluate along the axes from INSTRUCTIONS.md: security (CVEs, deps), maintenance (cadence, last release), API quality, bundle size if applicable.
+  5. Verdict + rationale in /workspace/result/OUTPUT.md.
+  6. Update /workspace/result/PROGRESS.md at every step.
+  7. When the verdict is ready, propose the back-copy command from INSTRUCTIONS.md.
 
-  Package : {{package_name}} ({{registry}})
+  Package: {{package_name}} ({{registry}})

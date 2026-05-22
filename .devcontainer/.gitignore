@@ -1,4 +1,4 @@
-# DevContainer (v2) — internes scoped à .devcontainer/
+# DevContainer (v2) — internals scoped to .devcontainer/
 
 # Runtime artefacts (auto-generated, per-rebuild)
 .env
@@ -25,11 +25,7 @@ firewall-blocks.*.log
 
 !firewall/policy.local.d/.keep
 
-# Skills — local personal variants (runtime copies — ignored everywhere,
-# including in this repo). The source-of-truth lives committed under
-# templates/v2/skills/*.local/ — see templates/v2/skills/.gitignore which
-# re-includes *.local there (the parent templates/v2/.gitignore ignores them
-# because it doubles as the shipped .devcontainer/.gitignore for target projects).
+# Skills — local personal variants
 skills/**/*.local.skill.md
 skills/**/*.local/
 

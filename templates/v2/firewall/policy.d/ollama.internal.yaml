@@ -5,10 +5,8 @@
 # /api/tags) extend the baseline but cannot weaken /v1/messages — Claude Code
 # emits identical request shapes against both targets.
 # If you change /v1/messages constraints here, mirror to api.anthropic.com.yaml
-# and policy.d/claude-bridge.yaml. See
-# plans/uniclaudeproxy-integration/ROLLOUT.md "Locked decisions" for the full
-# rule ; .devcontainer/knowledge/INDEX.md "Policy parity across Claude Code targets"
-# once the docs-verif session lands.
+# and policy.d/claude-bridge.yaml. See .devcontainer/knowledge/INDEX.md
+# "Policy parity across Claude Code targets" for the cross-target rule.
 
 # Purpose: advanced rules for the local Ollama backend (Anthropic Messages
 # compat, Ollama ≥ v0.14.0). Routed via mitmproxy when the user uses the

@@ -108,7 +108,7 @@ token economy.
 
    **(a) A clickable markdown link to the script** so the user opens it in
    VSCode in one click and reviews before running. `[file.sh](.devcontainer/pending/file.sh)`
-   becomes a clickable link in the IDE ; bare path `📝 Script préparé :
+   becomes a clickable link in the IDE ; bare path `📝 Script prepared:
    .devcontainer/pending/foo.sh` in plain text does NOT.
 
    **(b) A 1-2 line explanatory note** of what the script does — *why* you
@@ -129,7 +129,7 @@ token economy.
 
    Exact format :
    ```markdown
-   📝 Script préparé : [<task-id>.sh](.devcontainer/pending/<task-id>.sh)
+   📝 Script prepared: [<task-id>.sh](.devcontainer/pending/<task-id>.sh)
 
    <1-2 lines : what the script does, what side effects, why now>
 
@@ -253,10 +253,10 @@ Displays the four-piece block — link, explanatory note, bash command, log
 link :
 
 ```
-📝 Script préparé : [diag-firewall-1746950400.sh](.devcontainer/pending/diag-firewall-1746950400.sh)
+📝 Script prepared: [diag-firewall-1746950400.sh](.devcontainer/pending/diag-firewall-1746950400.sh)
 
-Lit iptables OUTPUT (needs sudo), liste les processus mitmdump, et probe
-GitHub via curl. Pas de modification, lecture seule.
+Reads iptables OUTPUT (needs sudo), lists mitmdump processes, and probes
+GitHub via curl. No modification, read-only.
 
 Pour le lancer (copier-coller) :
   bash .devcontainer/pending/diag-firewall-1746950400.sh 2>&1 | tee .devcontainer/pending/diag-firewall-1746950400.log

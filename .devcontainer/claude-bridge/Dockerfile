@@ -24,7 +24,6 @@ RUN git clone --depth 1 https://github.com/vibheksoni/UniClaudeProxy /tmp/ucp \
 # this image lives. Currently carries the `enable_thinking` flag that re-injects
 # Ollama 0.9+ `reasoning` SSE deltas as <think> markers in the text stream so
 # the react/_process_raw layer surfaces them as Anthropic thinking blocks.
-# Upstream issue draft : plans/uniclaudeproxy-integration-local-opti/upstream-issue-ucp-think.md
 COPY ucp-overlay/app/ /app/app/
 
 # Wheels baked into the image — no boot-time pip install.

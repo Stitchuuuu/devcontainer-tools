@@ -1,6 +1,6 @@
 # DevContainer base image scheme (v2.1)
 
-The image is split into **two layers** built separately, plus an optional **variant** for PHP-heavy projects. This was introduced in v2.1 (see [SESSION-RECAP-v2.1.md](../../plans/devcontainer-v2/SESSION-RECAP-v2.1.md) for the full rationale and chiffres).
+The image is split into **two layers** built separately, plus an optional **variant** for PHP-heavy projects. This was introduced in v2.1.
 
 ```
 .devcontainer/
@@ -23,9 +23,9 @@ The env var lives in `.devcontainer/.env` and drives **three** install paths:
 |---|---|---|
 | 1. VSIX URL (build-time) | `Dockerfile.base` `ARG CLAUDE_CODE_VERSION` | `curl marketplace.visualstudio.com/.../claude-code/${V}/vspackage?targetPlatform=${VP}` |
 | 2. npm fallback pin | `Dockerfile.base` Phase A RUN | `npm install -g @anthropic-ai/claude-code@${V}` (only invoked if Phase B symlink failed) |
-| 3. `devcontainer.json` extension pin | `customizations.vscode.extensions` array | **Manual sync** — JSONC comment above the array reminds. Filet de sécurité for Scenario 3 (Marketplace down at build) |
+| 3. `devcontainer.json` extension pin | `customizations.vscode.extensions` array | **Manual sync** — JSONC comment above the array reminds. Safety net for Scenario 3 (Marketplace down at build) |
 
-The two-endroits drift (`.env` + `devcontainer.json`) was the v2.1-1 bug. v2.1-2 makes it loud (sentinel + comment) but doesn't auto-sync — `devcontainer.json` doesn't support `${localEnv}` substitution from `.devcontainer/.env` without host shell setup.
+The two-locations drift (`.env` + `devcontainer.json`) was the v2.1-1 bug. v2.1-2 makes it loud (sentinel + comment) but doesn't auto-sync — `devcontainer.json` doesn't support `${localEnv}` substitution from `.devcontainer/.env` without host shell setup.
 
 ## Failsafe Claude binary chain (3 scenarios)
 

@@ -77,7 +77,6 @@ Before merging a session that touches the devcontainer baseline :
 1. `bash tests/run.sh --unit` (passes on host or container, fast).
 2. Rebuild Container, then `bash tests/run.sh --integration` (zero skips
    expected for the session under test).
-3. If the session touches multiple firewall modes, see the
-   [test plan](../../plans/devcontainer-security-hardening/TEST-PLAN.md)
-   for the multi-rebuild sequence.
-4. Document any expected skip in the session's LOG.md entry.
+3. If the session touches multiple firewall modes, run the integration
+   suite once per mode (off / basic / strict), rebuilding between modes.
+4. Document any expected skip in the session log.

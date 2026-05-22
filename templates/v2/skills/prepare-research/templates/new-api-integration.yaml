@@ -67,14 +67,14 @@ secrets_template:
   - "{{#each secret_names}}{{this}}=REPLACE_ME{{/each}}"
 
 initial_prompt: |
-  Tu démarres une research session dans le bundle {{bundle_id}}.
+  You are starting a research session in bundle {{bundle_id}}.
 
-  1. Lis /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
-  2. Si /workspace/result/PROGRESS.md existe, lis-le et reprends depuis. Sinon, crée-le.
-  3. Lis la doc {{service_name}} ({{api_domain}}, méthodes : {{methods}}) ; expérimente un appel sandbox avec les secrets de .devcontainer/.env.local.
-  4. Propose le code d'intégration minimal dans /workspace/result/ — scope strict = {{scope_dir}}.
-  5. Synthèse + design notes dans /workspace/result/OUTPUT.md.
-  6. Update /workspace/result/PROGRESS.md à chaque étape.
-  7. Si success criteria atteints, propose la commande de back-copy depuis INSTRUCTIONS.md.
+  1. Read /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
+  2. If /workspace/result/PROGRESS.md exists, read it and resume from there. Otherwise, create it.
+  3. Read the {{service_name}} docs ({{api_domain}}, methods: {{methods}}); try a sandbox call with the secrets from .devcontainer/.env.local.
+  4. Propose the minimal integration code in /workspace/result/ — strict scope = {{scope_dir}}.
+  5. Synthesis + design notes in /workspace/result/OUTPUT.md.
+  6. Update /workspace/result/PROGRESS.md at every step.
+  7. If success criteria are met, propose the back-copy command from INSTRUCTIONS.md.
 
-  Rappels : sandbox uniquement, jamais de prod keys. Scope strictement limité à {{scope_dir}}.
+  Reminders: sandbox only, never production keys. Scope strictly limited to {{scope_dir}}.

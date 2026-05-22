@@ -181,7 +181,6 @@ A few signals are shown at every container start. None are blocking; all give th
 │   └── wtf.md                  .wtfcmd.yaml authoring (task runner)
 ├── RUNBOOK.md                  operational procedures (add domain, troubleshoot, reset)
 ├── RESEARCH.md                 research bundle workflow end-to-end
-├── IMPLEMENTATION-PLAN.md      thin redirect → plans/devcontainer-v2/phase3-rollout/
 │
 ├── claude/
 │   ├── CLAUDE-dev.md           symlinked to /workspace/CLAUDE.md in dev mode
@@ -487,7 +486,7 @@ POST api.anthropic.com/v1/messages            # 4. single-line path
 [POST] *.statsig.com                          #    or wildcard host (leading *.)
 ```
 
-Full reference (precedence, `!disable`, `policy.d/<host>.yaml`): [POLICY-MODEL.md in the rollout docs](../plans/devcontainer-v2/phase3-rollout/docs/POLICY-MODEL.md).
+Full reference (precedence, `!disable`, `policy.d/<host>.yaml`): see the policy compiler at `firewall/compile-policy.py`.
 
 ### `firewall/domains.d/<eco>.txt` — per-ecosystem deps (auto-generated, committed)
 
@@ -598,7 +597,7 @@ Full procedure: [RESEARCH.md](RESEARCH.md). Templates (`new-api-integration`, `d
 post-start.sh boots
   └─► checks scan-deps/.last-scan.json sentinel
        └─► if manifest mtime > sentinel.ts → cyan banner:
-           "⚠  Lance /scan-deps : package.json modifié depuis le dernier scan"
+           "⚠  Run /scan-deps : package.json modified since last scan"
 
 User: /scan-deps
   └─► step 1: extract-auto-dependencies (bash, deterministic)
@@ -692,4 +691,3 @@ It's a build artifact regenerated at every boot by `init-firewall.sh`. The commi
 - [knowledge/INDEX.md](knowledge/INDEX.md) — internals (volumes, OAuth flow, hooks, idempotency contracts, extension points)
 - [RUNBOOK.md](RUNBOOK.md) — operational procedures (add domain, reset CA, troubleshoot)
 - [RESEARCH.md](RESEARCH.md) — research bundle workflow
-- [plans/devcontainer-v2/phase3-rollout/](../plans/devcontainer-v2/phase3-rollout/) — rollout docs: ARCHITECTURE, POLICY-MODEL, SECURITY-MODEL, WORKFLOWS

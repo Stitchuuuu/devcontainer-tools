@@ -24,7 +24,7 @@ MITM_USER=mitmproxy
 
 # Guard: only meaningful in strict mode. Caller (init-firewall.sh) should
 # already gate this, but double-check so manual invocations are safe. Legacy
-# alias `paranoid` accepted for rétro-compat.
+# alias `paranoid` accepted for backward-compat.
 case "${FIREWALL_MODE:-strict}" in
   strict|paranoid) ;;
   *)

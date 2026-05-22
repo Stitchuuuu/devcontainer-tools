@@ -51,8 +51,8 @@ Cloud Claude compacts intelligently when the conversation grows long ;
 local models often produce poor summaries that lose critical context.
 **Prefer ending the session and starting fresh** over relying on
 compaction. If a task takes longer than 20-30 turns, finish what you
-can, summarize the state into a `plans/<feature>/STATUS.md` or similar,
-and recommend resuming in a new session.
+can, persist the state somewhere durable, and recommend resuming in
+a new session.
 
 ## Confabulation — sanity-check claims
 
