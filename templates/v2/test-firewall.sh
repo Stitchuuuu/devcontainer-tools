@@ -77,6 +77,51 @@ tcp_probe() {
   timeout 3 bash -c "echo >/dev/tcp/$1/$2" 2>/dev/null
 }
 
+needs_optin() {
+  # Internal-style hostnames need iptables ACCEPT via CLAUDE_CODE_FIREWALL_ALLOWED
+  # to be reachable at L4 — RFC1918 REJECT blocks them otherwise. Codebase convention :
+  #   *.internal → host-gateway alias (CNAME to host.docker.internal)
+  #   *.local    → bypass alias (NO_PROXY direct TCP, host-gateway OR Docker peer)
+  #   single-label (no dot) → Docker compose peer container
+  # Public TLDs (anthropic.com, etc.) route directly — no opt-in.
+  case "$1" in
+    *.internal|*.local) return 0 ;;
+    *.*)                return 1 ;;
+    *)                  return 0 ;;
+  esac
+}
+
+optin_port() {
+  # Echo the port matched in $FIREWALL_ALLOWED for $1, empty if not opted in.
+  # Matching rule (mirrors init-firewall.sh iptables ACCEPT logic) :
+  #   *.internal → entry "host:<port>" (host-gateway alias)
+  #   *.local    → entry "<bare>:<port>" preferred (Docker peer .local bypass),
+  #                fallback "host:<port>" (host-gateway .local bypass)
+  #   single-label → entry "<probe>:<port>" (Docker peer)
+  local probe="$1" entry e_host e_port bare _entries match=host
+  [ -z "$FIREWALL_ALLOWED" ] && return 0
+  IFS=',' read -ra _entries <<< "$FIREWALL_ALLOWED"
+  case "$probe" in
+    *.internal) match=host ;;
+    *.local)
+      bare="${probe%.local}"
+      # First pass : prefer the more specific bare match (Docker peer alias).
+      for entry in "${_entries[@]}"; do
+        entry=$(echo "$entry" | tr -d ' ')
+        e_host="${entry%%:*}"; e_port="${entry#*:}"
+        [ "$e_host" = "$bare" ] && { echo "$e_port"; return 0; }
+      done
+      match=host ;;
+    *) match="$probe" ;;
+  esac
+  for entry in "${_entries[@]}"; do
+    entry=$(echo "$entry" | tr -d ' ')
+    e_host="${entry%%:*}"; e_port="${entry#*:}"
+    [ "$e_host" = "$match" ] && { echo "$e_port"; return 0; }
+  done
+  return 0
+}
+
 check_blocked() {
   local host="$1" label="$2"
   if curl "${PROXY_ARG[@]}" -sk -o /dev/null --max-time 3 \
@@ -113,25 +158,29 @@ check_allowed() {
     fi
   done
 
+  if needs_optin "$probe"; then
+    # Internal-style host : port comes from CLAUDE_CODE_FIREWALL_ALLOWED.
+    if ! $in_ipset; then
+      echo "${RED}❌ $label (no ipset match — DNS allowlist broken)${RST}" >> "$TEST_RESULTS"
+      return
+    fi
+    local port; port=$(optin_port "$probe")
+    if [ -z "$port" ]; then
+      echo "ℹ️  $label — DNS-allowlisted but L4 not opted in via CLAUDE_CODE_FIREWALL_ALLOWED (uncomment in .env + Rebuild to enable)" >> "$TEST_RESULTS"
+    elif tcp_probe "$ip" "$port"; then
+      echo "✔ $label reachable (TCP :$port)" >> "$TEST_RESULTS"
+    else
+      echo "⚠️  $label opted in via .env (:$port) but TCP unreachable — check service / sidecar" >> "$TEST_RESULTS"
+    fi
+    return
+  fi
+
   if curl "${PROXY_ARG[@]}" -sk -o /dev/null --max-time 3 \
        -w "%{http_code}" "https://$probe/" 2>/dev/null \
        | grep -qE "^[1-5][0-9][0-9]$"; then
     echo "✔ $label reachable" >> "$TEST_RESULTS"
   elif $in_ipset; then
-    # HTTPS probe failed but the IP is allowlisted — try a TCP-level fallback
-    # for known non-HTTPS services so they still register as reachable. ollama
-    # serves HTTP-only on :11434 ; the HTTPS-on-:443 probe would always fail
-    # but the service is actually up. Generalize by adding more entries to the
-    # case below when other non-HTTPS allowlisted services come in.
-    local alt_port=""
-    case "$probe" in
-      ollama.internal|ollama.local) alt_port=11434 ;;
-    esac
-    if [ -n "$alt_port" ] && tcp_probe "$ip" "$alt_port"; then
-      echo "✔ $label reachable (TCP :$alt_port)" >> "$TEST_RESULTS"
-    else
-      echo "⚠️  $label allowlisted in ipset but unreachable" >> "$TEST_RESULTS"
-    fi
+    echo "⚠️  $label allowlisted in ipset but unreachable" >> "$TEST_RESULTS"
   else
     echo "${RED}❌ $label (no ipset match AND unreachable)${RST}" >> "$TEST_RESULTS"
   fi
