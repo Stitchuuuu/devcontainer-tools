@@ -1,0 +1,13 @@
+# DevContainer (v2)
+.devcontainer/.env
+.devcontainer/.configured-*
+.devcontainer/logs/
+.devcontainer/pending/
+.devcontainer/pr-drafts/
+.devcontainer/research-bundles/
+.devcontainer/scan-deps/
+**/firewall/domains.local.txt
+**/firewall/policy.local.d/
+**/skills/**/*.local/
+.vscode/
+.claude/

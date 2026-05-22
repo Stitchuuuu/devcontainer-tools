@@ -1,0 +1,61 @@
+template: doc-research
+description: Pure read-only documentation research (obscure lib, framework eval) — GET only, no secrets
+
+prompts_for_user:
+  - var: topic
+    label: "Research topic (ex: 'Hono middleware lifecycle')"
+  - var: doc_domains
+    label: "Doc domains, CSV (ex: hono.dev,github.com/honojs)"
+
+domains_local_additions:
+  - "{{#each doc_domains}}{{this}}{{/each}}"   # GET-only — no method prefix
+
+policy_local_d_files: []
+
+files_to_copy: []   # no workspace import for pure doc research
+
+instructions_md: |
+  # Research: {{topic}}
+
+  ## Goals
+  - Read documentation from the allowlisted domains.
+  - Synthesize findings (architecture, gotchas, recommended usage) into
+    /workspace/result/OUTPUT.md.
+
+  ## Constraints
+  - GET only — no POST, no third-party API call.
+  - No file modifications outside /workspace/result/.
+  - This research container has an isolated claude-config volume : project
+    skills are NOT available here.
+
+  ## Success criteria
+  - /workspace/result/OUTPUT.md exists and answers the question concisely.
+
+  ## Back-copy
+  At the end of the session, propose this two-step procedure for the user,
+  to run on the host from the main project root:
+
+      # 1. Archive result into the bundle source (snapshot, gitignored) :
+      cp -r ../{{bundle_id}}/result/. ./.devcontainer/research-bundles/{{bundle_id}}/result/
+
+      # 2. Promote specific deliverables, e.g. for doc research :
+      #    cp ../{{bundle_id}}/result/OUTPUT.md ./docs/research/{{task_slug}}.md
+
+secrets_template:
+  - "# No secrets required for documentation research."
+
+# Prompt that the user copy-pastes into Claude after opening the research
+# container in VS Code. Kept in FR per project chat convention (CLAUDE.md
+# `French chat / English code`). Claude's reply will follow the user's
+# language. Substitution placeholders : {{bundle_id}}, {{topic}}, {{doc_domains}}.
+initial_prompt: |
+  Tu démarres une research session dans le bundle {{bundle_id}}.
+
+  1. Lis /workspace/INSTRUCTIONS.md (goals, constraints, success criteria, back-copy).
+  2. Si /workspace/result/PROGRESS.md existe, lis-le et reprends depuis. Sinon, crée-le.
+  3. Effectue la recherche en GET-only sur les domaines allowlistés ({{doc_domains}}).
+  4. Synthèse incrémentale dans /workspace/result/OUTPUT.md.
+  5. Update /workspace/result/PROGRESS.md à chaque étape (done / remaining).
+  6. Si les success criteria sont atteints, propose la commande de back-copy depuis INSTRUCTIONS.md.
+
+  Topic : {{topic}}

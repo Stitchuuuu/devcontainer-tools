@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Cleanup research sibling folders older than N days.
+# HOST-ONLY — run from the main project root, NOT inside the devcontainer
+# (the `..` sibling has no meaning inside the container).
+#
+# Usage:
+#   research-cleanup                list candidates (dry-run, default)
+#   research-cleanup --apply        delete after surconfirmation
+#
+# Env:
+#   RESEARCH_CLEANUP_DAYS=N   threshold in days (default 7)
+#
+# Sibling folders are matched against ../<main-dc-project>-research-*/ where
+# <main-dc-project> is the DC_PROJECT value in .devcontainer/.env of the cwd.
+
+set -euo pipefail
+
+# Sanity guard : refuse to run inside the devcontainer. `..` from the main
+# project workspace doesn't point at any host sibling — siblings live on the
+# host filesystem only.
+if [ -f /.dockerenv ] || grep -qE ':/(docker|kubepods)[/-]' /proc/1/cgroup 2>/dev/null; then
+  echo "❌ research-cleanup must run on the HOST, not inside the container." >&2
+  echo "   Open a host terminal in the main project root and run:" >&2
+  echo "     .devcontainer/host-helpers/research-cleanup [--apply]" >&2
+  exit 2
+fi
+
+DAYS="${RESEARCH_CLEANUP_DAYS:-7}"
+APPLY=0
+[ "${1:-}" = "--apply" ] && APPLY=1
+
+ENV_FILE=".devcontainer/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "❌ run from main project root (no $ENV_FILE)" >&2
+  exit 1
+fi
+MAIN=$(grep -E '^DC_PROJECT=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+if [ -z "$MAIN" ]; then
+  echo "❌ DC_PROJECT not set in $ENV_FILE" >&2
+  exit 1
+fi
+
+PATTERN="../${MAIN}-research-*"
+mapfile -t CANDIDATES < <(
+  find ../  -maxdepth 1 -mindepth 1 -type d -name "${MAIN}-research-*" -mtime +"$DAYS" 2>/dev/null \
+    | sort
+)
+
+if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+  echo "✓ no research siblings older than ${DAYS}d (pattern: $PATTERN)"
+  exit 0
+fi
+
+echo "Research siblings older than ${DAYS}d (pattern: $PATTERN):"
+for c in "${CANDIDATES[@]}"; do
+  echo "  $c"
+done
+
+if [ "$APPLY" -eq 0 ]; then
+  cat <<EOF
+
+(dry-run — pass --apply to delete)
+
+After delete, prune Docker volumes for these bundles :
+  docker volume ls --format '{{.Name}}' | grep -- '-research-' | xargs -r docker volume rm
+EOF
+  exit 0
+fi
+
+echo
+read -r -p "Delete the folders above? Type 'yes' : " ok
+if [ "$ok" != "yes" ]; then
+  echo "Aborted."
+  exit 0
+fi
+
+for c in "${CANDIDATES[@]}"; do
+  rm -rf "$c"
+  echo "✓ deleted $c"
+done
+
+cat <<EOF
+
+Now prune Docker volumes for these bundles :
+  docker volume ls --format '{{.Name}}' | grep -- '-research-' | xargs -r docker volume rm
+
+(Volumes for the main project stay untouched ; the grep pattern only matches
+research bundle DC_PROJECTs.)
+EOF

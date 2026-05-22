@@ -1,0 +1,293 @@
+# -----------------------------------------------
+# Base DevContainer — Claude Code Sandbox
+# Built once per CLAUDE_CODE_VERSION by .devcontainer/initialize.sh and
+# tagged `claude-devcontainer-base:${CLAUDE_CODE_VERSION}`. The project
+# Dockerfile is a thin `FROM claude-devcontainer-base:${VERSION}` shell.
+# -----------------------------------------------
+FROM node:20-slim
+
+ARG TZ
+ENV TZ="$TZ"
+
+ARG CLAUDE_CODE_VERSION=2.1.145
+ARG GIT_DELTA_VERSION=0.18.2
+
+# -----------------------------------------------
+# System tools + targeted build deps (sharp / bcrypt / node-gyp) + locale purge
+# -----------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  # runtime essentials
+  less \
+  git \
+  procps \
+  sudo \
+  fzf \
+  zsh \
+  man-db \
+  unzip \
+  gnupg2 \
+  iptables \
+  ipset \
+  iproute2 \
+  dnsutils \
+  dnsmasq \
+  aggregate \
+  jq \
+  nano \
+  vim \
+  python3 \
+  python3-yaml \
+  rsync \
+  ca-certificates \
+  netcat-openbsd \
+  curl \
+  wget \
+  # build tools for npm postinstalls (sharp, bcrypt, node-gyp)
+  build-essential \
+  libssl-dev \
+  && apt-get clean && rm -rf /var/lib/apt/lists/* \
+  # Purge locales (keep en/en_US/C), man and doc — saves ~175 MB
+  && find /usr/share/locale -mindepth 1 -maxdepth 1 -type d \
+       ! -name 'en' ! -name 'en_US' ! -name 'C' -exec rm -rf {} + \
+  && rm -rf /usr/share/man/* /usr/share/doc/* \
+  && systemctl disable dnsmasq 2>/dev/null || true
+
+# -----------------------------------------------
+# Phase 3 A3 — mitmproxy standalone binary baked at build-time
+# Replaces runtime venv pip install (~220 MB volume saved, 1st-boot instant).
+# A2: `node` joins the `adm` group so it can read /var/log/mitmproxy{,-writes,-blocks}.log
+# (mitmproxy:adm 640). Done here so the GID is in place before the firewall RUN.
+# -----------------------------------------------
+ARG MITM_VERSION=12.2.3
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin mitmproxy && \
+    usermod -aG adm node && \
+    ARCH=$(dpkg --print-architecture) && \
+    case "$ARCH" in \
+      amd64) PKG="mitmproxy-${MITM_VERSION}-linux-x86_64.tar.gz" ;; \
+      arm64) PKG="mitmproxy-${MITM_VERSION}-linux-aarch64.tar.gz" ;; \
+      *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
+    esac && \
+    mkdir -p /opt/mitmproxy && \
+    curl -fsSL "https://downloads.mitmproxy.org/${MITM_VERSION}/${PKG}" \
+      | tar -xz -C /opt/mitmproxy && \
+    chmod +x /opt/mitmproxy/mitmdump /opt/mitmproxy/mitmproxy /opt/mitmproxy/mitmweb && \
+    ln -s /opt/mitmproxy/mitmdump /usr/local/bin/mitmdump
+
+# GitHub CLI — install from official repo for latest version (CVE-2024-53858 fix requires >= 2.63.0)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update && apt-get install -y gh && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------
+# wtf (blunt1337/wtfcmd) — .wtfcmd.yaml task runner.
+# Schema + helpers documented in knowledge/wtf.md.
+# No SHA pin — matches the mitmproxy / git-delta pattern above (HTTPS + repo
+# integrity). The wtfcmd project does not publish a SHA256SUMS file.
+#
+# WTF_VERSION accepts:
+#   "latest"  (default — GitHub's /releases/latest/download/ redirect)
+#   "1.2.1"   (or any exact version — reproducible build)
+# Override with: docker build --build-arg WTF_VERSION=1.2.1 ...
+# -----------------------------------------------
+ARG WTF_VERSION=latest
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+      amd64) asset=wtf-amd.linux ;; \
+      arm64) asset=wtf-arm.linux ;; \
+      *) echo "wtfcmd: unsupported arch ${arch}" >&2; exit 1 ;; \
+    esac; \
+    case "${WTF_VERSION}" in \
+      latest) url="https://github.com/blunt1337/wtfcmd/releases/latest/download/${asset}" ;; \
+      *)      url="https://github.com/blunt1337/wtfcmd/releases/download/v${WTF_VERSION}/${asset}" ;; \
+    esac; \
+    curl -fsSL --retry 3 -o /usr/local/bin/wtf "${url}"; \
+    chmod 0755 /usr/local/bin/wtf; \
+    wtf --help >/dev/null
+
+# -----------------------------------------------
+# User setup (node already exists in node:20-slim)
+# -----------------------------------------------
+ENV USERNAME=node
+ENV HOME=/home/$USERNAME
+
+RUN mkdir -p $HOME/.zsh $HOME/.cache/zsh /workspace \
+    $HOME/.claude $HOME/.claude-creds && \
+    touch $HOME/.zsh_history && \
+    chown -R $USERNAME:$USERNAME $HOME /workspace
+
+WORKDIR /workspace
+
+# -----------------------------------------------
+# git-delta
+# -----------------------------------------------
+RUN ARCH=$(dpkg --print-architecture) && \
+    wget "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
+    dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
+    rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
+
+# -----------------------------------------------
+# Claude — VSIX baked + Phase B binary symlink (v2.1-2). Single ARG drives
+# the baked VS Code extension AND the npm-fallback CLI. Marketplace download
+# runs during `docker build` on the host — out of the runtime firewall scope.
+#
+# Failsafe chain — `docker build` NEVER fails on a Claude-side problem :
+#   1. VSIX DL OK + Phase B OK  → /usr/local/bin/claude is a symlink into the
+#      extension's embedded native binary. No npm install. (~224 MB win.)
+#   2. VSIX DL OK + Phase B KO  → extension is still baked (VS Code sees it
+#      via extensions.json), CLI falls back to npm install + sentinel banner.
+#   3. VSIX DL KO               → no extension baked, no extensions.json
+#      written. npm install handles the CLI ; VS Code installs the extension
+#      at runtime via the pin in devcontainer.json (Marketplace is in the
+#      firewall allowlist — same path the user's been using for months).
+#
+# `/etc/claude-source` records which branch fired (consumed by post-start.sh
+# + shell-init.sh banners).
+# -----------------------------------------------
+RUN set -u ; \
+    ARCH=$(dpkg --print-architecture) ; \
+    case "$ARCH" in \
+      amd64) VP=linux-x64   ;; \
+      arm64) VP=linux-arm64 ;; \
+      *) echo "Unsupported arch: $ARCH" ; exit 1 ;; \
+    esac ; \
+    EXT_DIR="${HOME}/.vscode-server/extensions/anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
+    URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/anthropic/vsextensions/claude-code/${CLAUDE_CODE_VERSION}/vspackage?targetPlatform=${VP}" ; \
+    mkdir -p "$EXT_DIR" ; \
+    # `--compressed` advertises Accept-Encoding: gzip ; Marketplace responds
+    # with Content-Encoding: gzip on the VSIX (zip) stream — curl decompresses
+    # transparently, leaving the raw ZIP (PK\x03\x04 magic) on disk.
+    if curl -fsSL --compressed -A 'VSCode/devcontainer' -o /tmp/claude.vsix "$URL" \
+       && unzip -q /tmp/claude.vsix -d /tmp/claude-vsix \
+       && [ -d /tmp/claude-vsix/extension ] ; then \
+      cp -a /tmp/claude-vsix/extension/. "$EXT_DIR/" ; \
+      echo "VSIX downloaded + extracted (${VP})" ; \
+    else \
+      echo "VSIX download/extract failed — runtime fallback via devcontainer.json pin" >&2 ; \
+      rm -rf "$EXT_DIR" ; \
+    fi ; \
+    rm -rf /tmp/claude.vsix /tmp/claude-vsix ; \
+    # Ownership flip in the SAME layer as the 243 MB `cp -a` above — running
+    # `chown -R` in a later RUN block duplicates the 243 MB into a second
+    # layer (Docker records inode metadata changes as a full file copy in the
+    # layer diff). v2.1-2 first iteration had this bug ; analyze-base-image
+    # report 2026-05-20 caught it. Keep this chown in this RUN.
+    chown -R node:node "${HOME}/.vscode-server"
+
+RUN set -u ; \
+    ARCH=$(dpkg --print-architecture) ; \
+    case "$ARCH" in amd64) VP=linux-x64 ;; arm64) VP=linux-arm64 ;; esac ; \
+    EXT_DIR="${HOME}/.vscode-server/extensions/anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
+    BIN="${EXT_DIR}/resources/native-binary/claude" ; \
+    EXT_BAKED=0 ; [ -d "$EXT_DIR" ] && EXT_BAKED=1 ; \
+    SOURCE=npm-fallback ; \
+    if [ "$EXT_BAKED" = "1" ] && [ -x "$BIN" ] ; then \
+      ln -sf "$BIN" /usr/local/bin/claude ; \
+      INSTALLED=$(/usr/local/bin/claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true) ; \
+      if [ "$INSTALLED" = "$CLAUDE_CODE_VERSION" ] ; then \
+        SOURCE="extension:${BIN}" ; \
+      else \
+        rm -f /usr/local/bin/claude ; \
+        echo "Phase B: version mismatch (got '$INSTALLED', want '$CLAUDE_CODE_VERSION')" >&2 ; \
+      fi ; \
+    elif [ "$EXT_BAKED" = "1" ] ; then \
+      echo "Phase B: extension extracted but $BIN missing/not executable" >&2 ; \
+    else \
+      echo "Phase B: no extension dir (VSIX DL failed earlier)" >&2 ; \
+    fi ; \
+    if [ "$SOURCE" = "npm-fallback" ] ; then \
+      NPM_ARCH=$(node -e 'console.log(process.arch)') ; \
+      npm install -g --os=linux --cpu="${NPM_ARCH}" \
+          @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} ; \
+      npm cache clean --force ; \
+      rm -rf /home/node/.npm /root/.npm /tmp/* ; \
+      touch /etc/claude-fallback-warn ; \
+      # Disambiguate the two npm-fallback flavours in /etc/claude-source so the
+      # banner can hint at the right thing to investigate at next bump.
+      if [ "$EXT_BAKED" = "1" ] ; then \
+        SOURCE="npm-fallback (VSIX baked, Phase B path issue)" ; \
+      else \
+        SOURCE="npm-fallback (no VSIX, runtime ext install via Marketplace)" ; \
+      fi ; \
+    fi ; \
+    printf '%s\n' "$SOURCE" > /etc/claude-source ; \
+    chmod 644 /etc/claude-source ; \
+    # extensions.json is only written when the VSIX was actually extracted.
+    # Otherwise we let VS Code install the extension at runtime via the pin
+    # in devcontainer.json (firewall already allows GET marketplace +
+    # *.gallerycdn.vsassets.io). UUIDs are stable per-extension/per-publisher.
+    if [ "$EXT_BAKED" = "1" ] ; then \
+      TS=$(date +%s)000 ; \
+      REL="anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
+      printf '[{"identifier":{"id":"anthropic.claude-code","uuid":"3c13ae49-babe-45fe-8c48-5e45077a62bf"},"version":"%s","location":{"$mid":1,"fsPath":"%s","external":"file://%s","path":"%s","scheme":"file"},"relativeLocation":"%s","metadata":{"isApplicationScoped":true,"installedTimestamp":%s,"pinned":true,"source":"gallery","id":"3c13ae49-babe-45fe-8c48-5e45077a62bf","publisherId":"89769da0-cc4b-40b0-8216-93ffb5a96b56","publisherDisplayName":"Anthropic","targetPlatform":"%s","updated":false,"private":false,"isPreReleaseVersion":false,"hasPreReleaseVersion":false}}]\n' \
+        "${CLAUDE_CODE_VERSION}" "${EXT_DIR}" "${EXT_DIR}" "${EXT_DIR}" "${REL}" "${TS}" "${VP}" \
+        > "${HOME}/.vscode-server/extensions/extensions.json" ; \
+      chown node:node "${HOME}/.vscode-server/extensions/extensions.json" ; \
+    fi
+
+# -----------------------------------------------
+# Firewall script + config (baked into image, root-only)
+# -----------------------------------------------
+COPY init-firewall.sh /usr/local/bin/
+COPY test-firewall.sh /usr/local/bin/
+COPY firewall/compile-policy.py /usr/local/bin/compile-policy.py
+COPY firewall/mitm-init.sh /usr/local/bin/mitm-init.sh
+COPY firewall/firewall-blocks /usr/local/bin/firewall-blocks
+COPY firewall/dnsmasq.conf /etc/devcontainer-firewall/dnsmasq.conf
+COPY firewall/domains.txt /etc/devcontainer-firewall/domains.txt
+COPY firewall/domains.local.txt.example /etc/devcontainer-firewall/domains.local.txt.example
+COPY firewall/policy.d/ /etc/devcontainer-firewall/policy.d/
+COPY firewall/policy.local.d.example/ /etc/devcontainer-firewall/policy.local.d.example/
+COPY firewall/tests/ /etc/devcontainer-firewall/tests/
+COPY firewall/addons/ /etc/devcontainer-firewall/addons/
+RUN touch /etc/devcontainer-firewall/domains.local.txt && \
+    chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/test-firewall.sh /usr/local/bin/mitm-init.sh /usr/local/bin/compile-policy.py /usr/local/bin/firewall-blocks && \
+    chown -R root:root /etc/devcontainer-firewall && \
+    chmod -R 644 /etc/devcontainer-firewall && \
+    chmod 755 /etc/devcontainer-firewall \
+              /etc/devcontainer-firewall/tests \
+              /etc/devcontainer-firewall/policy.d \
+              /etc/devcontainer-firewall/policy.local.d.example \
+              /etc/devcontainer-firewall/addons && \
+    python3 -c "import ast; ast.parse(open('/usr/local/bin/compile-policy.py').read())" && \
+    for f in /etc/devcontainer-firewall/addons/*.py; do \
+      python3 -c "import ast,sys; ast.parse(open('$f').read())" || exit 1; \
+    done && \
+    echo "$USERNAME ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh, /usr/local/bin/test-firewall.sh" > /etc/sudoers.d/node-firewall && \
+    chmod 0440 /etc/sudoers.d/node-firewall
+
+# gh-secure dropped in A3: Level 1 strict firewall already blocks POST github.com/*
+# outside /anthropics/* (cf. policy.d/{api,github}.com.yaml). PR workflow moves to
+# host-side via skill /prepare-pr + CLI host pr-from-draft (Phase B).
+# The gh-secure/ directory remains in the tree as archived reference — not COPY'd.
+
+# -----------------------------------------------
+# Shell init
+# -----------------------------------------------
+USER $USERNAME
+# shell-init.sh sourced from workspace (no rebuild needed on changes)
+RUN echo '[ -f /workspace/.devcontainer/shell-init.sh ] && source /workspace/.devcontainer/shell-init.sh' >> $HOME/.bashrc && \
+    echo '[ -f /workspace/.devcontainer/shell-init.sh ] && source /workspace/.devcontainer/shell-init.sh' >> $HOME/.zshrc
+
+# -----------------------------------------------
+# Defaults
+# -----------------------------------------------
+ENV SHELL=/bin/zsh
+ENV EDITOR=nano
+ENV VISUAL=nano
+
+# Claude Code config dir — baked default. Dockerfile ENV is the LOWEST layer
+# in the docker-compose / devcontainer env chain (Dockerfile ENV < env_file <
+# environment < containerEnv), so docker-compose `env_file: .env` overrides
+# this when CLAUDE_CONFIG_DIR is uncommented in .env (= host-helpers/
+# claude-switch local). When .env keeps it commented (cloud mode), this
+# baseline ensures the var is always defined in the container env — no
+# script needs to handle "unset" as a special case.
+# Verified live (2026-05-20) : the previous attempt to set this in
+# devcontainer.json `containerEnv` broke claude-switch entirely because
+# containerEnv applies AFTER env_file and silently overrode it.
+ENV CLAUDE_CONFIG_DIR=/home/node/.claude
+
+CMD ["bash", "-c", "trap 'exit' INT TERM; sleep infinity & wait"]

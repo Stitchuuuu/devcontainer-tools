@@ -1,0 +1,32 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 9223,
+    "local_only": false
+  },
+  "models": {
+    "claude-opus-4-7":   "ollama/claude-opus-4-7",
+    "claude-sonnet-4-6": "ollama/claude-opus-4-7",
+    "claude-haiku-4-5":  "ollama/claude-opus-4-7"
+  },
+  "providers": {
+    "ollama": {
+      "provider_type": "openai",
+      "api_key": "ollama",
+      "base_url": "http://host.docker.internal:11434/v1",
+      "headers": {},
+      "models": {
+        "claude-opus-4-7": {
+          "name": "Local Ollama alias (set via `ollama cp <real-model> claude-opus-4-7` on host)",
+          "use_react": true,
+          "force_stream": true,
+          "enable_thinking": true,
+          "system_replacements": {
+            "You are Claude Code, Anthropic's official CLI for Claude.": "You are an advanced AI coding assistant integrated into a CLI tool.",
+            "Claude Code": "the coding assistant"
+          }
+        }
+      }
+    }
+  }
+}
