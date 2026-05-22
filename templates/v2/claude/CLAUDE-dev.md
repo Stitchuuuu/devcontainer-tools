@@ -215,3 +215,29 @@ These guidelines describe *how* to do dev work. They are deliberately
 silent on stack, language, conventions, and environment — those are
 project-specific and live in [CLAUDE-project.md](CLAUDE-project.md).
 Read that file before starting work on this project.
+
+## 13. Code style — perf + clarity
+
+For code **you write** (§4 still wins for existing code) :
+
+- **Single-read property access.** Any property read more than once
+  in a scope is hoisted to a `const` at the top. Applies to deep
+  chains (`a.b.c`) and to repeated `.length` alike. Gain: readability
+  + a single dereference.
+- **No nested `if` on the same value.** When two levels of `if` test
+  the same variable against different thresholds, collapse to a flat
+  `if / else if` chain ordered from most restrictive to broadest.
+  Branching becomes linear, indentation drops one level.
+- **Dependency-add hygiene.** Three conditions before `npm install`
+  (or composer / pip / …) :
+  - **No known CVE / vulnerability** — hard requirement, never
+    relaxed.
+  - **Latest stable version** available.
+  - **Trust in the package** — any one of these signals is enough:
+    actively maintained (recent commits, issues handled), widely
+    adopted (downloads, dependents, stars), mature and stable
+    (« frozen because it's rock-solid » — settled API, no open CVE),
+    or small enough to audit in a few minutes. *Not maintained ≠
+    outdated.*
+
+Meta-rule : **perf ≥ modern idioms, as long as readability holds.**
