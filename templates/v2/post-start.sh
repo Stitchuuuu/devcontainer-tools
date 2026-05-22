@@ -37,17 +37,16 @@ git -C /workspace update-index --skip-worktree .vscode/settings.json 2>/dev/null
 FW_MODE=$(cat /etc/devcontainer-firewall/default-mode 2>/dev/null | tr -d '[:space:]')
 FW_MODE="${FW_MODE:-strict}"
 
-# Firewall — only debug toggle is still env-passed (informational, non-security).
-# FIREWALL_MODE + CLAUDE_CODE_FIREWALL_ALLOWED are baked since session 1.
-echo "CLAUDE_CODE_FIREWALL_DEBUG=${CLAUDE_CODE_FIREWALL_DEBUG:-}" > /tmp/.firewall-env
 # on-create.sh runs init-firewall.sh as onCreateCommand so mitmproxy is up
 # before vscode-server installs extensions. onCreateCommand only fires at
 # container creation, so this re-runs init-firewall.sh on restarts (flag in
 # /tmp is wiped each boot) or if the onCreate pass failed.
+FW_DEBUG_ARG=""
+[ "${CLAUDE_CODE_FIREWALL_DEBUG:-}" = "true" ] && FW_DEBUG_ARG="--debug"
 EARLY_FLAG=/tmp/.firewall-early-initialized
 if [ ! -f "$EARLY_FLAG" ]; then
   echo "ℹ early firewall init missing/failed — running init-firewall.sh now"
-  sudo /usr/local/bin/init-firewall.sh
+  sudo /usr/local/bin/init-firewall.sh $FW_DEBUG_ARG
 else
   echo "✓ firewall already initialized at container boot — skipping re-init"
 fi

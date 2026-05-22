@@ -19,10 +19,8 @@ IFS=$'\n\t'
 RED=$'\033[1;31m'
 RST=$'\033[0m'
 
-# Same env-file contract as init-firewall.sh (sudo blocks env passthrough).
-[ -f /tmp/.firewall-env ] && source /tmp/.firewall-env
-
-DEBUG="${CLAUDE_CODE_FIREWALL_DEBUG:-false}"
+DEBUG=false
+[ "${1:-}" = "--debug" ] && { DEBUG=true; shift; }
 dbg() { [ "$DEBUG" = "true" ] && echo "$@" || true; }
 
 FIREWALL_CONFIG_DIR="${FIREWALL_CONFIG_DIR:-/etc/devcontainer-firewall}"

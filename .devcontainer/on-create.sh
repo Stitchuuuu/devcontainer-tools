@@ -32,18 +32,17 @@ echo "=== on-create $(date) ==="
 echo "  log:   ${LOG#/workspace/}"
 echo "  trace: $TRACE_LOC"
 
-# Firewall — only debug toggle is still env-passed (informational, non-security).
-# FIREWALL_MODE + CLAUDE_CODE_FIREWALL_ALLOWED are baked since session 1.
 FW_MODE=$(cat /etc/devcontainer-firewall/default-mode 2>/dev/null | tr -d '[:space:]')
 FW_MODE="${FW_MODE:-strict}"
-echo "CLAUDE_CODE_FIREWALL_DEBUG=${CLAUDE_CODE_FIREWALL_DEBUG:-}" > /tmp/.firewall-env
+FW_DEBUG_ARG=""
+[ "${CLAUDE_CODE_FIREWALL_DEBUG:-}" = "true" ] && FW_DEBUG_ARG="--debug"
 
 EARLY_FLAG=/tmp/.firewall-early-initialized
 rm -f "$EARLY_FLAG"
 
 # init-firewall.sh output flows through the global tee → $LOG (no longer a
 # dedicated /tmp file). Dev Containers panel still sees progress live.
-if sudo /usr/local/bin/init-firewall.sh 2>&1; then
+if sudo /usr/local/bin/init-firewall.sh $FW_DEBUG_ARG 2>&1; then
   touch "$EARLY_FLAG"
   echo "✓ firewall up at onCreate (mode=$FW_MODE) — VS Code can DL extensions"
 else
