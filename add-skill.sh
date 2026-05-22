@@ -56,7 +56,7 @@ done
 # Locate template directory
 # -----------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE_DIR="$SCRIPT_DIR/templates"
+TEMPLATE_DIR="$SCRIPT_DIR/templates/v2"
 SKILLS_TEMPLATE_DIR="$TEMPLATE_DIR/skills"
 
 if [ ! -d "$SKILLS_TEMPLATE_DIR" ]; then
