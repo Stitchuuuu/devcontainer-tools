@@ -322,37 +322,29 @@ generate_env() {
 }
 
 update_gitignore() {
+    # Source of truth : templates/<variant>/.gitignore. Appended verbatim
+    # (comments and blank lines preserved for readability). The first line of
+    # the template acts as a sentinel for idempotent re-runs.
     local gi="$TARGET_DIR/.gitignore"
+    local src="$TEMPLATE_DIR/.gitignore"
     touch "$gi"
 
-    local entries=(
-        "# DevContainer (v2)"
-        ".devcontainer/.env"
-        ".devcontainer/.configured-*"
-        ".devcontainer/logs/"
-        ".devcontainer/pending/"
-        ".devcontainer/pr-drafts/"
-        ".devcontainer/research-bundles/"
-        ".devcontainer/scan-deps/"
-        ".devcontainer/firewall/domains.local.txt"
-        ".devcontainer/firewall/policy.local.d/"
-        ".devcontainer/skills/**/*.local/"
-        ".vscode/"
-        ".claude/"
-    )
-
-    local added=0
-    for e in "${entries[@]}"; do
-        if ! grep -qxF "$e" "$gi" 2>/dev/null; then
-            echo "$e" >> "$gi"
-            added=$((added + 1))
-        fi
-    done
-    if [ "$added" -gt 0 ]; then
-        success ".gitignore updated ($added entries added)"
-    else
-        success ".gitignore already up to date"
+    if [ ! -f "$src" ]; then
+        warn ".gitignore template not found at $src — skipping"
+        return 0
     fi
+
+    local sentinel
+    sentinel="$(head -n1 "$src")"
+    if grep -qxF -- "$sentinel" "$gi" 2>/dev/null; then
+        success ".gitignore already up to date"
+        return 0
+    fi
+
+    # Separate from any pre-existing project content with a blank line.
+    [ -s "$gi" ] && echo "" >> "$gi"
+    cat "$src" >> "$gi"
+    success ".gitignore updated (template baseline appended)"
 }
 
 set_exec_perms() {
