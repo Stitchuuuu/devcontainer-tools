@@ -38,13 +38,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Composer 2.x latest (official image, multi-arch amd64 + arm64).
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# Project-specific firewall data — rebuilds per-project ; does NOT affect
-# the shared claude-devcontainer-base image. firewall-docker-setup.sh
-# lives in the base image ; touches domains.local.txt + finalizes perms.
-# *.example files are NOT COPY'd : they're host-side reference only
-# (accessible from inside via /workspace/.devcontainer/firewall/ bind mount).
-COPY firewall/domains.txt /etc/devcontainer-firewall/domains.txt
-COPY firewall/policy.d/   /etc/devcontainer-firewall/policy.d/
+# Project-specific firewall data — baked into the image, no runtime bind mount.
+# Recursive COPY embarks the whole firewall/ tree (domains, policy.d/,
+# policy.local.d/, default-mode, direct-tcp-allow.txt, addons, dnsmasq.conf,
+# tests, …). Base-layer COPYs into /etc/devcontainer-firewall/ from
+# Dockerfile.base are overlaid by this COPY where paths overlap — projects
+# can override addons/, dnsmasq.conf, tests/ that way. firewall-docker-setup.sh
+# (baked in the base image) finalizes perms + chown.
+COPY firewall/ /etc/devcontainer-firewall/
 RUN /usr/local/bin/firewall-docker-setup.sh
 
 USER node

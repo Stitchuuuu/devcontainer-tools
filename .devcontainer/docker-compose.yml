@@ -45,7 +45,6 @@ services:
       - default
     volumes:
       - ..:/workspace:delegated
-      - ./firewall:/etc/devcontainer-firewall:ro
       - ./vscode-settings.json:/workspace/.vscode/settings.json:bind
       - bash-history:/commandhistory
       - claude-config:/home/node/.claude

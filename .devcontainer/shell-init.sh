@@ -97,10 +97,14 @@ if [[ $- == *i* ]]; then
     CLAUDE_MODE=$(cat /workspace/.devcontainer/.configured-claude-mode | sed 's/CLAUDE-//;s/\.md//')
   fi
 
-  # Detect firewall mode (canonical: strict / basic / off — aliases paranoid / okeish accepted)
+  # Detect firewall mode from the baked file (single source of truth post-bake).
+  # /etc/devcontainer-firewall/default-mode is what init-firewall.sh actually
+  # applied at boot ; reading the workspace copy could lie if the user edited
+  # firewall/default-mode without rebuilding.
   FW_MODE="strict"
-  [ -f /workspace/.devcontainer/.configured-firewall-mode ] && \
-    FW_MODE=$(cat /workspace/.devcontainer/.configured-firewall-mode)
+  [ -f /etc/devcontainer-firewall/default-mode ] && \
+    FW_MODE=$(cat /etc/devcontainer-firewall/default-mode | tr -d '[:space:]')
+  [ -z "$FW_MODE" ] && FW_MODE="strict"
 
   # Local overrides suffix — appended to the "Firewall:" line so the user
   # sees at every shell launch whether they're running a customised policy.
@@ -203,7 +207,7 @@ PY
   echo "  Reconfigure other flags :"
   echo "    rm .devcontainer/.configured-auth            # reset GitHub auth"
   echo "    rm .devcontainer/.configured-claude-mode     # reset Claude mode"
-  echo "    rm .devcontainer/.configured-firewall-mode   # reset firewall mode"
+  echo "    rm .devcontainer/firewall/default-mode       # reset firewall mode"
   echo "  Then rebuild the container."
   echo "──────────────────────────────────"
 fi

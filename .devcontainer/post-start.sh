@@ -31,15 +31,15 @@ echo "  trace: $TRACE_LOC"
 # (the devcontainer overrides it via docker-compose volume mount)
 git -C /workspace update-index --skip-worktree .vscode/settings.json 2>/dev/null || true
 
-# Firewall mode — single source of truth: flag file in the bind-mounted workspace.
-# Canonical names since A4 : strict / basic / off. Legacy aliases (paranoid / okeish)
-# are still accepted by init-firewall.sh + mitm-init.sh for rétro-compat.
-FW_MODE=$(cat /workspace/.devcontainer/.configured-firewall-mode 2>/dev/null || echo strict)
+# Firewall mode — single source of truth since bake-only : the baked file
+# /etc/devcontainer-firewall/default-mode (read by init-firewall.sh too).
+# Used here only for the BASIC-mode banner below.
+FW_MODE=$(cat /etc/devcontainer-firewall/default-mode 2>/dev/null | tr -d '[:space:]')
+FW_MODE="${FW_MODE:-strict}"
 
-# Firewall — pass env vars via file (sudo blocks env passthrough)
-echo "CLAUDE_CODE_FIREWALL_ALLOWED=${CLAUDE_CODE_FIREWALL_ALLOWED:-}" > /tmp/.firewall-env
-echo "CLAUDE_CODE_FIREWALL_DEBUG=${CLAUDE_CODE_FIREWALL_DEBUG:-}" >> /tmp/.firewall-env
-echo "FIREWALL_MODE=$FW_MODE" >> /tmp/.firewall-env
+# Firewall — only debug toggle is still env-passed (informational, non-security).
+# FIREWALL_MODE + CLAUDE_CODE_FIREWALL_ALLOWED are baked since session 1.
+echo "CLAUDE_CODE_FIREWALL_DEBUG=${CLAUDE_CODE_FIREWALL_DEBUG:-}" > /tmp/.firewall-env
 # on-create.sh runs init-firewall.sh as onCreateCommand so mitmproxy is up
 # before vscode-server installs extensions. onCreateCommand only fires at
 # container creation, so this re-runs init-firewall.sh on restarts (flag in

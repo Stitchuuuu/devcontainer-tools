@@ -68,9 +68,25 @@ CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-dc-project}}"
 echo "  DC_PROJECT:   ${DC_PROJECT:-dc-project}"
 echo "  claude-creds: $CREDS_VOLUME"
 
-# Ensure firewall/domains.local.txt exists (gitignored, per-user).
+# Ensure firewall/ baked files exist before Dockerfile COPY (recursive).
+# domains.local.txt is gitignored ; default-mode + direct-tcp-allow.txt are
+# committed but a fresh project clone may need them seeded. policy.local.d/
+# is committed with .keep, but mkdir as a safety net for older clones.
 [ -f "$DEVCONTAINER_DIR/firewall/domains.local.txt" ] || \
   touch "$DEVCONTAINER_DIR/firewall/domains.local.txt"
+[ -s "$DEVCONTAINER_DIR/firewall/default-mode" ] || \
+  echo "strict" > "$DEVCONTAINER_DIR/firewall/default-mode"
+[ -f "$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt" ] || \
+  : > "$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt"
+mkdir -p "$DEVCONTAINER_DIR/firewall/policy.local.d"
+
+# Migrate legacy .configured-firewall-mode → firewall/default-mode (one-shot,
+# idempotent). After this migration, the flag file is the baked source of truth.
+LEGACY_FW_FLAG="$DEVCONTAINER_DIR/.configured-firewall-mode"
+if [ -f "$LEGACY_FW_FLAG" ] && [ ! -s "$DEVCONTAINER_DIR/firewall/default-mode" ]; then
+  cp "$LEGACY_FW_FLAG" "$DEVCONTAINER_DIR/firewall/default-mode"
+  echo "→ migrated firewall mode : .configured-firewall-mode → firewall/default-mode"
+fi
 
 # Ensure claude-bridge sidecar config exists BEFORE compose runs — Docker
 # would otherwise create an empty directory at the bind mount path
@@ -87,10 +103,11 @@ fi
 # Create volume (always needed)
 docker volume create "$CREDS_VOLUME" > /dev/null 2>&1 || true
 
-# Flag files — delete to re-prompt on next rebuild
+# Flag files — delete to re-prompt on next rebuild.
+# FW_FLAG moved into firewall/ + renamed default-mode since session 1 (bake-only).
 AUTH_FLAG="$DEVCONTAINER_DIR/.configured-auth"
 MODE_FLAG="$DEVCONTAINER_DIR/.configured-claude-mode"
-FW_FLAG="$DEVCONTAINER_DIR/.configured-firewall-mode"
+FW_FLAG="$DEVCONTAINER_DIR/firewall/default-mode"
 
 # -----------------------------------------------
 # Helpers — .env file management
@@ -546,7 +563,7 @@ print_summary() {
 	echo "  Reconfigure (each can be reset independently):"
 	echo "    rm .devcontainer/.configured-auth            # reset GitHub auth"
 	echo "    rm .devcontainer/.configured-claude-mode     # reset Claude mode"
-	echo "    rm .devcontainer/.configured-firewall-mode   # reset firewall mode"
+	echo "    rm .devcontainer/firewall/default-mode       # reset firewall mode"
 	echo "  Then rebuild the container."
 	echo "──────────────────────────────────"
 }
@@ -594,7 +611,7 @@ echo "=== DevContainer Setup ==="
 [ ! -f "$MODE_FLAG" ] && prompt_claude_mode
 [ ! -f "$FW_FLAG" ]   && write_firewall_default
 
-# Idempotent re-sync : if the user manually edited .configured-firewall-mode
+# Idempotent re-sync : if the user manually edited firewall/default-mode
 # between rebuilds, this aligns .env (HTTPS_PROXY etc) with the current flag.
 sync_proxy_env "$(cat "$FW_FLAG" 2>/dev/null || echo strict)"
 

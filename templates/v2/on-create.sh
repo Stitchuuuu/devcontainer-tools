@@ -32,13 +32,11 @@ echo "=== on-create $(date) ==="
 echo "  log:   ${LOG#/workspace/}"
 echo "  trace: $TRACE_LOC"
 
-# Pass env vars via file (sudo blocks env passthrough), mirroring post-start.sh.
-FW_MODE=$(cat /workspace/.devcontainer/.configured-firewall-mode 2>/dev/null || echo strict)
-{
-  echo "CLAUDE_CODE_FIREWALL_ALLOWED=${CLAUDE_CODE_FIREWALL_ALLOWED:-}"
-  echo "CLAUDE_CODE_FIREWALL_DEBUG=${CLAUDE_CODE_FIREWALL_DEBUG:-}"
-  echo "FIREWALL_MODE=$FW_MODE"
-} > /tmp/.firewall-env
+# Firewall — only debug toggle is still env-passed (informational, non-security).
+# FIREWALL_MODE + CLAUDE_CODE_FIREWALL_ALLOWED are baked since session 1.
+FW_MODE=$(cat /etc/devcontainer-firewall/default-mode 2>/dev/null | tr -d '[:space:]')
+FW_MODE="${FW_MODE:-strict}"
+echo "CLAUDE_CODE_FIREWALL_DEBUG=${CLAUDE_CODE_FIREWALL_DEBUG:-}" > /tmp/.firewall-env
 
 EARLY_FLAG=/tmp/.firewall-early-initialized
 rm -f "$EARLY_FLAG"

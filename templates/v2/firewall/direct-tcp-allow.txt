@@ -1,0 +1,20 @@
+# direct-tcp-allow.txt — services autorisés en TCP direct (bypass mitmproxy)
+#
+# Format : host:port par ligne. Commentaires : # en début de ligne ou
+# en inline. Mot-clé spécial : "host" = host.docker.internal.
+#
+# ⚠ Mettre ici UNIQUEMENT des services non-HTTP. Pour HTTP/HTTPS sur
+# n'importe quel port : utiliser domains.txt (mitmproxy s'en occupe).
+#
+# Par défaut RIEN n'est actif (cloud mode). Pour switcher :
+#   .devcontainer/host-helpers/claude-switch local-bridge   (puis rebuild)
+#   .devcontainer/host-helpers/claude-switch local-direct   (puis rebuild)
+#   .devcontainer/host-helpers/claude-switch cloud          (puis rebuild)
+#
+# Exemples (décommenter manuellement OU laisser claude-switch les gérer) :
+
+# Sidecar Claude bridge (UniClaudeProxy) — utilisé en mode local-bridge
+# claude-bridge:9223
+
+# Ollama serveur sur l'host (port 11434) — utilisé en mode local-direct
+# host:11434

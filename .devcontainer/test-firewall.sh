@@ -29,11 +29,14 @@ FIREWALL_CONFIG_DIR="${FIREWALL_CONFIG_DIR:-/etc/devcontainer-firewall}"
 BLOCKED_TESTS="$FIREWALL_CONFIG_DIR/tests/blocked.txt"
 PROBES_CACHE=/var/run/devcontainer-firewall/probes-cache.tsv
 
-case "${FIREWALL_MODE:-strict}" in
-  paranoid) FIREWALL_MODE=strict ;;
-  okeish)   FIREWALL_MODE=basic  ;;
+# Read mode from baked file (same source as init-firewall.sh post bake-only).
+FIREWALL_MODE=$(cat /etc/devcontainer-firewall/default-mode 2>/dev/null | tr -d '[:space:]')
+case "$FIREWALL_MODE" in
+  paranoid)         FIREWALL_MODE=strict ;;
+  okeish)           FIREWALL_MODE=basic  ;;
+  strict|basic|off) ;;
+  *)                FIREWALL_MODE=strict ;;
 esac
-FIREWALL_MODE="${FIREWALL_MODE:-strict}"
 
 # off mode = firewall disabled, no tests to run.
 if [ "$FIREWALL_MODE" = "off" ]; then
@@ -64,7 +67,18 @@ trim() {
 
 HOST_IP=$(resolve_via_docker host.docker.internal || true)
 [ -z "$HOST_IP" ] && HOST_IP=$(ip route | awk '/^default/ {print $3}')
-FIREWALL_ALLOWED="${CLAUDE_CODE_FIREWALL_ALLOWED:-}"
+
+# Load direct-tcp-allow.txt entries (baked) into CSV string for downstream code.
+# Same conventions as init-firewall.sh : strip inline `# ...`, drop blank /
+# comment-only lines, trim whitespace.
+DIRECT_TCP_ALLOW=/etc/devcontainer-firewall/direct-tcp-allow.txt
+FIREWALL_ALLOWED=""
+if [ -f "$DIRECT_TCP_ALLOW" ]; then
+  FIREWALL_ALLOWED=$(sed 's/#.*//' "$DIRECT_TCP_ALLOW" \
+                       | tr -d '[:space:]' \
+                       | grep -v '^$' \
+                       | paste -sd, -)
+fi
 
 TEST_RESULTS=$(mktemp)
 trap "rm -f '$TEST_RESULTS'" EXIT
@@ -166,11 +180,11 @@ check_allowed() {
     fi
     local port; port=$(optin_port "$probe")
     if [ -z "$port" ]; then
-      echo "ℹ️  $label — DNS-allowlisted but L4 not opted in via CLAUDE_CODE_FIREWALL_ALLOWED (uncomment in .env + Rebuild to enable)" >> "$TEST_RESULTS"
+      echo "ℹ️  $label — DNS-allowlisted but L4 not opted in (uncomment in firewall/direct-tcp-allow.txt + Rebuild to enable)" >> "$TEST_RESULTS"
     elif tcp_probe "$ip" "$port"; then
       echo "✔ $label reachable (TCP :$port)" >> "$TEST_RESULTS"
     else
-      echo "⚠️  $label opted in via .env (:$port) but TCP unreachable — check service / sidecar" >> "$TEST_RESULTS"
+      echo "⚠️  $label opted in via direct-tcp-allow.txt (:$port) but TCP unreachable — check service / sidecar" >> "$TEST_RESULTS"
     fi
     return
   fi
@@ -222,7 +236,7 @@ if [ -f "$BLOCKED_TESTS" ]; then
   done < "$BLOCKED_TESTS"
 fi
 
-# CLAUDE_CODE_FIREWALL_ALLOWED entries — TCP probe (may have no listener, OK)
+# direct-tcp-allow.txt entries — TCP probe (may have no listener, OK)
 if [ -n "$FIREWALL_ALLOWED" ]; then
   IFS=',' read -ra TEST_ENTRIES <<< "$FIREWALL_ALLOWED"
   for entry in "${TEST_ENTRIES[@]}"; do

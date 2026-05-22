@@ -7,20 +7,23 @@ logs/
 
 # Skill scratch dirs (keep dir via .keep, ignore content)
 pending/*
-!pending/.keep
 pr-drafts/*
-!pr-drafts/.keep
 research-bundles/*
-!research-bundles/.keep
 scan-deps/*
+
+!pending/.keep
+!pr-drafts/.keep
+!research-bundles/.keep
 !scan-deps/.keep
 
 # Firewall — local overrides, caches, test logs
 firewall/domains.local.txt
-firewall/policy.local.d/
+firewall/policy.local.d/*
 firewall/addons/__pycache__/
 firewall/tests/*.log
 firewall-blocks.*.log
+
+!firewall/policy.local.d/.keep
 
 # Skills — local personal variants
 skills/**/*.local.skill.md

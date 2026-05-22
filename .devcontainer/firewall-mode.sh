@@ -11,7 +11,8 @@
 #   paranoid  → strict
 #
 # What it does :
-#   1. Updates `<repo>/.devcontainer/.configured-firewall-mode` (single source of truth)
+#   1. Updates `<repo>/.devcontainer/firewall/default-mode` (single source of
+#      truth, baked into the image — modify needs a rebuild to apply).
 #   2. Syncs `<repo>/.devcontainer/.env` proxy/CA vars — otherwise PID 1 keeps a
 #      stale HTTPS_PROXY after rebuild (Docker re-reads env_file but doesn't
 #      remove vars dropped from the file; we have to clear them explicitly).
@@ -43,11 +44,11 @@ case "$MODE" in
     exit 1 ;;
 esac
 
-# Flag file + .env live next to this script (always in .devcontainer/).
-# $BASH_SOURCE resolves correctly on both host and container (the path is
-# meaningful in both contexts because of the workspace bind-mount).
+# Flag file (baked) + .env live in .devcontainer/. $BASH_SOURCE resolves
+# correctly on both host and container (path is meaningful in both contexts
+# because of the workspace bind-mount).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FLAG_FILE="$SCRIPT_DIR/.configured-firewall-mode"
+FLAG_FILE="$SCRIPT_DIR/firewall/default-mode"
 ENV_FILE="$SCRIPT_DIR/.env"
 
 # Sync .env proxy/CA vars to match the new mode. Without this sync, after a
@@ -90,15 +91,16 @@ else
   unsync_env_var "NODE_EXTRA_CA_CERTS"
 fi
 
-PREVIOUS="$(cat "$FLAG_FILE" 2>/dev/null || echo '(unset, default strict)')"
+# Ensure the parent dir exists (handles fresh projects pre-install). The
+# flag is baked into the image by Dockerfile COPY firewall/, so the on-disk
+# write only takes effect after a rebuild.
+mkdir -p "$(dirname "$FLAG_FILE")"
+PREVIOUS="$(cat "$FLAG_FILE" 2>/dev/null | tr -d '[:space:]' || echo '(unset, default strict)')"
 echo "$MODE" > "$FLAG_FILE"
 
-echo "Flag : $FLAG_FILE"
+echo "Flag : $FLAG_FILE  (baked — rebuild required)"
 echo "       $PREVIOUS  ->  $MODE"
 echo ".env : $ENV_FILE — proxy/CA vars $([ "$MODE" = "strict" ] && echo "set" || echo "cleared")"
-echo
-echo "Mode = $MODE written. To apply : rebuild the container."
-echo "(new .env vars are only picked up at container re-creation, not on reload.)"
 echo
 case "$MODE" in
   off)
@@ -109,3 +111,10 @@ case "$MODE" in
   strict)
     echo "DNS + mitmproxy force-proxy + A2 addons enforcement (sécu max baseline)." ;;
 esac
+echo
+# Bold yellow rebuild reminder — last line so it's the call-to-action the
+# user sees after running this script. Without the rebuild the mode change
+# has zero effect (firewall config is baked into the image since session 1).
+printf '\033[1;33m⚠  Mode = %s written.  REBUILD THE CONTAINER TO APPLY :\033[0m\n' "$MODE"
+printf '\033[1;33m   VS Code → Cmd+Shift+P → "Dev Containers: Rebuild Container"\033[0m\n'
+echo "   (firewall config is baked into the image — Reload Window is NOT enough.)"

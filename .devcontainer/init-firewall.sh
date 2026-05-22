@@ -121,23 +121,26 @@ get_probes() {
 }
 
 # -------------------------------
-# Canonicalise mode early. Accepts legacy aliases (A4 rename) :
-#   paranoid → strict
-#   okeish   → basic
-# Default if unset is the safe one : strict.
+# Read mode from baked file. Was env var FIREWALL_MODE before the bake-only
+# migration — workspace-modifiable was a runtime bypass surface (vector #12).
+# Accepts legacy aliases (A4 rename) : paranoid → strict, okeish → basic.
+# Default if file missing or value unknown : strict (safest).
 # -------------------------------
-case "${FIREWALL_MODE:-strict}" in
-  paranoid) FIREWALL_MODE=strict ;;
-  okeish)   FIREWALL_MODE=basic  ;;
+FIREWALL_MODE=$(cat /etc/devcontainer-firewall/default-mode 2>/dev/null | tr -d '[:space:]')
+case "$FIREWALL_MODE" in
+  paranoid)         FIREWALL_MODE=strict ;;
+  okeish)           FIREWALL_MODE=basic  ;;
+  strict|basic|off) ;;
+  *)                FIREWALL_MODE=strict ;;
 esac
-FIREWALL_MODE="${FIREWALL_MODE:-strict}"
 
 # -------------------------------
 # 0a. Early bail — MODE=off (kill-switch user-runnable via firewall-mode.sh)
 # -------------------------------
-# Set FIREWALL_MODE=off in /workspace/.devcontainer/.configured-firewall-mode
-# to disable the firewall entirely. Container boots with direct internet access
-# (Docker default resolver, no iptables filter, no proxy). Restored at next mode change.
+# Write "off" to /workspace/.devcontainer/firewall/default-mode (via
+# firewall-mode.sh off) + rebuild to disable the firewall entirely. Container
+# boots with direct internet access (Docker default resolver, no iptables
+# filter, no proxy). Restored at next mode change + rebuild.
 if [ "$FIREWALL_MODE" = "off" ]; then
   echo "⚠️  FIREWALL_MODE=off — bypassing all firewall config (direct internet access)."
 
@@ -437,30 +440,43 @@ wait
 echo "📍 Warming ipset...ok ($(ipset list allowed-domains 2>/dev/null | grep -cE '^[0-9]+\.' || echo 0) IPs)"
 
 # -------------------------------
-# 5. CLAUDE_CODE_FIREWALL_ALLOWED — direct ACCEPT for Docker-internal services
+# 5. direct-tcp-allow.txt — direct ACCEPT for non-HTTP TCP services
 # -------------------------------
+# Was env var CLAUDE_CODE_FIREWALL_ALLOWED (in .env, workspace-modifiable)
+# before the bake-only migration — adding arbitrary host:port to iptables
+# ACCEPT was a runtime bypass surface (vector #13).
+#
+# Format : one host:port per line. .env-style conventions :
+#   - blank lines ignored
+#   - lines starting with # ignored (comment)
+#   - inline `# ...` stripped
+#   - leading/trailing whitespace trimmed
+# Special keyword : "host" → host.docker.internal (Docker gateway IP).
 HOST_IP=$(resolve_via_docker host.docker.internal || true)
 [ -z "$HOST_IP" ] && HOST_IP=$(ip route | awk '/^default/ {print $3}')
 
-FIREWALL_ALLOWED="${CLAUDE_CODE_FIREWALL_ALLOWED:-}"
-if [ -n "$FIREWALL_ALLOWED" ]; then
-  IFS=',' read -ra ENTRIES <<< "$FIREWALL_ALLOWED"
-  for entry in "${ENTRIES[@]}"; do
-    entry=$(echo "$entry" | tr -d ' ')
+DIRECT_TCP_ALLOW=/etc/devcontainer-firewall/direct-tcp-allow.txt
+if [ -f "$DIRECT_TCP_ALLOW" ]; then
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    entry=$(echo "$raw" | sed 's/#.*//' | tr -d '[:space:]')
+    [ -z "$entry" ] && continue
+
     host=$(echo "$entry" | cut -d: -f1)
     port=$(echo "$entry" | cut -d: -f2)
+
     if [ "$host" = "host" ]; then
       ip="$HOST_IP"
     else
       ip=$(resolve_via_docker "$host")
     fi
+
     if [ -n "$ip" ]; then
       iptables -A OUTPUT -d "$ip" -p tcp --dport "$port" -j ACCEPT
-      echo "📦 Allow: $host ($ip):$port"
+      echo "📦 Direct TCP allow: $host ($ip):$port"
     else
       echo "⚠️  $host not resolvable — skipped"
     fi
-  done
+  done < "$DIRECT_TCP_ALLOW"
 fi
 
 # Block all private/local networks (host + Docker subnets) by default.

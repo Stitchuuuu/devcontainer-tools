@@ -266,13 +266,15 @@ install_files() {
         copy_verbatim "$f"
     done
     for f in dnsmasq.conf compile-policy.py mitm-init.sh domains.txt \
-             domains.local.txt.example firewall-blocks; do
+             domains.local.txt.example firewall-blocks \
+             default-mode direct-tcp-allow.txt; do
         copy_verbatim "firewall/$f"
     done
-    # ── Firewall trees (4 dirs) ────────────────────────────────
+    # ── Firewall trees (5 dirs) ────────────────────────────────
     copy_dir firewall/addons
     copy_dir firewall/policy.d
     copy_dir firewall/policy.local.d.example
+    copy_dir firewall/policy.local.d
     copy_dir firewall/tests
 
     # ── Claude (5 files) ───────────────────────────────────────
@@ -297,6 +299,9 @@ install_files() {
         copy_dir "skills/$s"
     done
 
+    # ── Tests (unit + integration suites) ──────────────────────
+    copy_dir tests
+
     # ── Gitignore (.devcontainer/-scope rules) ─────────────────
     copy_verbatim .gitignore
 
@@ -313,6 +318,48 @@ install_files() {
 # -----------------------------------------------
 # Post-install : .env, .gitignore, exec perms, marker
 # -----------------------------------------------
+migrate_legacy_firewall() {
+    # One-shot migration of legacy firewall config to baked files.
+    # Pre-bake (before session 1) the firewall mode lived at
+    # <project>/.devcontainer/.configured-firewall-mode and the direct-TCP
+    # allowlist lived as CLAUDE_CODE_FIREWALL_ALLOWED=host:port,host:port,…
+    # in .env. Both were workspace-mutable at runtime → bypass surface.
+    # Now baked into firewall/default-mode + firewall/direct-tcp-allow.txt.
+    # Idempotent : re-running does nothing once migrated.
+    local legacy_mode="$DEST/.configured-firewall-mode"
+    local mode_file="$DEST/firewall/default-mode"
+    local env_file="$DEST/.env"
+    local tcp_file="$DEST/firewall/direct-tcp-allow.txt"
+    local moved=0
+
+    if [ -f "$legacy_mode" ] && [ ! -s "$mode_file" ]; then
+        cp "$legacy_mode" "$mode_file"
+        info "Migrated firewall mode : .configured-firewall-mode → firewall/default-mode"
+        moved=1
+    fi
+
+    if [ -f "$env_file" ] && grep -q '^CLAUDE_CODE_FIREWALL_ALLOWED=' "$env_file"; then
+        local value
+        value=$(grep '^CLAUDE_CODE_FIREWALL_ALLOWED=' "$env_file" | head -1 \
+                  | cut -d= -f2- | tr -d '"' | tr -d "'")
+        if [ -n "$value" ]; then
+            {
+                echo ""
+                echo "# Migrated from .env CLAUDE_CODE_FIREWALL_ALLOWED on $(date +%Y-%m-%d)"
+                echo "$value" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+            } >> "$tcp_file"
+            info "Migrated CLAUDE_CODE_FIREWALL_ALLOWED='$value' → firewall/direct-tcp-allow.txt"
+            moved=1
+        fi
+        # Strip the line from .env regardless (idempotent, BSD/GNU compat).
+        local tmp; tmp=$(mktemp)
+        grep -v '^CLAUDE_CODE_FIREWALL_ALLOWED=' "$env_file" > "$tmp" || true
+        mv "$tmp" "$env_file"
+    fi
+
+    [ "$moved" -eq 1 ] && success "Legacy firewall config migrated to baked files"
+}
+
 generate_env() {
     local env="$DEST/.env"
     if [ -f "$env" ]; then
@@ -462,6 +509,7 @@ main() {
     DISPLAY_NAME_ESC="$(sed_escape "$PROJECT_DISPLAY_NAME")"
 
     install_files
+    migrate_legacy_firewall
     generate_env
     update_gitignore
     set_exec_perms
