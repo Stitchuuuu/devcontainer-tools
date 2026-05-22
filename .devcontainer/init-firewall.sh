@@ -277,26 +277,55 @@ else
   echo "⚠️  Could not resolve host.docker.internal via 127.0.0.11 — ollama.internal alias skipped"
 fi
 
-# Dynamic forwarding for the `claude-bridge` sidecar (devcontainer compose
-# peer container, see docker-compose.yml). compile-policy.py auto-emits
-# `server=/claude-bridge/8.8.8.8` from domains.txt, but 8.8.8.8 doesn't know
-# about Docker peers — strip it and substitute Docker's embedded resolver
-# (127.0.0.11) instead. dnsmasq's ipset notifier fires on upstream answers
-# so the `ipset=/claude-bridge/allowed-domains` directive (also auto-emitted)
-# populates the ipset transparently.
-#
-# The `.local` bypass alias mirrors `ollama.local` — same peer IP but
-# NO_PROXY matches `.local` suffix so Claude Code skips mitm.
+# Unconditional sibling-resolve for `claude-bridge` (docker-compose service,
+# always declared in docker-compose.yml regardless of mode ; always listed in
+# domains.txt L133-134). compile-policy.py emits `server=/claude-bridge/
+# 8.8.8.8` for it (8.8.8.8 doesn't know about Docker peers) — strip it and
+# substitute Docker's embedded resolver (127.0.0.11) which DOES resolve the
+# service name from the compose graph. The auto-emitted ipset directive stays.
 sed -i -E '/^server=\/claude-bridge\//d' "$GENERATED_DNSMASQ_CONF"
 cat >> "$GENERATED_DNSMASQ_CONF" <<EOF
 
 # Injected by init-firewall.sh — claude-bridge sidecar (UniClaudeProxy).
-# Audited name : queried via mitm (policy.d/claude-bridge.yaml enforces).
 server=/claude-bridge/127.0.0.11
 # Bypass alias : matches .local in NO_PROXY → direct TCP, no audit.
 cname=claude-bridge.local,claude-bridge
 EOF
 dbg "  added claude-bridge → 127.0.0.11 forwarding + .local bypass alias"
+
+# Dynamic sibling-resolve : for each entry of direct-tcp-allow.txt, emit
+# `server=/<host>/127.0.0.11` so the name resolves via Docker's embedded
+# resolver. compile-policy.py auto-emits `server=/<host>/8.8.8.8` for hosts
+# also listed in domains.txt — strip that defensively. The auto-emitted
+# `ipset=/<host>/allowed-domains` directive stays, so the resolved IP
+# populates the ipset transparently.
+#
+# Skip handled-above hosts :
+# - `host` alias / `host.docker.internal` → ollama block above (host-record=)
+# - `claude-bridge` → unconditional override block above (it's docker-compose-
+#   always-declared and listed in baked domains.txt independent of mode)
+DIRECT_TCP_ALLOW="${FIREWALL_CONFIG_DIR}/direct-tcp-allow.txt"
+if [ -f "$DIRECT_TCP_ALLOW" ]; then
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    line="${raw_line%%#*}"               # strip inline comments
+    line="${line//[[:space:]]/}"         # strip whitespace
+    [ -z "$line" ] && continue
+    host="${line%%:*}"                   # split host:port
+    [ "$host" = "host" ] && continue                  # ollama block handled
+    [ "$host" = "host.docker.internal" ] && continue  # idem
+    [ "$host" = "claude-bridge" ] && continue         # hardcoded above
+    escaped="${host//./\\.}"             # escape dots for sed ERE
+    sed -i -E "/^server=\\/${escaped}\\//d" "$GENERATED_DNSMASQ_CONF"
+    cat >> "$GENERATED_DNSMASQ_CONF" <<EOF
+
+# Injected by init-firewall.sh — sibling-resolve from direct-tcp-allow.txt.
+server=/${host}/127.0.0.11
+# Bypass alias : matches .local in NO_PROXY → direct TCP, no audit.
+cname=${host}.local,${host}
+EOF
+    dbg "  added ${host} → 127.0.0.11 forwarding + .local bypass alias"
+  done < "$DIRECT_TCP_ALLOW"
+fi
 
 # -------------------------------
 # 2. Start dnsmasq + override resolv.conf

