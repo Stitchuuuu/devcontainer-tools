@@ -1,0 +1,33 @@
+# DevContainer (v2) — internes scoped à .devcontainer/
+
+# Runtime artefacts (auto-generated, per-rebuild)
+.env
+.configured-*
+logs/
+
+# Skill scratch dirs (keep dir via .keep, ignore content)
+pending/*
+!pending/.keep
+pr-drafts/*
+!pr-drafts/.keep
+research-bundles/*
+!research-bundles/.keep
+scan-deps/*
+!scan-deps/.keep
+
+# Firewall — local overrides, caches, test logs
+firewall/domains.local.txt
+firewall/policy.local.d/
+firewall/addons/__pycache__/
+firewall/tests/*.log
+firewall-blocks.*.log
+
+# Skills — local personal variants
+skills/**/*.local.skill.md
+skills/**/*.local/
+
+# claude-bridge sidecar runtime config (bootstrapped from .example.json)
+claude-bridge/config.json
+
+# Lessons — local / not-yet-generalisable (committed sibling is LESSONS.md)
+LESSONS.local.md
