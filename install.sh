@@ -297,6 +297,16 @@ install_files() {
         copy_dir "skills/$s"
     done
 
+    # ── Gitignore (.devcontainer/-scope rules) ─────────────────
+    copy_verbatim .gitignore
+
+    # ── Gitignore-root (root-scope fragment ; appended to
+    #    <target>/.gitignore by update_gitignore) ───────────────
+    copy_verbatim .gitignore-root
+
+    # ── LESSONS baseline (preserve user content on re-install) ─
+    [ -f "$DEST/LESSONS.md" ] || cp "$TEMPLATE_DIR/LESSONS.md" "$DEST/LESSONS.md"
+
     success "Baseline installed"
 }
 
@@ -322,11 +332,13 @@ generate_env() {
 }
 
 update_gitignore() {
-    # Source of truth : templates/<variant>/.gitignore. Appended verbatim
-    # (comments and blank lines preserved for readability). The first line of
-    # the template acts as a sentinel for idempotent re-runs.
+    # Source : <DEST>/.gitignore-root (shipped via install_files from
+    # templates/<variant>/.gitignore-root, root-scope fragment). Appended
+    # verbatim ; first line acts as a sentinel for idempotent re-runs.
+    # NB : .devcontainer/-scope rules ship as .devcontainer/.gitignore
+    # directly (copy_verbatim), not appended to root.
     local gi="$TARGET_DIR/.gitignore"
-    local src="$TEMPLATE_DIR/.gitignore"
+    local src="$DEST/.gitignore-root"
     touch "$gi"
 
     if [ ! -f "$src" ]; then
@@ -394,6 +406,13 @@ EOF
     success ".configured-setup written (v$TEMPLATE_VERSION)"
 }
 
+link_lessons_root() {
+    # Symlink at the project root for visibility — same pattern as CLAUDE.md
+    # (cf. post-create.sh). Commits as git mode 120000.
+    ln -sf ".devcontainer/LESSONS.md" "$TARGET_DIR/LESSONS.md"
+    success "LESSONS.md → .devcontainer/LESSONS.md (symlink)"
+}
+
 final_summary() {
     header "Done"
     cat <<SUMMARY
@@ -447,6 +466,7 @@ main() {
     update_gitignore
     set_exec_perms
     write_v2_marker
+    link_lessons_root
     final_summary
 }
 

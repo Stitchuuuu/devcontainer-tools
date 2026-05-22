@@ -1,44 +1,33 @@
-# DevContainer v2 — baseline runtime artefacts
-.env.dev
-.devcontainer/.env
-.devcontainer/.configured-*
-.vscode/
+# DevContainer (v2) — internes scoped à .devcontainer/
 
-# Claude — local runtime artefacts
-.claude/
+# Runtime artefacts (auto-generated, per-rebuild)
+.env
+.configured-*
+logs/
 
-# Skills — local (personal) variants and runtime files
-.devcontainer/skills/**/*.local.skill.md
-.devcontainer/skills/**/*.local/
+# Skill scratch dirs (keep dir via .keep, ignore content)
+pending/*
+!pending/.keep
+pr-drafts/*
+!pr-drafts/.keep
+research-bundles/*
+!research-bundles/.keep
+scan-deps/*
+!scan-deps/.keep
 
-# Firewall — local overrides, runtime logs, and Python cache
-.devcontainer/firewall/domains.local.txt
-.devcontainer/firewall/policy.local.d/
-.devcontainer/firewall/addons/__pycache__/
-.devcontainer/tests/diagnose.log
-.devcontainer/tests/diag-a2-*.log
-.devcontainer/logs/
-firewall-blocks.paranoid.log
+# Firewall — local overrides, caches, test logs
+firewall/domains.local.txt
+firewall/policy.local.d/
+firewall/addons/__pycache__/
+firewall/tests/*.log
 firewall-blocks.*.log
 
-# DevContainer v2 — skill scratch dirs (pr-drafts, watch-log pending scripts,
-# research bundles, scan-deps audit trail). Keep the dirs themselves via .keep
-# but ignore their contents.
-.devcontainer/pr-drafts/*
-!.devcontainer/pr-drafts/.keep
-.devcontainer/pending/*
-!.devcontainer/pending/.keep
-.devcontainer/research-bundles/*
-!.devcontainer/research-bundles/.keep
-.devcontainer/scan-deps/*
-!.devcontainer/scan-deps/.keep
+# Skills — local personal variants
+skills/**/*.local.skill.md
+skills/**/*.local/
 
-# UniClaudeProxy sidecar — per-user runtime config (bootstrapped from
-# config.example.json by initialize.sh).
-.devcontainer/claude-bridge/config.json
+# claude-bridge sidecar runtime config (bootstrapped from .example.json)
+claude-bridge/config.json
 
-# Lessons — personal / not-yet-generalisable patterns (committed sibling is LESSONS.md)
+# Lessons — local / not-yet-generalisable (committed sibling is LESSONS.md)
 LESSONS.local.md
-
-# macOS
-.DS_Store

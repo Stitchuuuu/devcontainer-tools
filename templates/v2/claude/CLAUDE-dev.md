@@ -143,14 +143,14 @@ main context.
 After any correction from the user, capture the rule so the mistake
 doesn't repeat. Three storage layers, picked by scope:
 
-- **`LESSONS.md`** (repo root, **committed**) — project-wide patterns
-  useful to anyone on this codebase. Recurring pitfalls, team
-  conventions surfaced via correction, gotchas about the code. Merge
-  across devs via git.
-- **`LESSONS.local.md`** (repo root, **gitignored**) — personal or
+- **`.devcontainer/LESSONS.md`** (root symlink for visibility,
+  **committed**) — project-wide patterns useful to anyone on this
+  codebase. Recurring pitfalls, team conventions surfaced via
+  correction, gotchas about the code. Merge across devs via git.
+- **`.devcontainer/LESSONS.local.md`** (**gitignored**) — personal or
   not-yet-generalisable lessons. Local setup quirks, tentative
   patterns. Safe default for ambiguous cases — promote to
-  `LESSONS.md` later if the pattern proves general.
+  `.devcontainer/LESSONS.md` later if the pattern proves general.
 - **Auto-memory `MEMORY.md`** (cross-project, see `# auto memory`
   section in the root CLAUDE.md) — cross-project user preferences
   and feedback that aren't tied to this codebase.
