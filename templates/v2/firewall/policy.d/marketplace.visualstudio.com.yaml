@@ -1,6 +1,6 @@
 # Purpose: VS Code Marketplace runtime — extension search (POST) + publisher
 # catalog (GET). Required for the Claude Code VS Code extension to install
-# and update from inside the devcontainer (paranoid mode).
+# and update from inside the devcontainer (strict mode).
 #
 # Consumed by A2 mitmproxy addons. Merged on top of methods + paths declared
 # in domains.txt.

@@ -1,4 +1,4 @@
-name: ${DC_PROJECT:-dc-project}-claude-code
+name: ${DC_PROJECT:-{{PROJECT_ID}}}-claude-code
 
 services:
   app:
@@ -91,11 +91,11 @@ networks:
 
 volumes:
   bash-history:
-    name: claude-code-bashhistory-${DC_PROJECT:-dc-project}
+    name: claude-code-bashhistory-${DC_PROJECT:-{{PROJECT_ID}}}
   claude-config:
-    name: claude-code-config-${DC_PROJECT:-dc-project}
+    name: claude-code-config-${DC_PROJECT:-{{PROJECT_ID}}}
   claude-creds:
-    name: ${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-dc-project}}
+    name: ${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-{{PROJECT_ID}}}}
     external: true
   mitmproxy:
-    name: mitmproxy-${DC_PROJECT:-dc-project}
+    name: mitmproxy-${DC_PROJECT:-{{PROJECT_ID}}}

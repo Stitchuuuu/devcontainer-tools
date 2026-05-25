@@ -15,7 +15,7 @@ This skill produces a self-contained **research bundle** under
 `/workspace/.devcontainer/research-bundles/<bundle-id>/`. The bundle is
 designed so a single host-side `cp -r ../<bundle-id>/` is enough to materialise
 a ready-to-open VS Code project that spawns the research container with the
-expanded allowlist. (`<bundle-id>` = `<main-dc-project>-research-<task-slug>` —
+expanded allowlist. (`<bundle-id>` = `<main-{{PROJECT_ID}}>-research-<task-slug>` —
 see §"Bundle identity" below.)
 
 ## When to use
@@ -47,22 +47,22 @@ scope extension.
 
 ## Bundle identity — `bundle_id`
 
-Every research bundle is identified by `bundle_id` = `<main-dc-project>-research-<task-slug>`.
+Every research bundle is identified by `bundle_id` = `<main-{{PROJECT_ID}}>-research-<task-slug>`.
 
-- `<main-dc-project>` is the main container's `DC_PROJECT` env var (default
-  `dc-project`).
+- `<main-{{PROJECT_ID}}>` is the main container's `DC_PROJECT` env var (default
+  `{{PROJECT_ID}}`).
 - `<task-slug>` is the kebab-case identifier derived from the user's
   description (see §1b).
 
-Examples : `dc-project-research-wtfcmd`,
-`dc-project-research-stripe-payment`.
+Examples : `{{PROJECT_ID}}-research-wtfcmd`,
+`{{PROJECT_ID}}-research-stripe-payment`.
 
 The `bundle_id` is used **everywhere** : the bundle directory name, the host
 sibling folder name, and the research container's `DC_PROJECT`. This ensures :
 - No collision when several main projects on the same host spawn research
   bundles with the same `<task-slug>` (e.g. two projects exploring `zod`).
 - Volume names at `docker volume ls` show clearly which main spawned which
-  research (e.g. `claude-code-bashhistory-dc-project-research-wtfcmd`).
+  research (e.g. `claude-code-bashhistory-{{PROJECT_ID}}-research-wtfcmd`).
 - `claude-creds` remains shared with the main (resolved separately, not via
   `bundle_id`).
 
@@ -113,7 +113,7 @@ sibling folder name, and the research container's `DC_PROJECT`. This ensures :
 ```
 
 `<bundle-id>` everywhere in the layout above is the full concat — e.g.
-`dc-project-research-wtfcmd`.
+`{{PROJECT_ID}}-research-wtfcmd`.
 
 The committed firewall files (`domains.txt`, `policy.d/`) are NEVER rewritten.
 All research additions go through the local overlay (`domains.local.txt`,
@@ -204,7 +204,7 @@ the description leads to a misnamed bundle that the user has to delete and redo.
   if [ -z "$main_dc_project" ]; then
     main_dc_project=$(grep -E '^DC_PROJECT=' /workspace/.devcontainer/.env 2>/dev/null | cut -d= -f2 | tr -d '"' || true)
   fi
-  main_dc_project="${main_dc_project:-dc-project}"
+  main_dc_project="${main_dc_project:-{{PROJECT_ID}}}"
   ```
 - Compute `bundle_id="${main_dc_project}-research-${task_slug}"`.
 - `/workspace/.devcontainer/research-bundles/<bundle_id>/` MUST NOT already
@@ -432,7 +432,7 @@ user, to run on their host **from the main project root** :
 ```
 
 > 🚨 **When generating this file, replace every `<bundle_id>` with the
-> actual computed value** (e.g. `dc-project-research-wtfcmd`).
+> actual computed value** (e.g. `{{PROJECT_ID}}-research-wtfcmd`).
 > The literal string `<bundle_id>` MUST NOT appear in the generated
 > `INSTRUCTIONS.md` — it would leave the user with un-executable
 > placeholder paths.
@@ -510,7 +510,7 @@ Then cleanup the sibling :
 ```
 
 > 🚨 **When generating this file, replace every `<bundle_id>` with the
-> actual computed value** (e.g. `dc-project-research-wtfcmd`).
+> actual computed value** (e.g. `{{PROJECT_ID}}-research-wtfcmd`).
 > The literal string `<bundle_id>` MUST NOT appear in the generated
 > `START.md` — same rule as for INSTRUCTIONS.md.
 
@@ -679,11 +679,11 @@ fi
 ### 4. Display next steps to the user
 
 Print this exact block (substitute `<bundle-id>` everywhere — that's the
-full concat `<main-dc-project>-research-<task-slug>` — and fill the counts) :
+full concat `<main-{{PROJECT_ID}}>-research-<task-slug>` — and fill the counts) :
 
 ```
 ✅ Research bundle ready : .devcontainer/research-bundles/<bundle-id>/
-   (bundle_id = <main-dc-project>-research-<task-slug>)
+   (bundle_id = <main-{{PROJECT_ID}}>-research-<task-slug>)
 
 Contents :
   START.md               user entry-point : open VS Code, fill secrets,
@@ -732,7 +732,7 @@ Quick summary — run on the host, from your main project root :
 
 - Bundle path is always `/workspace/.devcontainer/research-bundles/<bundle-id>/`
   (bind-mounted, gitignored). Do NOT write the bundle anywhere else. The
-  bundle-id is the full concat `<main-dc-project>-research-<task-slug>`.
+  bundle-id is the full concat `<main-{{PROJECT_ID}}>-research-<task-slug>`.
 - **NEVER include real secrets in `secrets.env.template`.** Every value is
   `REPLACE_ME`. Step 3l enforces this — if you ever find yourself tempted to
   inline a real key, stop and ask the user.

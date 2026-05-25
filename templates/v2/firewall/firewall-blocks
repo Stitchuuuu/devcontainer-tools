@@ -66,7 +66,7 @@ esac
 N="${1:-20}"
 
 if [ ! -r "$LOG" ]; then
-  echo "$LOG not readable (firewall not in paranoid mode, or user not in 'adm' group)."
+  echo "$LOG not readable (firewall not in strict mode, or user not in 'adm' group)."
   exit 1
 fi
 

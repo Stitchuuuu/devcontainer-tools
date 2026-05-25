@@ -63,9 +63,9 @@ if [ -f "$ENV_FILE" ]; then
 	set +a
 fi
 
-CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-dc-project}}"
+CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-{{PROJECT_ID}}}}"
 
-echo "  DC_PROJECT:   ${DC_PROJECT:-dc-project}"
+echo "  DC_PROJECT:   ${DC_PROJECT:-{{PROJECT_ID}}}"
 echo "  claude-creds: $CREDS_VOLUME"
 
 # Ensure firewall/ baked files exist before Dockerfile COPY (recursive).

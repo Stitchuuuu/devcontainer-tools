@@ -10,8 +10,8 @@
 # Env:
 #   RESEARCH_CLEANUP_DAYS=N   threshold in days (default 7)
 #
-# Sibling folders are matched against ../<main-dc-project>-research-*/ where
-# <main-dc-project> is the DC_PROJECT value in .devcontainer/.env of the cwd.
+# Sibling folders are matched against ../<main-{{PROJECT_ID}}>-research-*/ where
+# <main-{{PROJECT_ID}}> is the DC_PROJECT value in .devcontainer/.env of the cwd.
 
 set -euo pipefail
 

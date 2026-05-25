@@ -237,7 +237,7 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 # TLS chain validation by VS Code / curl / Node / browsers hits these
 # endpoints to check whether a presented certificate has been revoked.
 # Bodies are signed binary lists (DER-encoded), GET-only, low exfil risk.
-# Without these, paranoid mode generates dozens of host_not_in_policy
+# Without these, strict mode generates dozens of host_not_in_policy
 # blocks per minute on perfectly normal TLS handshakes.
 
 [GET] crl3.digicert.com                # DigiCert CRL distribution point

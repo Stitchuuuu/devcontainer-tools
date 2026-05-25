@@ -35,8 +35,8 @@ main container         host                       research container
 The skill (committed under `.devcontainer/skills/prepare-research/`) writes a
 self-contained bundle to
 `.devcontainer/research-bundles/<bundle-id>/`. The `bundle-id` is
-`<main-dc-project>-research-<task-slug>` — e.g.
-`dc-project-research-stripe-payment`.
+`<main-{{PROJECT_ID}}>-research-<task-slug>` — e.g.
+`{{PROJECT_ID}}-research-stripe-payment`.
 
 Pick a template hint or let the skill auto-detect :
 
@@ -143,7 +143,7 @@ container if needed before dropping it.
 ```
 
 Dry-run by default — lists sibling folders matching
-`../<main-dc-project>-research-*/` older than 7 days (override with
+`../<main-{{PROJECT_ID}}>-research-*/` older than 7 days (override with
 `RESEARCH_CLEANUP_DAYS=N`).
 
 ```

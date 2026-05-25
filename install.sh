@@ -253,11 +253,12 @@ install_files() {
         node|custom) cp "$TEMPLATE_DIR/Dockerfile"     "$DEST/Dockerfile" ;;
         php)         cp "$TEMPLATE_DIR/Dockerfile.php" "$DEST/Dockerfile" ;;
     esac
-    copy_verbatim docker-compose.yml
+    copy_templated docker-compose.yml
     copy_verbatim vscode-settings.json
 
     # ── Lifecycle (6) ──────────────────────────────────────────
-    for f in initialize on-create post-create post-start shell-init install-extensions; do
+    copy_templated initialize.sh
+    for f in on-create post-create post-start shell-init install-extensions; do
         copy_verbatim "${f}.sh"
     done
 
@@ -284,13 +285,15 @@ install_files() {
     copy_dir knowledge
 
     # ── Docs (4 files) ─────────────────────────────────────────
-    for f in README RUNBOOK SECURITY RESEARCH; do
+    copy_templated RESEARCH.md
+    for f in README RUNBOOK SECURITY; do
         copy_verbatim "${f}.md"
     done
 
     # ── Local-backend sidecar ──────────────────────────────────
     copy_dir claude-bridge
     copy_dir host-helpers
+    copy_templated host-helpers/research-cleanup
     copy_verbatim diag-ollama-local.sh
 
     # ── Skills (sync + 5 generic) ──────────────────────────────
@@ -298,6 +301,7 @@ install_files() {
     for s in prepare-pr watch-log prepare-research scan-deps prepare-plan; do
         copy_dir "skills/$s"
     done
+    copy_templated skills/prepare-research/prepare-research.skill.md
 
     # ── Tests (unit + integration suites) ──────────────────────
     copy_dir tests
