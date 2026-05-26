@@ -6,15 +6,19 @@
 # These files are picked up additively by compile-policy.py at firewall
 # init, on top of the Claude-only baseline in firewall/domains.txt.
 #
-# F2 scope : npm is implemented. composer / python / cargo / go fall back
+# F2 scope : npm + composer are implemented. python / cargo / go fall back
 # to /scan-deps (Claude skill with AI review) until F3+.
 #
 # Usage :
 #   bash .devcontainer/skills/scan-deps/extract-auto-dependencies \
-#        [--ecosystem npm|all] [--dry-run] [--root /workspace]
+#        [--ecosystem npm|composer|all] [--dry-run] [--offline] [--root /workspace]
 #
 # Output : domains.d/<eco>.txt files (committed — firewall permissions),
-# plus a stdout summary. Idempotent. Offline only (no network calls).
+# plus a stdout summary. Idempotent.
+#
+# Network policy : npm is offline-only. composer is online by default (HEAD
+# requests to api.github.com to resolve numeric-ID redirects) — pass
+# --offline to skip that step; composer then falls back to source-clone.
 #
 # After running this script, rebuild the container OR re-run init-firewall
 # to pick up the new allowlist :
@@ -28,20 +32,25 @@ EXTRACTORS_DIR="$SCRIPT_DIR/extractors"
 ECOSYSTEM="all"
 SEARCH_ROOT="/workspace"
 DRY_RUN=0
+OFFLINE=0
 
 usage() {
   cat <<EOF
 Usage : $(basename "$0") [OPTIONS]
 
 Options :
-  --ecosystem <eco>   Limit to one ecosystem (npm). Default: all.
+  --ecosystem <eco>   Limit to one ecosystem (npm, composer). Default: all.
   --root <path>       Search root (default: /workspace).
   --dry-run           Show what would be done, don't write files.
+  --offline           composer extractor: skip online HEAD requests for
+                      numeric-ID redirect resolution. No effect on npm.
   -h, --help          This help.
 
 Currently supported ecosystems (F2) :
-  npm — package.json + package-lock.json + node_modules walk
-        → writes firewall/domains.d/npm.txt + ecosystem-docs.txt
+  npm      — package.json + package-lock.json + node_modules walk
+             → writes firewall/domains.d/npm.txt + ecosystem-docs.txt
+  composer — composer.lock walk
+             → writes firewall/domains.d/composer.txt
 EOF
 }
 
@@ -50,6 +59,7 @@ while [ $# -gt 0 ]; do
     --ecosystem) ECOSYSTEM="$2"; shift 2 ;;
     --root)      SEARCH_ROOT="$2"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
+    --offline)   OFFLINE=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *)           echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -61,9 +71,12 @@ if [ ! -d "$SEARCH_ROOT" ]; then
 fi
 
 run_npm=0
+run_composer=0
 case "$ECOSYSTEM" in
-  npm|all) run_npm=1 ;;
-  composer|python|cargo|go)
+  npm)      run_npm=1 ;;
+  composer) run_composer=1 ;;
+  all)      run_npm=1; run_composer=1 ;;
+  python|cargo|go)
     echo "extract-auto-dependencies: '$ECOSYSTEM' not yet implemented in F2." >&2
     echo "Use /scan-deps (Claude skill) for $ECOSYSTEM ecosystems for now." >&2
     exit 0
@@ -78,11 +91,22 @@ esac
 if [ $DRY_RUN -eq 1 ]; then
   echo "DRY-RUN — would invoke extractors :"
   [ $run_npm -eq 1 ] && echo "  npm: $EXTRACTORS_DIR/npm.sh $SEARCH_ROOT"
+  if [ $run_composer -eq 1 ]; then
+    composer_dryargs="$SEARCH_ROOT"
+    [ $OFFLINE -eq 1 ] && composer_dryargs="$composer_dryargs --offline"
+    echo "  composer: $EXTRACTORS_DIR/composer.sh $composer_dryargs"
+  fi
   exit 0
 fi
 
 if [ $run_npm -eq 1 ]; then
   bash "$EXTRACTORS_DIR/npm.sh" "$SEARCH_ROOT"
+fi
+
+if [ $run_composer -eq 1 ]; then
+  composer_args=("$SEARCH_ROOT")
+  [ $OFFLINE -eq 1 ] && composer_args+=(--offline)
+  bash "$EXTRACTORS_DIR/composer.sh" "${composer_args[@]}"
 fi
 
 echo

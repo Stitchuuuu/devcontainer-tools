@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # extractors/lib/common.sh — shared helpers for deterministic extractors.
 # Sourced by extract-auto-dependencies + extractors/<eco>.sh.
-# NEVER call the network — extractors are offline-only.
+#
+# Network policy: helpers themselves are offline (no curl/wget here).
+# Individual extractors MAY call the network when a deterministic fact
+# requires it (e.g. composer's numeric-ID redirect resolution), provided
+# they offer an `--offline` opt-out. See scan-deps.skill.md § Constraints.
 #
 # Note: callers should NOT rely on `set -u` since extractors manipulate
 # many associative arrays that may stay empty (no repos found, no postinstall
