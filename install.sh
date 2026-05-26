@@ -464,6 +464,20 @@ link_lessons_root() {
     success "LESSONS.md → .devcontainer/LESSONS.md (symlink)"
 }
 
+link_claude_rules_root() {
+    # Expose .devcontainer/claude/CLAUDE-{dev,project}.md under
+    # .claude/rules/{mandatory,project}.md so the claude CLI discovers
+    # them even when launched outside the devcontainer. Counter-exclusion
+    # in .gitignore-root keeps these two symlinks tracked while the rest
+    # of .claude/ stays ignored. Commits as git mode 120000.
+    mkdir -p "$TARGET_DIR/.claude/rules"
+    ln -sf "../../.devcontainer/claude/CLAUDE-dev.md" \
+           "$TARGET_DIR/.claude/rules/mandatory.md"
+    ln -sf "../../.devcontainer/claude/CLAUDE-project.md" \
+           "$TARGET_DIR/.claude/rules/project.md"
+    success ".claude/rules/{mandatory,project}.md → .devcontainer/claude/CLAUDE-{dev,project}.md (symlinks)"
+}
+
 final_summary() {
     header "Done"
     cat <<SUMMARY
@@ -519,6 +533,7 @@ main() {
     set_exec_perms
     write_v2_marker
     link_lessons_root
+    link_claude_rules_root
     final_summary
 }
 
