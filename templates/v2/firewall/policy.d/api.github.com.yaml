@@ -18,7 +18,12 @@ endpoints:
 
 blocked_paths:
   - "^/gists"
-  - "^/repos/(?!anthropics/)"        # block any non-anthropics repo
+  # Note: removed `^/repos/(?!anthropics/)` — redundant defense-in-depth
+  # when `endpoints` is non-empty. policy_enforce.py already returns 403
+  # `endpoint_not_matched` for any /repos/* path that doesn't match a
+  # synthesized endpoint. Removing the line unblocks paths contributed by
+  # domains.d/<eco>.txt extracts (composer, future ecosystems) for orgs
+  # outside anthropics, while keeping default-deny intact.
 
 # GitHub REST API standard header prefixes. `X-GitHub-Api-Version` is
 # required for stable behaviour ; rate-limit / OAuth are GitHub-specific.
