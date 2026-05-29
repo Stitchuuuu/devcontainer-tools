@@ -268,7 +268,8 @@ install_files() {
     done
     for f in dnsmasq.conf compile-policy.py mitm-init.sh domains.txt \
              domains.local.txt.example firewall-blocks \
-             default-mode direct-tcp-allow.txt; do
+             default-mode direct-tcp-allow.txt \
+             firewall-docker-setup.sh; do
         copy_verbatim "firewall/$f"
     done
     # ── Firewall trees (5 dirs) ────────────────────────────────
@@ -280,6 +281,7 @@ install_files() {
 
     # ── Claude (5 files) ───────────────────────────────────────
     copy_dir claude
+    copy_templated claude/CLAUDE-project.md
 
     # ── Knowledge (full dir) ───────────────────────────────────
     copy_dir knowledge
@@ -361,7 +363,9 @@ migrate_legacy_firewall() {
         mv "$tmp" "$env_file"
     fi
 
-    [ "$moved" -eq 1 ] && success "Legacy firewall config migrated to baked files"
+    if [ "$moved" -eq 1 ]; then
+        success "Legacy firewall config migrated to baked files"
+    fi
 }
 
 generate_env() {
@@ -421,6 +425,7 @@ set_exec_perms() {
     chmod_exec "$DEST"/firewall/mitm-init.sh
     chmod_exec "$DEST"/firewall/firewall-blocks
     chmod_exec "$DEST"/firewall/compile-policy.py
+    chmod_exec "$DEST"/firewall/firewall-docker-setup.sh
 
     # Claude
     chmod_exec "$DEST"/claude/sync-creds.sh

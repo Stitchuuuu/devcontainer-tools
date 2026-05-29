@@ -1,4 +1,4 @@
-# <PROJECT_DISPLAY_NAME> — Project rules
+# {{PROJECT_DISPLAY_NAME}} — Project rules
 
 > This file is a stub. On first container boot, ask Claude :
 >
