@@ -107,11 +107,95 @@ session 3 (verify-rebuild).
 - Runtime check skipped — OMZ isn't installed yet (session 2), so
   re-sourcing `~/.zshrc` would error on `source $ZSH/oh-my-zsh.sh`.
 
-**Commit** : not committed yet (awaiting user confirmation)
+**Commit** :
+- `9fa7d25` — feat(template): ship zsh OMZ base + per-dev override skeleton (templating side, includes README port-forward section)
+- `40116ec` — chore(dogfood): apply zsh OMZ skeleton + README port-forward to .devcontainer (dual-edit propagation)
 
-**Out-of-scope addition during this session** : the user asked mid-session
-to add a "Port forwarding (dev servers)" section at the top of the README
-(`templates/v2/README.md` + `.devcontainer/README.md`, dual-edit) covering
-VS Code's `portsAttributes` + a `wtf client dev` `.wtfcmd.yaml` example.
-This addition is unrelated to the OMZ rollout and will be committed
-separately (different commit scope per CLAUDE.md §10).
+The user requested the split by **target** (templating vs container) rather
+than by **feature** — the README port-forward addition rode along in both
+commits since it follows the same dual-edit pattern.
+
+---
+
+## 2 — dockerfile-omz
+
+**Date** : 2026-05-29
+**Files touched** :
+- `templates/v2/Dockerfile.base` (insert RUN block)
+- `.devcontainer/Dockerfile.base` (dual-edit, byte-identical block)
+- `plans/zsh-omz-integration/STATUS.md` (row 2 → ✅, counter 1→2, next focus → session 3)
+- `plans/zsh-omz-integration/LOG.md` (this section)
+- `plans/zsh-omz-integration/EXISTING.md` ("Status after session 1" → "Status after session 2", table row for `Dockerfile.base`)
+
+**What** : Added a single `RUN` layer to `Dockerfile.base` that
+unattendedly installs Oh My Zsh under `$HOME/.oh-my-zsh`, removes the
+default `.zshrc` OMZ generates, then shallow-clones two plugins
+(`zsh-autosuggestions`, `zsh-syntax-highlighting`) into
+`$HOME/.oh-my-zsh/custom/plugins/`. The block sits between
+`USER $USERNAME` and the existing `RUN echo … >> ~/.zshrc` block, so
+`rm -f $HOME/.zshrc` runs BEFORE the next layer injects the
+`source shell-init.sh` line.
+
+**Why** : Session 1 wired `shell-init.sh` to source `zshrc-base` which
+in turn sources `$ZSH/oh-my-zsh.sh`, but OMZ itself was missing — every
+interactive zsh prints a "no such file or directory" on that source
+line (non-fatal but ugly). Baking OMZ + the two visible-upgrade plugins
+into the image makes first-boot instant after the session 3 rebuild
+and lets per-dev plugins layer cleanly into `$ZSH_CUSTOM`
+(`/workspace/.devcontainer/.zsh-custom/`, which is workspace-mounted
+and survives rebuilds).
+
+**Decisions** :
+- **Insertion point AFTER `USER $USERNAME`** — `.oh-my-zsh/` must be
+  owned by `node`, not `root`. Putting it before would force a recursive
+  `chown` later.
+- **OMZ block BEFORE the shell-init `RUN echo`** — OMZ's `install.sh`
+  always writes a default `.zshrc` (regardless of `--unattended`).
+  Removing it first means the next layer starts from an empty file
+  and the single-line `source shell-init.sh` injection stays clean.
+- **`--depth=1` for both plugin clones** — neither plugin's history is
+  consulted at runtime; the two repos drop from ~5-10 MB combined to
+  ~1 MB, shaving a noticeable chunk off the image layer size.
+- **`""` empty positional arg before `--unattended`** — required by
+  OMZ's installer signature (`sh tools/install.sh <CUSTOM_PATH> [flags]`);
+  without it, `--unattended` is interpreted as the custom path and the
+  installer silently runs interactively, breaking the build.
+- **Plugins NOT enabled in `plugins=()`** — `zshrc-base` already lists
+  `git zsh-autosuggestions zsh-syntax-highlighting`. Installing the
+  clones at the path OMZ expects (`$ZSH/custom/plugins/<name>`) is
+  enough to wire them in.
+- **No `RUNZSH=no` / `CHSH=no` envs needed** — `--unattended` covers
+  both (verified per the open question §3 in EXISTING.md). The
+  `ENV SHELL=/bin/zsh` already in the image stays authoritative.
+
+**Gotchas** :
+- The OMZ installer's behavior with `--unattended` regarding `.zshrc`
+  was the deciding factor on block ordering — confirmed it always
+  writes the file, hence the explicit `rm -f` before the next layer's
+  injection (vs trying to suppress the write upstream).
+- Firewall does NOT apply at `docker build` time — `init-firewall.sh`
+  runs at container start (post-build), so the build is free to fetch
+  `raw.githubusercontent.com` + `github.com/zsh-users/*`. No
+  `domains.txt` change needed.
+- Pre-existing drift in `diff -rq templates/v2/ .devcontainer/` is
+  noisy (firewall/, hours.local logs, runtime artefacts, etc.) but
+  `Dockerfile.base` does NOT appear in it post-edit. Verified.
+
+**Tests** :
+- `diff -q templates/v2/Dockerfile.base .devcontainer/Dockerfile.base`
+  → no output (identical) both BEFORE and AFTER the edits.
+- `diff -rq templates/v2/ .devcontainer/` → only pre-existing drift
+  (firewall/, knowledge/firewall.md, .gitignore-root, templated files,
+  runtime artefacts). `Dockerfile.base` absent from the list.
+- `grep -n 'oh-my-zsh' templates/v2/Dockerfile.base` vs same on
+  `.devcontainer/Dockerfile.base` → identical line numbers (275, 288,
+  290, 292).
+- Runtime check (rebuild + checklist) deferred to session 3 by design.
+
+**Commit** : not committed yet — awaiting user confirmation.
+Proposed split per session 1 precedent :
+- Commit 1 (templating) : `templates/v2/Dockerfile.base` +
+  `plans/zsh-omz-integration/{STATUS,LOG,EXISTING}.md`
+  — `feat(template): install Oh My Zsh + autosuggest + syntax-highlight in base image`
+- Commit 2 (container) : `.devcontainer/Dockerfile.base`
+  — `chore(dogfood): apply OMZ install to .devcontainer/Dockerfile.base`

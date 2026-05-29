@@ -44,21 +44,21 @@ Shell-agnostic init sourced at each interactive shell. Responsibilities :
 
 **No zsh-specific logic anywhere.** Pure POSIX/bash-compatible. We'll add zsh-gated blocks at the top and bottom in session 1.
 
-### Status after session 1
+### Status after session 2
 
-- ❌ Oh My Zsh framework (not installed in image yet — session 2)
-- ❌ Any zsh theme (vanilla prompt — session 2 wires it via baked OMZ)
-- ❌ Plugins (not installed in image yet — session 2)
-- ⏳ History tuning — config exists in `zshrc-base` but inert until OMZ loads
-- ⏳ `compinit` autoload — sourced via OMZ in `zshrc-base`, inert until session 2
-- ⏳ `wtf` completion source — bootstrap exists in `zshrc-base`, inert until OMZ available
-- ✅ Per-dev override mechanism — `zshrc.local` sourcing wired by `shell-init.sh`, gitignored
+- ✅ Oh My Zsh framework — baked in image at `$HOME/.oh-my-zsh`, inert until session 3 rebuild
+- ✅ Theme `robbyrussell` — baked via OMZ default, inert until rebuild
+- ✅ Plugins `zsh-autosuggestions` + `zsh-syntax-highlighting` — shallow-cloned into `$HOME/.oh-my-zsh/custom/plugins/`, inert until rebuild
+- ✅ History tuning — wired in `zshrc-base`, will activate once OMZ loads at next rebuild
+- ✅ `compinit` autoload — sourced via OMZ in `zshrc-base`, inert until rebuild
+- ✅ `wtf` completion source — bootstrap in `zshrc-base`, inert until OMZ available post-rebuild
+- ✅ Per-dev override mechanism — `zshrc.local` sourcing wired by `shell-init.sh`, gitignored (unchanged from session 1)
 
 ## Files in `templates/v2/` relevant to this rollout
 
 | Path | Role | Status |
 |---|---|---|
-| `Dockerfile.base` | Build the base image | Will gain a RUN block to install OMZ + 2 plugins (session 2) |
+| `Dockerfile.base` | Build the base image | ✅ Session 2 — RUN block installs OMZ + 2 plugins (inert until rebuild in session 3) |
 | `Dockerfile` / `Dockerfile.php` | Stack-specific images on top of base | No change expected (OMZ lives in base) |
 | `shell-init.sh` | Runtime shell init, sourced from `~/.zshrc`/`~/.bashrc` | ✅ Session 1 — head block (source zshrc-base) + tail block (source zshrc.local), zsh+interactive gated |
 | `post-start.sh` | postStartCommand hook | No change |

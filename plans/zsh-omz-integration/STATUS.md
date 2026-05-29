@@ -8,7 +8,7 @@
 | Session | Brief | Status | Prompt |
 |---|---|---|---|
 | 1 | base-skeleton — create `zshrc-base` + `zshrc.local.example`, wire `shell-init.sh` sourcing, gitignore entries — **dual-edit** | ✅ | — |
-| 2 | dockerfile-omz — add OMZ + plugin installs to `Dockerfile.base` — **dual-edit** (template + .devcontainer/) | 📋 | _(create next)_ |
+| 2 | dockerfile-omz — add OMZ + plugin installs to `Dockerfile.base` — **dual-edit** (template + .devcontainer/) | ✅ | — |
 | 3 | verify-rebuild — rebuild container then checklist (build, prompt, autosuggest, history, per-dev override, rebuild persistence). No `install.sh` re-run on self. | 📋 | _(create after session 2)_ |
 
 ## Legend
@@ -17,5 +17,5 @@
 
 ## Progress
 
-- **Delivered** : 1 / 3
-- **Next focus** : session 2 (dockerfile-omz) — write `sessions/session-2-dockerfile-omz.md` with the dual-edit Dockerfile.base RUN block (OMZ unattended + 2 plugin clones).
+- **Delivered** : 2 / 3
+- **Next focus** : session 3 (verify-rebuild) — write `sessions/session-3-verify-rebuild.md`, rebuild the container, then run the checklist (build success, prompt, autosuggest, syntax-highlight, history tuning, per-dev override via `zshrc.local`, plugin persistence under `.zsh-custom/`, bash fallback).
