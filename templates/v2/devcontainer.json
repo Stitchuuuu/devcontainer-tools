@@ -61,5 +61,20 @@
   "onCreateCommand": "bash .devcontainer/on-create.sh",
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "postStartCommand": "bash .devcontainer/post-start.sh",
+  // Port forwarding policy.
+  // Default (otherPortsAttributes: ignore) — VS Code does not
+  // auto-forward any port. Detected LISTEN sockets show up in the
+  // "Ports" panel under "Not Forwarded"; activate manually via
+  // right-click → "Forward Port".
+  //
+  // To whitelist a port for auto-forward, add an entry to
+  // portsAttributes with onAutoForward = "silent" (no toast) or
+  // "notify" (with toast). Vite example (commented — uncomment and
+  // adapt to the project's dev server):
+  //
+  //   "portsAttributes": {
+  //     "5173": { "label": "vite", "onAutoForward": "silent" }
+  //   },
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
   "waitFor": "postStartCommand"
 }
