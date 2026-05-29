@@ -1,0 +1,38 @@
+# zshrc-base — team-wide zsh config for the devcontainer.
+# Sourced by shell-init.sh on every interactive zsh shell, BEFORE the
+# banner. Per-dev overrides go in .devcontainer/zshrc.local (gitignored,
+# sourced at the end of shell-init.sh).
+
+# Oh My Zsh framework (installed under $HOME/.oh-my-zsh at image build)
+export ZSH="$HOME/.oh-my-zsh"
+
+# Redirect ZSH_CUSTOM to the workspace so per-dev plugins / themes
+# survive container rebuilds (the $HOME tree is volatile).
+export ZSH_CUSTOM="/workspace/.devcontainer/.zsh-custom"
+
+# Theme — overridable in zshrc.local (set ZSH_THEME=foo at the top of
+# zshrc.local, then re-source $ZSH/oh-my-zsh.sh OR open a new shell).
+ZSH_THEME="${ZSH_THEME:-robbyrussell}"
+
+# Plugins — git (built-in OMZ) + two extras baked in the image
+plugins=(git zsh-autosuggestions zsh-syntax-highlighting)
+
+# History — share across sessions, dedupe, ignore commands starting with
+# a space, trim whitespace, ask before running !history expansions.
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS HIST_VERIFY
+
+# Load OMZ (initialises compinit, prompt, plugins, git aliases)
+source "$ZSH/oh-my-zsh.sh"
+
+# wtf autocomplete — wtf is baked in the image (Dockerfile.base).
+# Generate the completion script once, then source it on every shell.
+__zshrc_base_wtf_completion="$HOME/.cache/zsh/wtf-completion.zsh"
+if [ ! -f "$__zshrc_base_wtf_completion" ] && command -v wtf >/dev/null 2>&1; then
+  mkdir -p "$HOME/.cache/zsh"
+  wtf --autocomplete setup > "$__zshrc_base_wtf_completion" 2>/dev/null
+fi
+[ -f "$__zshrc_base_wtf_completion" ] && source "$__zshrc_base_wtf_completion"
+unset __zshrc_base_wtf_completion

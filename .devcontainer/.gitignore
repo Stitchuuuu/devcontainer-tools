@@ -34,3 +34,7 @@ claude-bridge/config.json
 
 # Lessons — local / not-yet-generalisable (committed sibling is LESSONS.md)
 LESSONS.local.md
+
+# Per-dev zsh override + custom OMZ plugins/themes (paths from .devcontainer/)
+zshrc.local
+.zsh-custom/

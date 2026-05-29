@@ -6,6 +6,7 @@ This README is the maintainer's handbook. Skim it once to understand what's wher
 
 ## Table of contents
 
+- [Port forwarding (dev servers)](#port-forwarding-dev-servers)
 - [TL;DR](#tldr)
 - [The three-container model](#the-three-container-model)
 - [Quick start](#quick-start)
@@ -44,6 +45,42 @@ This README is the maintainer's handbook. Skim it once to understand what's wher
 - [Troubleshooting (quick pointers)](#troubleshooting-quick-pointers)
 - [FAQ](#faq)
 - [See also](#see-also)
+
+## Port forwarding (dev servers)
+
+By default this devcontainer **does not auto-forward** any port — VS Code's `otherPortsAttributes` is set to `ignore` in [devcontainer.json](devcontainer.json) so a process listening inside the container does not silently expose itself to the host. Ports detected in `LISTEN` state appear in the VS Code **Ports** panel under *Not Forwarded* and have to be activated by hand (right-click → *Forward Port*).
+
+To **whitelist a port** for automatic forwarding — typical for a long-running dev server you start every time — uncomment the `portsAttributes` block in `.devcontainer/devcontainer.json` and adapt the port number / label :
+
+```jsonc
+"portsAttributes": {
+  "5173": { "label": "client dev", "onAutoForward": "silent" }
+},
+"otherPortsAttributes": { "onAutoForward": "ignore" }
+```
+
+`onAutoForward` accepts `"silent"` (forward without notification), `"notify"` (toast on detect), or `"openBrowser"` (forward + auto-open). Reload the window (or rebuild) for changes to apply.
+
+### Example — client dev server via `wtf`
+
+The image bakes [`wtf`](knowledge/wtf.md) as the project task runner. Drop a `.wtfcmd.yaml` at the repo root to expose your client compile / dev-server commands :
+
+```yaml
+- name: client
+  desc: Client (frontend) tasks
+- name: dev
+  group: client
+  desc: Start the client dev server on :5173
+  cmd: cd client && npm run dev -- --host 0.0.0.0 --port 5173
+- name: build
+  group: client
+  desc: Build the client for production
+  cmd: cd client && npm run build
+```
+
+Then `wtf client dev` from any container shell starts the Vite / webpack dev server, and once `devcontainer.json` whitelists port `5173` (block above), VS Code forwards it to the host — open `http://localhost:5173` in your host browser.
+
+> The `--host 0.0.0.0` flag is critical : a dev server bound to `127.0.0.1` only is unreachable through Docker's port forward. Bind to `0.0.0.0` (or `::`) so the container's listener accepts proxied connections from the VS Code port-forward.
 
 ## TL;DR
 
