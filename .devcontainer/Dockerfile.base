@@ -269,6 +269,28 @@ RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/test-firewall.sh /us
 # Shell init
 # -----------------------------------------------
 USER $USERNAME
+
+# -----------------------------------------------
+# Oh My Zsh + extra plugins (autosuggestions, syntax-highlighting)
+# Installed under $HOME/.oh-my-zsh — volatile across container
+# rebuilds, but baked into the image so first boot is instant.
+# ZSH_CUSTOM is redirected to /workspace/.devcontainer/.zsh-custom by
+# zshrc-base, so per-dev plugins survive rebuilds via the workspace.
+#
+# --unattended  : OMZ installer does not spawn an interactive shell.
+# rm -f .zshrc* : the installer writes a default .zshrc — remove it
+#                 so the next RUN block (shell-init injection)
+#                 starts from an empty file.
+# --depth=1     : shallow clone for the two plugins (~1 MB combined
+#                 vs ~5-10 MB full history).
+# -----------------------------------------------
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended \
+ && rm -f $HOME/.zshrc $HOME/.zshrc.pre-oh-my-zsh \
+ && git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+      $HOME/.oh-my-zsh/custom/plugins/zsh-autosuggestions \
+ && git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting \
+      $HOME/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting
+
 # shell-init.sh sourced from workspace (no rebuild needed on changes)
 RUN echo '[ -f /workspace/.devcontainer/shell-init.sh ] && source /workspace/.devcontainer/shell-init.sh' >> $HOME/.bashrc && \
     echo '[ -f /workspace/.devcontainer/shell-init.sh ] && source /workspace/.devcontainer/shell-init.sh' >> $HOME/.zshrc
