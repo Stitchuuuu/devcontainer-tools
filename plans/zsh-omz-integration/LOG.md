@@ -192,10 +192,10 @@ and survives rebuilds).
   290, 292).
 - Runtime check (rebuild + checklist) deferred to session 3 by design.
 
-**Commit** : not committed yet — awaiting user confirmation.
-Proposed split per session 1 precedent :
-- Commit 1 (templating) : `templates/v2/Dockerfile.base` +
-  `plans/zsh-omz-integration/{STATUS,LOG,EXISTING}.md`
-  — `feat(template): install Oh My Zsh + autosuggest + syntax-highlight in base image`
-- Commit 2 (container) : `.devcontainer/Dockerfile.base`
-  — `chore(dogfood): apply OMZ install to .devcontainer/Dockerfile.base`
+**Commit** :
+- `bb9c7fa` — feat(template): install Oh My Zsh + autosuggest + syntax-highlight in base image (templating side : `templates/v2/Dockerfile.base` + plan files + session 2 spec)
+- `0363603` — chore(dogfood): apply OMZ install to .devcontainer/Dockerfile.base (dual-edit propagation)
+
+Split by **target** (templating vs container) per the session 1
+precedent, with this session's plan-file updates riding along with
+commit 1.

@@ -9,7 +9,7 @@
 |---|---|---|---|
 | 1 | base-skeleton — create `zshrc-base` + `zshrc.local.example`, wire `shell-init.sh` sourcing, gitignore entries — **dual-edit** | ✅ | — |
 | 2 | dockerfile-omz — add OMZ + plugin installs to `Dockerfile.base` — **dual-edit** (template + .devcontainer/) | ✅ | — |
-| 3 | verify-rebuild — rebuild container then checklist (build, prompt, autosuggest, history, per-dev override, rebuild persistence). No `install.sh` re-run on self. | 📋 | _(create after session 2)_ |
+| 3 | verify-rebuild — rebuild container then checklist (build, prompt, autosuggest, history, per-dev override, rebuild persistence). No `install.sh` re-run on self. | 📋 | [→ prompt](sessions/session-3-verify-rebuild.md) |
 
 ## Legend
 
