@@ -1,7 +1,7 @@
 # DevContainer (v2) — root-scope
 
-# Claude — local runtime artefacts
-.claude/
+# Claude — local runtime artefacts (root-only; templates/v2/.claude/ stays tracked)
+/.claude/
 
 # VS Code — bind-mount via docker-compose, single tracked file
 .vscode/*

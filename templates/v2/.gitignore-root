@@ -4,6 +4,7 @@
 .claude/*
 !.claude/rules/
 !.claude/rules/**
+!.claude/settings.local.json.example
 
 # VS Code — bind-mount via docker-compose, single tracked file
 .vscode/*

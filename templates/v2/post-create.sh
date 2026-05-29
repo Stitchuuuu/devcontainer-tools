@@ -47,6 +47,19 @@ fi
 ln -sf ".devcontainer/claude/$CLAUDE_FILE" /workspace/CLAUDE.md
 echo "✓ CLAUDE.md → $CLAUDE_FILE"
 
+# Seed .claude/settings.local.json from .example baseline if missing.
+# Mirrors install.sh:485-486 — install.sh runs once on host, this rerun-safe
+# check restores the live file after a rebuild or accidental delete.
+# Fallback path covers the dogfood repo, which never runs install.sh on itself.
+EX=/workspace/.claude/settings.local.json.example
+[ -f "$EX" ] || EX=/workspace/templates/v2/.claude/settings.local.json.example
+LIVE=/workspace/.claude/settings.local.json
+if [ -f "$EX" ] && [ ! -f "$LIVE" ]; then
+	mkdir -p /workspace/.claude
+	cp "$EX" "$LIVE"
+	echo "✓ .claude/settings.local.json seeded from ${EX#/workspace/}"
+fi
+
 # Warn if test-root has sudo access (the real risk is the sudoers entry, not the file)
 if sudo -l 2>/dev/null | grep -q "test-root"; then
 	echo ""
