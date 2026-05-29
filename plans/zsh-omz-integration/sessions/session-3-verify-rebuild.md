@@ -78,11 +78,15 @@ Run each item. Report ✅ or ❌ with actual command output.
    ```
    Expected : `compinit: function`.
 
-6. **`wtf` completion sourced** :
+6. **`wtf` completion sourced** : the cached completion file
+   defines `_wtf_completion_loader` (bash-style ; zshrc-base runs
+   `bashcompinit` so zsh honours the `complete -F` directive) :
    ```
-   zsh -ic 'whence -w _wtf 2>&1 ; wtf --autocomplete status 2>&1 | head -3'
+   zsh -ic 'whence -w _wtf_completion_loader ; complete -p wtf'
    ```
-   Expected : `_wtf: function` and tab-completion works on `wtf <TAB>`.
+   Expected : `_wtf_completion_loader: function` and
+   `complete -F _wtf_completion_loader -o default wtf`.
+   Tab-completion on `wtf <TAB>` works in an interactive terminal.
 
 7. **zsh-autosuggestions active** (interactive — needs real TTY) :
    open a new terminal, type a partial command you've run before,
@@ -100,16 +104,25 @@ Run each item. Report ✅ or ❌ with actual command output.
    Open a new zsh, confirm the override is applied (theme changed,
    alias works). Verify `zshrc.local` is gitignored (`git check-ignore -v`).
 
-10. **Workspace-mounted plugin install** :
-    ```
-    git clone --depth=1 https://github.com/agkozak/zsh-z \
-      .devcontainer/.zsh-custom/plugins/zsh-z
-    ls .devcontainer/.zsh-custom/plugins/
-    ```
-    Add `zsh-z` to `plugins=(...)` in `zshrc.local`, open new zsh,
-    `whence -w z` → should be `z: function`. Persistence across the
-    NEXT rebuild is implicit (workspace is mounted) but verify
-    `.zsh-custom/` is gitignored.
+10. **Workspace-mounted plugin install** — *DEFERRED.*
+
+    Session 3 dropped the `ZSH_CUSTOM` redirect from `zshrc-base`
+    (and the matching skeleton-init block from `shell-init.sh`).
+    OMZ now uses its default `$ZSH/custom/` — there is no longer a
+    workspace-mounted plugin path wired to OMZ. Per-dev plugin
+    support was deferred per user signal (« on s'en fou des autres
+    plugins » mid-session, see LOG.md session 3).
+
+    Workaround for any dev who wants ad-hoc plugins right now :
+    clone the plugin anywhere (e.g. `$HOME/my-plugins/`) and
+    `source` its `.plugin.zsh` from `.devcontainer/zshrc.local`.
+    Survives in-container until the next rebuild ; that's it.
+
+    A future session can add a real per-dev mechanism if needed
+    (committed `.zsh-custom/plugins/` for team-shared + an
+    `ZSH_CUSTOM` redirect + bridge if baked plugins coexist, OR
+    move the plugin install OUT of `Dockerfile.base` and into a
+    vendored `.zsh-custom/`).
 
 11. **bash fallback** :
     ```

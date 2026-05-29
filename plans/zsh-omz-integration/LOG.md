@@ -199,3 +199,122 @@ and survives rebuilds).
 Split by **target** (templating vs container) per the session 1
 precedent, with this session's plan-file updates riding along with
 commit 1.
+
+---
+
+## 3 — verify-rebuild
+
+**Date** : 2026-05-29
+**Files touched** :
+- `templates/v2/zshrc-base` (edit) + `.devcontainer/zshrc-base` (dual-edit)
+- `templates/v2/shell-init.sh` (drop skeleton block) + `.devcontainer/shell-init.sh` (dual-edit)
+- `plans/zsh-omz-integration/STATUS.md` (row 3 → ✅, counter 2→3)
+- `plans/zsh-omz-integration/LOG.md` (this section)
+- `plans/zsh-omz-integration/EXISTING.md` (status flip + layout update)
+- `plans/zsh-omz-integration/sessions/session-3-verify-rebuild.md` (item 6 + 10 rewords)
+
+**What** : Verified the rebuilt container ($HOME/.oh-my-zsh
+present, plugins on disk, all interactive subsystems wired). Surfaced
+and fixed three structural issues that the original spec hadn't
+anticipated, plus one taste-level default flip. Closed the rollout.
+
+**Why** : The pre-flight (OMZ present) was the green light to run
+the 11-item checklist. Item 1 immediately surfaced `[oh-my-zsh]
+plugin '…' not found` warnings on every shell, and item 6 (`wtf`
+completion) failed on a function-name mismatch. Both required
+in-session source edits ; the spec's "Failure mode" explicitly
+allows that path with the dual-edit pattern.
+
+**Decisions** :
+- **`ZSH_CUSTOM` redirect REMOVED from `zshrc-base`** (and the
+  matching skeleton-init block from `shell-init.sh`). Session 1
+  set `ZSH_CUSTOM=/workspace/.devcontainer/.zsh-custom` so per-dev
+  plugins could survive rebuilds via the workspace mount — but
+  session 2's Dockerfile baked the plugins under
+  `$HOME/.oh-my-zsh/custom/plugins/` (the OMZ default), and the
+  redirect hid them from OMZ's plugin lookup. First attempted a
+  symlink-bridge fix to make both paths visible ; user pushed back
+  (« on fait pas des ln ? Jveux juste que par défaut on ait une
+  config, partagé entre tous, et pour le moment, on s'en fou des
+  autres plugins ») → reverted to dropping the redirect entirely.
+  Per-dev plugin mechanism deferred.
+- **Default theme flipped `robbyrussell` → `eastwood`** in
+  `zshrc-base`. User confirmed eastwood as the team default ; the
+  override flow stays (set `ZSH_THEME=foo` in `zshrc.local`).
+- **`bashcompinit` added before sourcing the wtf completion cache**.
+  `wtf --autocomplete setup` emits a bash-style `complete -F
+  _wtf_completion_loader -o default wtf` ; zsh's native completion
+  system doesn't honour bash's `complete` builtin without
+  `bashcompinit`. With it loaded, `whence -w _wtf_completion_loader`
+  → `function` and `complete -p wtf` shows the registration.
+- **Item 6 reworded** : the original spec expected `_wtf: function`,
+  which never matched reality (the actual function is
+  `_wtf_completion_loader`). Updated to assert against the real
+  name + `complete -p wtf`.
+- **Item 10 marked DEFERRED** : with the `ZSH_CUSTOM` redirect
+  gone, the workspace-mounted per-dev plugin path is no longer
+  wired to OMZ. Spec rewritten with the rationale + a workaround
+  (clone anywhere, `source` from `zshrc.local`) + a forward note
+  for future sessions to add a real mechanism if needed.
+
+**Gotchas** :
+- **Parent-shell env leak** during in-session verification : the
+  Claude harness's parent zsh was started while zshrc-base still
+  had the redirect, so `ZSH_CUSTOM=/workspace/...` was exported
+  in the env that `zsh -ic` calls inherited. Symlinks the bridge
+  had created under that path were still discoverable, masking
+  the redirect-drop. Cleaned with `env -u ZSH_CUSTOM zsh -ic …`
+  for a true clean probe, and removed the dead symlinks.
+- **VSCode server env leak — bit us for real** : after the
+  redirect was dropped from `zshrc-base`, the user opened a fresh
+  terminal tab and STILL got `[oh-my-zsh] plugin 'X' not found`.
+  Root cause : VSCode's server process had loaded an earlier
+  version of `zshrc-base` (with the `export ZSH_CUSTOM=...`),
+  cached the variable in its env, and every spawned terminal
+  inherits that env. No amount of editing `zshrc-base` would help
+  short of restarting VSCode. **Fix** : added `unset ZSH_CUSTOM`
+  at the top of `zshrc-base` (after `export ZSH=...`) so even
+  leaked values get cleared before OMZ looks up plugins. Robust
+  against any future env pollution.
+- **Stale comment in `Dockerfile.base`** (lines 277-278 referenced
+  the now-removed ZSH_CUSTOM redirect). Cleaned up in the same
+  dual-edit.
+- **HISTSIZE override by OMZ** : `zshrc-base` sets `HISTSIZE=10000`
+  before `source $ZSH/oh-my-zsh.sh`, but OMZ's `lib/history.zsh`
+  re-sets `HISTSIZE=50000` afterwards. Both values are sane ; LOG'd
+  as a cosmetic nit. To enforce zshrc-base's value, move the
+  history block AFTER the OMZ source — left for future session.
+- **`zsh-z` clone for item 10 was blocked by firewall** (403 on
+  `github.com/agkozak/zsh-z`). Verified the source-direct
+  mechanism with a local dummy plugin (`.zsh-custom/plugins/wsdummy/`)
+  instead. Item 10 then deferred anyway per the redirect drop.
+
+**Tests** :
+- `env -u ZSH_CUSTOM zsh -ic ':' 2>&1 | grep 'plugin.*not found'`
+  → no match (was `… not found` twice on entry into session)
+- `env -u ZSH_CUSTOM zsh -ic 'echo ZSH_CUSTOM=$ZSH_CUSTOM'`
+  → `ZSH_CUSTOM=/home/node/.oh-my-zsh/custom` (OMZ default)
+- `whence -w _zsh_autosuggest_start ; whence -w _zsh_highlight`
+  → both `function`
+- `whence -w _wtf_completion_loader ; complete -p wtf`
+  → `function` + `complete -F _wtf_completion_loader -o default wtf`
+- `echo ZSH_THEME=$ZSH_THEME` with no `zshrc.local` → `eastwood` ;
+  with `ZSH_THEME=robbyrussell` in `zshrc.local` → `robbyrussell`
+  (override path verified)
+- `bash -i -c 'echo $0 ; echo ${ZSH_VERSION:-unset}'` → bash, unset
+  (zsh-gated blocks skip cleanly)
+- `diff` between `templates/v2/{zshrc-base,shell-init.sh}` and
+  `.devcontainer/{zshrc-base,shell-init.sh}` → identical (mirror OK)
+
+**Commit** :
+- `feat(template): drop ZSH_CUSTOM redirect, eastwood default, bashcompinit for wtf`
+  (`templates/v2/{zshrc-base, shell-init.sh, Dockerfile.base}` + plan files
+  riding along — STATUS, LOG, EXISTING, session 3 spec rewords)
+- `chore(dogfood): apply zsh OMZ refactor to .devcontainer/`
+  (`.devcontainer/{zshrc-base, shell-init.sh, Dockerfile.base, LESSONS.md}`
+  with the new template/dogfood split rule)
+
+Per the established split-by-target convention (commits `9fa7d25` /
+`40116ec`, `bb9c7fa` / `0363603` — template first, dogfood mirror
+second). User surfaced this convention mid-session 3 after I proposed
+a single combined commit ; saved as a LESSONS.md entry.

@@ -44,15 +44,16 @@ Shell-agnostic init sourced at each interactive shell. Responsibilities :
 
 **No zsh-specific logic anywhere.** Pure POSIX/bash-compatible. We'll add zsh-gated blocks at the top and bottom in session 1.
 
-### Status after session 2
+### Status after session 3 (live)
 
-- ✅ Oh My Zsh framework — baked in image at `$HOME/.oh-my-zsh`, inert until session 3 rebuild
-- ✅ Theme `robbyrussell` — baked via OMZ default, inert until rebuild
-- ✅ Plugins `zsh-autosuggestions` + `zsh-syntax-highlighting` — shallow-cloned into `$HOME/.oh-my-zsh/custom/plugins/`, inert until rebuild
-- ✅ History tuning — wired in `zshrc-base`, will activate once OMZ loads at next rebuild
-- ✅ `compinit` autoload — sourced via OMZ in `zshrc-base`, inert until rebuild
-- ✅ `wtf` completion source — bootstrap in `zshrc-base`, inert until OMZ available post-rebuild
-- ✅ Per-dev override mechanism — `zshrc.local` sourcing wired by `shell-init.sh`, gitignored (unchanged from session 1)
+- ✅ Oh My Zsh framework — live at `$HOME/.oh-my-zsh` post-rebuild
+- ✅ Theme `eastwood` (team default after session 3 flip) — live ; per-dev override via `zshrc.local` verified
+- ✅ Plugins `zsh-autosuggestions` + `zsh-syntax-highlighting` — discoverable at OMZ's default `$ZSH/custom/plugins/`. `_zsh_autosuggest_start` + `_zsh_highlight` defined.
+- ⚠️ History tuning — wired in `zshrc-base` but `HISTSIZE=10000` is overridden by OMZ's `lib/history.zsh` (sets 50000). Both values sane ; cosmetic, see LOG session 3.
+- ✅ `compinit` autoload — live via OMZ
+- ✅ `wtf` completion — live ; `bashcompinit` added in session 3 to honour wtf's bash-style `complete -F`. `complete -p wtf` shows the registration.
+- ✅ Per-dev override mechanism — `zshrc.local` sourcing wired by `shell-init.sh`, gitignored, live
+- ⏸️ Per-dev workspace-mounted plugin path — **deferred**. Session 3 dropped the `ZSH_CUSTOM` redirect that powered this (it hid the baked plugins). Workaround : clone anywhere, `source` from `zshrc.local`. Re-enabling cleanly requires a vendor-or-bridge design choice for the baked plugins ; future session.
 
 ## Files in `templates/v2/` relevant to this rollout
 
@@ -73,28 +74,27 @@ Shell-agnostic init sourced at each interactive shell. Responsibilities :
 - [install.sh:420](../../install.sh#L420) : line that copies the runtime template files (`post-start.sh`, `shell-init.sh`, `install-extensions.sh`) from `templates/v2/` to `.devcontainer/`. Must be extended with `zshrc-base` and `zshrc.local.example`.
 - (Surrounding lines 400-430 to be re-read in session 2 to confirm the exact copy mechanism — `cp` direct vs. `for` loop.)
 
-## Target runtime layout (after rollout)
+## Live runtime layout (rollout end-state)
 
 ```
 /home/node/.oh-my-zsh/                      # baked in image (volatile across rebuilds, instant boot)
 ├── plugins/git/                            # built-in OMZ
 ├── custom/plugins/
-│   ├── zsh-autosuggestions/                # baked
-│   └── zsh-syntax-highlighting/            # baked
+│   ├── zsh-autosuggestions/                # baked, discovered at OMZ default path
+│   └── zsh-syntax-highlighting/            # baked, discovered at OMZ default path
 └── …
 
 /workspace/.devcontainer/
 ├── shell-init.sh                           # sourced from ~/.zshrc and ~/.bashrc
-├── zshrc-base                              # NEW — sourced by shell-init.sh if $ZSH_VERSION
-├── zshrc.local                             # NEW (per-dev, gitignored) — sourced last
-├── zshrc.local.example                     # NEW (committed, onboarding doc)
-└── .zsh-custom/                            # NEW (gitignored, ZSH_CUSTOM points here)
-    ├── plugins/                            # per-dev clones (zsh-z, etc.)
-    └── themes/                             # per-dev themes custom
+├── zshrc-base                              # sourced by shell-init.sh if $ZSH_VERSION (theme: eastwood, plugins: git + 2 baked, bashcompinit for wtf)
+├── zshrc.local                             # per-dev, gitignored, sourced last (overrides anything above)
+├── zshrc.local.example                     # committed onboarding doc
+└── .zsh-custom/                            # gitignored, INERT — no code path references it post-session-3.
+                                            # Kept on disk + in .gitignore for a future per-dev mechanism.
 ```
 
-## Open questions (resolve early)
+## Open questions (resolved)
 
-1. `.gitignore-root` vs `.gitignore` in `templates/v2/` — which one applies to the workspace root vs. `.devcontainer/` itself ? Inspect both at session 1 start.
-2. shell-init.sh lines 50-221 may contain banner code using raw ANSI escapes — does OMZ's prompt clobber any of them ? Check at session 3 verification.
-3. Does the OMZ unattended installer support `RUNZSH=no CHSH=no` ? (we need it to NOT launch zsh and NOT change default shell — the Dockerfile already set ENV SHELL=/bin/zsh). The `--unattended` flag should cover this but confirm at session 2 implementation.
+1. **`.gitignore-root` vs `.gitignore`** — resolved session 1 : `.devcontainer/.gitignore` covers the two new paths (scope = `.devcontainer/`). `.gitignore-root` untouched.
+2. **OMZ prompt vs banner ANSI escapes** — verified session 3 : `shell-init.sh` banner uses `echo`/`printf`/Python `print` ; OMZ only sets `PROMPT` (applies after shell-init returns). No collisions observed.
+3. **OMZ unattended installer `RUNZSH=no CHSH=no`** — resolved session 2 : `--unattended` covers both. The `ENV SHELL=/bin/zsh` from the Dockerfile stays authoritative.

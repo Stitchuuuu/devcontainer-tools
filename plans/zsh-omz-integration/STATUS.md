@@ -9,7 +9,7 @@
 |---|---|---|---|
 | 1 | base-skeleton — create `zshrc-base` + `zshrc.local.example`, wire `shell-init.sh` sourcing, gitignore entries — **dual-edit** | ✅ | — |
 | 2 | dockerfile-omz — add OMZ + plugin installs to `Dockerfile.base` — **dual-edit** (template + .devcontainer/) | ✅ | — |
-| 3 | verify-rebuild — rebuild container then checklist (build, prompt, autosuggest, history, per-dev override, rebuild persistence). No `install.sh` re-run on self. | 📋 | [→ prompt](sessions/session-3-verify-rebuild.md) |
+| 3 | verify-rebuild — rebuild container then checklist (build, prompt, autosuggest, history, per-dev override, rebuild persistence). No `install.sh` re-run on self. | ✅ | [→ prompt](sessions/session-3-verify-rebuild.md) |
 
 ## Legend
 
@@ -17,5 +17,5 @@
 
 ## Progress
 
-- **Delivered** : 2 / 3
-- **Next focus** : session 3 (verify-rebuild) — write `sessions/session-3-verify-rebuild.md`, rebuild the container, then run the checklist (build success, prompt, autosuggest, syntax-highlight, history tuning, per-dev override via `zshrc.local`, plugin persistence under `.zsh-custom/`, bash fallback).
+- **Delivered** : 3 / 3
+- **Next focus** : rollout complete. Per-dev workspace-mounted plugin support deferred (no user need yet) — see session 3 LOG entry for the future-session unblock recipe.
