@@ -2,11 +2,6 @@
 # so the prompt / completion / history are initialised when the rest of
 # this file runs. Bash users skip this block cleanly.
 if [ -n "$ZSH_VERSION" ] && [[ $- == *i* ]]; then
-  # First-boot skeleton for the per-dev ZSH_CUSTOM tree (persists in
-  # the workspace, gitignored). zshrc-base points $ZSH_CUSTOM here.
-  [ -d /workspace/.devcontainer/.zsh-custom ] || \
-    mkdir -p /workspace/.devcontainer/.zsh-custom/plugins \
-             /workspace/.devcontainer/.zsh-custom/themes
   [ -f /workspace/.devcontainer/zshrc-base ] && \
     source /workspace/.devcontainer/zshrc-base
 fi

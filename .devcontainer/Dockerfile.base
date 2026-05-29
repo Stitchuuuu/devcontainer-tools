@@ -274,8 +274,8 @@ USER $USERNAME
 # Oh My Zsh + extra plugins (autosuggestions, syntax-highlighting)
 # Installed under $HOME/.oh-my-zsh — volatile across container
 # rebuilds, but baked into the image so first boot is instant.
-# ZSH_CUSTOM is redirected to /workspace/.devcontainer/.zsh-custom by
-# zshrc-base, so per-dev plugins survive rebuilds via the workspace.
+# OMZ uses its default ZSH_CUSTOM ($ZSH/custom/) ; the two plugins
+# land at $ZSH/custom/plugins/{zsh-autosuggestions,zsh-syntax-highlighting}.
 #
 # --unattended  : OMZ installer does not spawn an interactive shell.
 # rm -f .zshrc* : the installer writes a default .zshrc — remove it

@@ -6,13 +6,16 @@
 # Oh My Zsh framework (installed under $HOME/.oh-my-zsh at image build)
 export ZSH="$HOME/.oh-my-zsh"
 
-# Redirect ZSH_CUSTOM to the workspace so per-dev plugins / themes
-# survive container rebuilds (the $HOME tree is volatile).
-export ZSH_CUSTOM="/workspace/.devcontainer/.zsh-custom"
+# Defensive : earlier revisions of this file exported ZSH_CUSTOM to a
+# workspace path. Long-lived parent processes (VSCode server) may
+# still carry the stale value in their env and pass it to forked
+# terminals. Unset it here so OMZ falls back to its default
+# ($ZSH/custom/) where the baked plugins actually live.
+unset ZSH_CUSTOM
 
 # Theme — overridable in zshrc.local (set ZSH_THEME=foo at the top of
 # zshrc.local, then re-source $ZSH/oh-my-zsh.sh OR open a new shell).
-ZSH_THEME="${ZSH_THEME:-robbyrussell}"
+ZSH_THEME="${ZSH_THEME:-eastwood}"
 
 # Plugins — git (built-in OMZ) + two extras baked in the image
 plugins=(git zsh-autosuggestions zsh-syntax-highlighting)
@@ -34,5 +37,11 @@ if [ ! -f "$__zshrc_base_wtf_completion" ] && command -v wtf >/dev/null 2>&1; th
   mkdir -p "$HOME/.cache/zsh"
   wtf --autocomplete setup > "$__zshrc_base_wtf_completion" 2>/dev/null
 fi
-[ -f "$__zshrc_base_wtf_completion" ] && source "$__zshrc_base_wtf_completion"
+# wtf ships a bash-style completion (`complete -F ...`). bashcompinit
+# lets zsh honour bash's `complete` builtin. Must come after OMZ
+# (which runs compinit) and before sourcing the file.
+if [ -f "$__zshrc_base_wtf_completion" ]; then
+  autoload -U +X bashcompinit && bashcompinit
+  source "$__zshrc_base_wtf_completion"
+fi
 unset __zshrc_base_wtf_completion

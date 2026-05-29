@@ -18,6 +18,21 @@
   legitimately needed, the right move is editing
   `policy.local.d/<host>.yaml` (gitignored) — not bypassing.
 
+- **Always split commits by *target* : `templates/v2/*` and `.devcontainer/*`
+  go in SEPARATE commits, never bundled.** *Why* : this repo's dual-edit
+  pattern produces byte-identical changes in `templates/v2/` (the shipped
+  template, picked up by future `install.sh` runs of adopting projects) and
+  `.devcontainer/` (the dogfood mirror that this repo runs on itself).
+  Bundling them obscures intent in `git log` and `git blame` — reviewers
+  can't tell whether a hunk shipped to consumers or only patched the
+  internal dogfood. Convention surfaced in commits `9fa7d25` / `40116ec`
+  and `bb9c7fa` / `0363603`. *How to apply* : commit the `templates/v2/`
+  side first (subject prefix `feat(template):`, `fix(template):`, etc.)
+  with rollout-plan files riding along ; then commit the matching
+  `.devcontainer/` mirror as `chore(dogfood): apply <change> to
+  .devcontainer/`. If a single edit spans both — split the staging with
+  `git add <path>` per file, never `git add -A`.
+
 - **Scripts you generate for the user to run on the *host* must use paths
   RELATIVE to the cwd, never `/workspace/...`.** *Why* : `/workspace` is a
   bind-mount point that only exists *inside* the container. On the host the
