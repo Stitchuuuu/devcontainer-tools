@@ -1,3 +1,16 @@
+# zsh-only — load Oh My Zsh + team-wide zsh base BEFORE the banner below
+# so the prompt / completion / history are initialised when the rest of
+# this file runs. Bash users skip this block cleanly.
+if [ -n "$ZSH_VERSION" ] && [[ $- == *i* ]]; then
+  # First-boot skeleton for the per-dev ZSH_CUSTOM tree (persists in
+  # the workspace, gitignored). zshrc-base points $ZSH_CUSTOM here.
+  [ -d /workspace/.devcontainer/.zsh-custom ] || \
+    mkdir -p /workspace/.devcontainer/.zsh-custom/plugins \
+             /workspace/.devcontainer/.zsh-custom/themes
+  [ -f /workspace/.devcontainer/zshrc-base ] && \
+    source /workspace/.devcontainer/zshrc-base
+fi
+
 # Show post-start log path on first shell
 # Sourced from .zshrc/.bashrc at container startup
 # Only run in interactive terminals
@@ -218,3 +231,10 @@ fi
 # can't silently flip the LLM endpoint. The ~/.claude-local/ isolation
 # directory is initialized by post-start.sh when local mode is detected in
 # .env at container boot.
+
+# Per-dev zsh override (gitignored, persists with the workspace) — sourced
+# LAST so it can override anything from zshrc-base or env vars set above.
+if [ -n "$ZSH_VERSION" ] && [[ $- == *i* ]] && \
+   [ -f /workspace/.devcontainer/zshrc.local ]; then
+  source /workspace/.devcontainer/zshrc.local
+fi

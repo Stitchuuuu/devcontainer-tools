@@ -262,6 +262,10 @@ install_files() {
         copy_verbatim "${f}.sh"
     done
 
+    # ── Zsh base + per-dev override example (sourced by shell-init.sh) ─
+    copy_verbatim zshrc-base
+    copy_verbatim zshrc.local.example
+
     # ── Firewall core (9) ──────────────────────────────────────
     for f in init-firewall.sh firewall-mode.sh test-firewall.sh; do
         copy_verbatim "$f"
@@ -469,6 +473,20 @@ link_lessons_root() {
     success "LESSONS.md → .devcontainer/LESSONS.md (symlink)"
 }
 
+install_claude_settings() {
+    # Pre-approved read-only permissions baseline at project root.
+    # .example is always refreshed (canonical reference, tracked in git
+    # via counter-exclusion in .gitignore-root). The live file is only
+    # written when missing, preserving any user customisations on
+    # re-install — same idempotency pattern as LESSONS.md above.
+    local src="$TEMPLATE_DIR/.claude/settings.local.json.example"
+    mkdir -p "$TARGET_DIR/.claude"
+    cp "$src" "$TARGET_DIR/.claude/settings.local.json.example"
+    [ -f "$TARGET_DIR/.claude/settings.local.json" ] \
+        || cp "$src" "$TARGET_DIR/.claude/settings.local.json"
+    success ".claude/settings.local.json{,.example} (read-only baseline)"
+}
+
 link_claude_rules_root() {
     # Expose .devcontainer/claude/CLAUDE-{dev,project}.md under
     # .claude/rules/{mandatory,project}.md so the claude CLI discovers
@@ -538,6 +556,7 @@ main() {
     set_exec_perms
     write_v2_marker
     link_lessons_root
+    install_claude_settings
     link_claude_rules_root
     final_summary
 }
