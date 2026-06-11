@@ -18,8 +18,11 @@ auto-migration (see Part 2 when specced).
   `.gitignore` content inline now (further refined in S3b — split
   between `.devcontainer/.gitignore` and root-scope inline list).
 - `update.sh` — the full-resync script proved too fragile for a
-  major bump. Replaced by a paste-into-Claude migration prompt
-  (Part 2, deferred).
+  major bump. Replaced by two Claude-driven playbooks shipped at
+  repo root : [MIGRATION-v1-to-v2.md](MIGRATION-v1-to-v2.md)
+  (one-shot v1.x → v2.0) and [UPGRADE-v2.md](UPGRADE-v2.md)
+  (routine v2.x → v2.y). Bootstrap = `git clone --branch <tag>` +
+  paste a one-line prompt into Claude.
 
 ### Renames / relocations
 
@@ -84,6 +87,21 @@ auto-migration (see Part 2 when specced).
     `REFUSED`, payload absent from mitmproxy logs ; all three
     threat-model criteria hold (no restart, no firewall mod, no
     exfil without rebuild).
+
+### Fixed
+
+- **`dc-project` fallback restored to v1 parity** — `docker-compose.yml`,
+  `initialize.sh` and the `prepare-research` skill now substitute the
+  project slug into the bash fallback `${DC_PROJECT:-<slug>}` at install
+  time (v1 behavior). Doc examples + `<main-dc-project>` metavariables
+  in `RESEARCH.md`, `host-helpers/research-cleanup` and the skill md
+  also templatised so installed projects display their own name
+  end-to-end. `install.sh` flips 5 `copy_verbatim` → `copy_templated`
+  (with post-`copy_dir` overwrites for `host-helpers/` and `skills/`).
+- **Stale `paranoid` mentions** referring to the deprecated alias as the
+  current mode name — fixed in `firewall/firewall-blocks` (error msg),
+  `firewall/domains.txt` and `firewall/policy.d/marketplace.visualstudio.com.yaml`
+  comments → now `strict`.
 
 ### Notes
 

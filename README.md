@@ -114,17 +114,45 @@ hardcoded to `v2`.
   (subsequent projects pinning the same `CLAUDE_CODE_VERSION`
   reuse the cached image).
 
-## Migrating from v1.3
+## Migrating from v1.x
 
-`install.sh` v2 does **not** auto-migrate. The original `update.sh`
-full-resync proved too brittle for the v1.3 → v2.0 jump. Per-file
-reconciliation with judgment calls will ship as a paste-into-Claude
-session prompt under `plans/devcontainer-tools-v2-migration/Part 2`
-once the v2 baseline has been validated by a few new-project
-installs in the wild.
+`install.sh` v2 does **not** auto-migrate (the v1.3 `update.sh`
+full-resync proved too brittle for a major jump). Instead, a
+**Claude-driven playbook** walks the v1.x → v2.0 reconciliation
+per file-class with human-in-the-loop confirmation.
 
-In the meantime, projects on v1.3 stay on v1.3 — `install.sh`
-detects the marker and aborts cleanly.
+```bash
+cd /path/to/v1x-project
+git clone --depth 1 --branch v2.0.0 \
+  git@github.com:<user>/devcontainer-tools.git .tmp/migrate-v2
+echo ".tmp/" >> .gitignore
+# Open Claude Code in this project, then paste :
+#   Migre ce projet d'une devcontainer v1.x vers v2.0 en suivant
+#   .tmp/migrate-v2/MIGRATION-v1-to-v2.md.
+```
+
+Full playbook : [MIGRATION-v1-to-v2.md](MIGRATION-v1-to-v2.md).
+
+If you don't migrate, projects stay on v1.3 — `install.sh` detects
+the marker and aborts cleanly.
+
+## Upgrading within v2.x
+
+For routine minor bumps (e.g. 2.0.0 → 2.0.1 → 2.1.0), the same
+Claude-driven flow applies — but lighter, because v2's `*.local`
+convention isolates user-specific config from shipped files.
+
+```bash
+cd /path/to/v2x-project
+git clone --depth 1 --branch v2.Y.Z \
+  git@github.com:<user>/devcontainer-tools.git .tmp/upgrade-v2
+grep -qxF '.tmp/' .gitignore || echo ".tmp/" >> .gitignore
+# Open Claude Code in this project, then paste :
+#   Upgrade ce projet vers v2.Y.Z en suivant
+#   .tmp/upgrade-v2/UPGRADE-v2.md.
+```
+
+Full playbook : [UPGRADE-v2.md](UPGRADE-v2.md).
 
 ## Security posture
 
