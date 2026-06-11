@@ -13,7 +13,7 @@ Use judgement; if a "simple question" turns out to require a code
 change, switch to the rules below before editing.
 
 For project-specific rules (stack, conventions, repo layout,
-environment), read [CLAUDE-project.md](CLAUDE-project.md).
+environment), read [CLAUDE-project.md](.devcontainer/claude/CLAUDE-project.md).
 
 ## 1. Plan Mode default
 
@@ -213,7 +213,7 @@ Active signals :
 
 These guidelines describe *how* to do dev work. They are deliberately
 silent on stack, language, conventions, and environment — those are
-project-specific and live in [CLAUDE-project.md](CLAUDE-project.md).
+project-specific and live in [CLAUDE-project.md](.devcontainer/claude/CLAUDE-project.md).
 Read that file before starting work on this project.
 
 ## 13. Code style — perf + clarity
@@ -245,3 +245,38 @@ For code **you write** (§4 still wins for existing code) :
     outdated.*
 
 Meta-rule : **perf ≥ modern idioms, as long as readability holds.**
+
+## 14. Notification body convention
+
+When you finish a turn — i.e. you are about to **Stop** (no tool call
+queued, no explicit question for the user) — append a single short
+recap line at the very end of your reply, formatted exactly as :
+
+```
+**Recap** — <summary ≤ 80 chars>
+```
+
+The summary is parsed by the `notify-queue` hook ([.devcontainer/skills/notify-queue/hook.js](.devcontainer/skills/notify-queue/hook.js))
+and fed as the body of the host-side desktop notification. Without
+this line, the hook falls back to a markdown-heuristic excerpt of
+your first usable line (V1) — usually fine, but less precise than
+a recap you crafted on purpose.
+
+Guidelines for the summary :
+
+- **≤ 80 characters.** Beyond that, it gets truncated.
+- **Plain text after the dash.** No nested bold, no emoji, no
+  backticks — the host notification renders as system text.
+- **Action-oriented, past tense.** "Tests passing, PR ready",
+  "Build failed — see logs", "Refactor done, 3 files touched".
+  Not "I have completed the task".
+- **Skip if your reply is just an acknowledgement.** No recap → V1
+  fallback fires ; that's the right behaviour for "ok", "done", or
+  a one-line answer.
+- **Don't add the recap for mid-turn outputs.** Tool calls, plan
+  proposals, clarifying questions — those aren't "Stop" events ;
+  the hook won't see your recap there.
+
+The recap is visible in the chat (unlike a hidden HTML comment which
+the Claude Code VS Code extension renders as raw text anyway). Keep
+it terse so it reads as a clean summary line, not noise.
