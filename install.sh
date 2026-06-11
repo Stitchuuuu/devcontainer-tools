@@ -317,11 +317,12 @@ install_files() {
     copy_dir claude-bridge
     copy_dir host-helpers
     copy_templated host-helpers/research-cleanup
+    copy_templated host-helpers/docker-audit.sh
     copy_verbatim diag-ollama-local.sh
 
     # ── Skills (sync + 5 generic) ──────────────────────────────
     copy_verbatim skills/sync-skills.sh
-    for s in prepare-pr watch-log prepare-research scan-deps prepare-plan notify-queue; do
+    for s in prepare-pr watch-log prepare-research scan-deps prepare-plan notify-queue diagram; do
         copy_dir "skills/$s"
     done
     copy_templated skills/prepare-research/prepare-research.skill.md
