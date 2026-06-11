@@ -1,97 +1,106 @@
 ---
-description: Scaffold a multi-session rollout directory (ROLLOUT + STATUS + LOG + EXISTING + sessions/) for a feature/fix/refactor that needs ≥3 sessions of work. Auto-triggers on natural phrases like "fais-moi un plan", "prépare un rollout", "scaffold a plan" — when auto-triggered, asks the user for confirmation before writing anything.
+description: Scaffold a plan directory (ROLLOUT + STATUS + LOG + EXISTING + sessions/) under /workspace/plans/<feature>/ to route code work to a later session. Always asks first whether to (1) implement in the current session, (2) scaffold a single-session plan, or (3) scaffold a multi-session plan — and recommends the most fitting based on scope. Auto-triggers on phrases like "fais-moi un plan", "scaffold a plan", "j'ai pas le temps".
 argument-hint: "<feature-name> [<free-text scope description>]"
 ---
 
-# /prepare-plan — scaffold a multi-session rollout
+# /prepare-plan — scaffold a plan rollout
 
-This is a **meta-skill** that industrialises a rollout pattern: ROLLOUT.md
-+ STATUS.md + LOG.md + EXISTING.md + sessions/session-NN.md, all under
-`/workspace/plans/<feature>/`. Given a feature name and a free-text scope
-description, it generates a self-contained planning directory ready to
-drive multiple Claude Code sessions.
-
-The output directory follows a strict convention so that **every session
-prompt prescribes its own DoD** (update STATUS / LOG / EXISTING in-line at
-the end of the session). No companion skill, no hooks, no automation — the
-pattern is self-perpetuating once seeded.
+Generates a self-contained plan directory under `/workspace/plans/<feature>/`:
+`ROLLOUT.md` + `STATUS.md` + `LOG.md` + `EXISTING.md` + `sessions/session-1-*.md`.
+Each session prompt prescribes its own DoD (update STATUS / LOG / EXISTING at the
+end), so the pattern is self-perpetuating — no companion skill, no hook.
 
 ## When to use
 
-Trigger this skill when the work ahead clearly spans **multiple sessions**
-and benefits from a shared scoreboard :
+Whenever the user wants to **route code work to the right context** after a
+plan is done. Common triggers: "fais-moi un plan", "prépare un rollout",
+"monte un plan pour", "scaffold a plan", "prep a rollout for", "j'ai pas le
+temps de m'en occuper", "je verrai ça plus tard".
 
-- Large feature touching several areas of the codebase (≥3 distinct sessions).
-- Multi-phase refactor / migration where intermediate states must be tracked.
-- Infrastructure overhaul (devcontainer, CI, build pipeline) with a sequence
-  of irreversible steps.
-- Any task where the user says things like : "fais-moi un plan", "prépare
-  un rollout", "monte un plan pour", "scaffold a plan", "prep a rollout for".
+The scope decision (this session / single / multi) is the user's pick at step 0
+— not gated by this section.
 
 ## When NOT to use
 
-- Single-session task — just do the work, no plan dir needed.
-- One-shot bug fix — a commit message is enough.
-- Refactor isolated to one file or one small module.
-- A research / exploration that has no deliverable plan — use
-  `/prepare-research` instead.
-
-When in doubt, ask the user before scaffolding. A wrongly-created plan dir
-forces a manual cleanup and erodes trust in the skill.
+- Research / exploration without a deliverable plan → use `/prepare-research`.
+- Append to an existing plan directory → this skill only scaffolds fresh ones.
+  To extend an existing one, edit its `STATUS.md` / `LOG.md` / `sessions/` by hand.
 
 ## Process
 
-### 0. Confirm-on-auto (skip if invoked via slash)
+### 0. Context-routing decision — mandatory AskUserQuestion
 
-**Determine the invocation mode** before doing anything else :
+**Always ask** before touching disk — whether triggered via `/prepare-plan`
+slash or auto-proposed from a natural-language phrase. The user picks ; the
+skill recommends.
 
-- If the user's last message contains the literal token `/prepare-plan`,
-  this is an **explicit slash invocation**. Skip directly to step 1, no
-  confirmation needed — the user typed the command, intent is clear.
-- Otherwise this is an **auto-trigger** : Claude self-proposed the skill
-  based on a natural-language phrase ("fais-moi un plan pour …",
-  "scaffold a plan", …). Before touching disk, call `AskUserQuestion` ONCE
-  with a single question :
+**What the question routes:** the **context budget for the code work that
+follows the plan**. The plan is built *now* ; the implementation happens
+*next*. Three options:
 
-  ```
-  Question : "Je propose de scaffold un dossier de plan multi-sessions
-              pour `<inferred feature name>`. On y va ?"
-  Options  :
-    - "Yes, go"        → continue to step 1
-    - "No, cancel"     → abort cleanly, output one line "Plan scaffold
-                         cancelled — no files written."
-    - "Edit scope"     → ask the user a follow-up for the corrected
-                         feature name + description, then continue
-  ```
+- **This session** — implement in the current chat. Right for small fixes with
+  few exchanges and a chat that still has headroom. Scaffold would be overhead.
+- **New single session** — scaffold the 5 files ; implement in a fresh chat.
+  Right when the change is non-trivial but fits in one session, or the current
+  chat is already deep.
+- **Multi-session** — scaffold the 5 files + signal that follow-up sessions
+  are expected. Right when the change exceeds one session, has irreversible
+  phases, or spans several areas.
 
-  Never write to disk before the user has answered Yes or Edit. Never call
-  `AskUserQuestion` a second time for confirmation in the same invocation.
+Call `AskUserQuestion` ONCE. **Reorder the options so the recommended one is
+first** and append `(Recommended)` to its label.
+
+Recommendation heuristic:
+
+| Scope signal | Recommend |
+|---|---|
+| 1-line fix, config tweak, isolated single-file edit, ≤ ~10 exchanges expected | This session |
+| One PR-worth of work, one focused feature/refactor, fits in one fresh chat | New single session |
+| ≥2 distinct steps, irreversible phases, cross-cutting refactor | Multi-session |
+
+```
+Question : "Where should we implement `<inferred feature name>` ?
+            (planning is done — picking the context for the code work)"
+Options (Recommended one first) :
+  - "This session"        — Implement in the active chat, no scaffold.
+  - "New single session"  — Scaffold 5 files, implement in a fresh chat.
+  - "Multi-session"       — Scaffold 5 files, expect ≥2 sessions.
+```
+
+Exactly one option carries `(Recommended)` — never zero, never two.
+
+**On the answer:**
+
+- **This session** → abort cleanly, no files written. Print:
+  `Plan scaffold skipped — implementing in current session.`
+  Return control so Claude implements now.
+- **New single session** → proceed to step 1 with `mode = single`.
+- **Multi-session** → proceed to step 1 with `mode = multi`.
+
+`single` and `multi` produce **identical scaffolds**. The mode is purely a
+framing signal to the user about whether to expect follow-up — the session
+prompt's DoD already covers both outcomes inline.
+
+Never call `AskUserQuestion` a second time in the same invocation.
 
 ### 1. Parse invocation and derive identifiers
 
-The invocation has the shape `/prepare-plan <feature-name> [<description>]`
-(or the natural-language equivalent). Resolve :
+`/prepare-plan <feature-name> [<description>]` or the natural-language
+equivalent. Resolve:
 
-- `feature_name` : kebab-case identifier. If the first whitespace-separated
-  token is already kebab-case (`[a-z][a-z0-9-]*`), use it as-is. Otherwise
-  derive one from the description (lowercase, strip stopwords, kebab-case,
-  ≤ 40 chars). Reject names containing `/`, `..`, uppercase letters, or
-  spaces.
-- `description` : everything after `feature_name`, trimmed. If empty,
-  prompt the user for a one-line scope description before continuing.
-- `feature_title` : human-readable title — capitalise each word of
-  `feature_name` (split on `-`), join with spaces. Used only in the
-  `# Header` lines of generated docs.
-- `date` : today in ISO format (`YYYY-MM-DD`). Resolve via `date +%F`.
-- `first_session_slug` : a short kebab-case identifier for the first
-  session's concrete first step. Default `scaffold` if you cannot infer
-  better from the description. Examples : `scaffold`, `inventory`,
-  `baseline`, `spike`.
+- `feature_name` — kebab-case. If the first whitespace-token already matches
+  `[a-z][a-z0-9-]*`, use it. Otherwise derive from the description (lowercase,
+  strip stopwords, kebab-case, ≤ 40 chars). Reject `/`, `..`, uppercase, spaces.
+- `description` — everything after `feature_name`, trimmed. If empty, ask the
+  user for a one-line scope.
+- `feature_title` — capitalise each word of `feature_name` (split on `-`).
+- `date` — `date +%F` (ISO `YYYY-MM-DD`).
+- `first_session_slug` — short kebab-case for the first concrete step. Default
+  `scaffold` if you cannot infer better. Examples: `scaffold`, `inventory`,
+  `baseline`, `spike`, `apply-shim`.
 
-If the derived `feature_name` looks too generic (≤ 3 chars, or a single
-common verb : `fix`, `add`, `do`), ask the user for an explicit one before
-continuing. Print one short confirmation line and proceed without waiting
-unless the inference looks risky :
+If `feature_name` is too generic (≤ 3 chars, or a common verb like `fix`,
+`add`, `do`), ask for an explicit one. Otherwise print one confirmation line:
 
 ```
 → feature_name=<name>, first_session_slug=<slug>, target=/workspace/plans/<name>/
@@ -99,63 +108,47 @@ unless the inference looks risky :
 
 ### 2. Collision check
 
-Compute `target = /workspace/plans/${feature_name}/`.
+`target = /workspace/plans/${feature_name}/`. If it does NOT exist, proceed.
+If it exists, NEVER overwrite — propose `-v2`, `-v3`, …, recompute `target`,
+and print:
 
-- If `target` does NOT exist : proceed to step 3.
-- If `target` exists : NEVER overwrite. Propose the next free suffix —
-  try `${feature_name}-v2`, then `-v3`, etc. — recompute `target` and
-  print one line :
+```
+⚠ /workspace/plans/<name>/ already exists. Proposing /workspace/plans/<name>-v2/ instead.
+  Confirm with "yes" or provide a different name.
+```
 
-  ```
-  ⚠ /workspace/plans/<name>/ already exists. Proposing /workspace/plans/<name>-v2/ instead.
-    Confirm with "yes" or provide a different name.
-  ```
+Wait for explicit confirmation. Never silently fall through — the user may want
+to extend the existing plan by hand (not supported here).
 
-  Wait for user confirmation before proceeding. Never silently fall through
-  to the `-v2` path — the user may want to append to the existing plan
-  (which this skill does NOT support — they should edit the existing
-  STATUS.md / LOG.md by hand).
+### 3. Exploration — fill EXISTING.md
 
-### 3. Exploration heuristic — fill EXISTING.md
+- **Skip** if the scope is confined (single file, named files) — `Read` them
+  directly and summarise inline.
+- **Spawn 1–3 Explore agents in parallel** if the area is broad or unfamiliar
+  (e.g. "refactor the auth layer"). Brief each with a focused question
+  (implementations / related components / tests). Thoroughness level: "quick".
+- **Default to skip** if you can't articulate a precise question. Vague
+  exploration produces noise.
 
-Decide whether the plan benefits from a code-base scan to seed EXISTING.md :
-
-- **Skip exploration** if the scope is obviously confined : single file,
-  single small module, or the description names specific files. Read those
-  files directly with `Read` and summarise inline.
-- **Spawn 1–3 Explore agents in parallel** if the scope is broad or the
-  area is unfamiliar (e.g. "refactor the auth layer", "audit packet
-  handlers across plugins"). Each agent gets a focused brief : one for
-  existing implementations, one for related components, one for testing
-  patterns. Report thoroughness level "quick" — EXISTING.md is a starting
-  inventory, not a deep audit.
-- **Default to skip** if you cannot articulate a precise question for an
-  Explore agent. A vague exploration produces noise.
-
-Aggregate the findings into a draft EXISTING.md section. If exploration is
-skipped, EXISTING.md is generated as a stub with a clear "fill me" header
-— the first session will populate it.
+Aggregate into a draft EXISTING.md section. If skipped, EXISTING.md gets a
+fill-me stub and session 1 populates it.
 
 ### 4. Generate the 5 files
 
-All paths below are absolute. `ROOT="/workspace/plans/${feature_name}"`.
+`ROOT="/workspace/plans/${feature_name}"`. Run `mkdir -p "$ROOT/sessions"`,
+then write each file substituting every `{{placeholder}}` from the templates
+in §"File templates". Variables:
 
-```bash
-mkdir -p "$ROOT/sessions"
-```
+| Placeholder | Value |
+|---|---|
+| `{{feature_name}}` | kebab slug |
+| `{{feature_title}}` | human title |
+| `{{description}}` | scope text |
+| `{{date}}` | today ISO |
+| `{{first_session_slug}}` | first session slug |
+| `{{existing_body}}` | exploration findings, or fill-me stub |
 
-Write each file substituting every `{{placeholder}}` with its resolved
-value. The templates live inline below (§"File templates"). Variables :
-
-- `{{feature_name}}`     → kebab-case slug
-- `{{feature_title}}`    → human-readable title
-- `{{description}}`      → free-text scope from user
-- `{{date}}`             → today ISO `YYYY-MM-DD`
-- `{{first_session_slug}}` → first session slug
-- `{{existing_body}}`    → either the exploration findings, or the
-                            fill-me stub paragraph
-
-Write in this order :
+Write order:
 
 1. `$ROOT/ROLLOUT.md`
 2. `$ROOT/STATUS.md`
@@ -165,8 +158,6 @@ Write in this order :
 
 ### 5. Sanity check — no leftover placeholders
 
-After all 5 files are written :
-
 ```bash
 if grep -RE '<feature[_-]name>|<feature[_-]title>|<first[_-]session[_-]slug>|\{\{[a-z_]+\}\}' "$ROOT" 2>/dev/null; then
   echo "❌ Unresolved placeholders in $ROOT — aborting and removing partial output."
@@ -175,9 +166,7 @@ if grep -RE '<feature[_-]name>|<feature[_-]title>|<first[_-]session[_-]slug>|\{\
 fi
 ```
 
-If the grep finds anything, the substitution missed a spot — wipe the
-output directory and stop. The user prefers an empty result over a broken
-plan.
+If grep finds anything, wipe `$ROOT` and stop. Empty result beats broken plan.
 
 ### 6. Print the next-steps block
 
@@ -186,9 +175,9 @@ plan.
 
 Contents :
   ROLLOUT.md                 entry point — read first
-  STATUS.md                  session scoreboard (1/N seeded)
+  STATUS.md                  session scoreboard
   LOG.md                     append-only journal (empty)
-  EXISTING.md                code inventory (filled / stub)
+  EXISTING.md                code inventory (filled or stub)
   sessions/session-1-{{first_session_slug}}.md
                              first session prompt — copy-paste into a fresh chat
 
@@ -196,10 +185,10 @@ To run session 1 :
   1. Open sessions/session-1-{{first_session_slug}}.md
   2. Copy the file content (the file is the prompt)
   3. Paste into a new Claude Code session
-  4. When that session is done, its DoD prescribes the STATUS / LOG updates
+  4. At the end, the session's DoD prescribes the STATUS / LOG updates
 
-To add the next session : edit STATUS.md (new row) and create
-  sessions/session-2-<slug>.md following the same template as session 1.
+To add a next session (multi mode) : edit STATUS.md (new row) and create
+  sessions/session-2-<slug>.md following the same shape as session 1.
 ```
 
 ## File templates
@@ -375,8 +364,9 @@ STATUS.md instead of folding it in.
 
 DoD at the end of this session :
 1. STATUS.md : flip session 1 row 📋 → ✅, prompt link → —, bump
-   Delivered counter (0→1), refresh "Next focus" to session 2 (or note
-   "rollout complete" if no follow-up needed).
+   Delivered counter (0→1), refresh "Next focus" (to `rollout complete`
+   for a single-session rollout, or `session 2 — to be defined` for a
+   multi-session one).
 2. LOG.md : append `## 1 — {{first_session_slug}}` section dated today
    with files touched + What / Why / Decisions / Gotchas / Tests /
    Commit.
@@ -390,23 +380,17 @@ DoD at the end of this session :
 
 ## Constraints
 
-- Output path is always `/workspace/plans/<feature_name>/`. Never write
-  the plan directory anywhere else (not `~/.claude/plans/`, not
-  `/tmp/`, not the project root).
+- Output path is always `/workspace/plans/<feature_name>/`. Never elsewhere.
 - Never overwrite an existing plan directory — propose `-v2`, `-v3`, …
-  and require explicit user confirmation.
-- `feature_name` must be lower-case kebab : `[a-z][a-z0-9-]*`. Reject
-  names containing `/`, `..`, uppercase, or spaces.
-- Every generated file MUST contain resolved values — no surviving
-  `{{placeholder}}`, no `<feature_name>`, no `<feature_title>`. Step 5
-  enforces this with a `grep` over the full output directory.
-- All generated files are in **English** per the project's CLAUDE.md
-  rule, even when the conversation with the user is in French.
-- The skill writes **exactly 5 files** (4 top-level + 1 session-1).
-  Do not generate `docs/`, multiple sessions, or other companion files
-  — those are added on-demand by later sessions if justified.
-- On auto-trigger, `AskUserQuestion` is called ONCE for confirmation.
-  Never call it a second time in the same invocation for "are you sure".
+- `feature_name` must match `[a-z][a-z0-9-]*`. Reject `/`, `..`, uppercase,
+  spaces.
+- Every generated file has resolved placeholders. Step 5 enforces this.
+- Generated files are in **English** per the project's CLAUDE.md rule, even
+  when the conversation is in French.
+- The skill writes **exactly 5 files** (4 top-level + 1 session-1). No `docs/`,
+  no extra sessions — added on demand by later sessions.
+- `AskUserQuestion` is called ONCE at step 0. Never a second time.
+- Mode "This session" writes zero files and prints one line.
 
 ## Failure modes
 
@@ -416,5 +400,6 @@ DoD at the end of this session :
 | Derived `feature_name` too generic (≤ 3 chars, common verb) | Description was too vague | Ask the user for an explicit name before continuing. |
 | Exploration agent times out or returns nothing | Scope mis-bounded for Explore | Fall back to the stub EXISTING.md. The first session can fill it. |
 | Sanity-check at step 5 finds a `{{placeholder}}` | Substitution missed a token in the templates | Wipe the output directory and abort. Better empty than broken. |
-| User says "No, cancel" on the auto-trigger confirmation | Skill was self-proposed against intent | Print "Plan scaffold cancelled — no files written." and stop. Do not retry. |
-| User wants to extend an existing plan instead of starting `-v2` | This skill does NOT support append mode | Tell the user to edit STATUS.md / LOG.md / sessions/ by hand for an existing plan. |
+| User picks "This session" at step 0 | Scope small enough that scaffolding is overhead | Print "Plan scaffold skipped — implementing in current session." and stop. No files. Return control so Claude implements now. |
+| User wants to extend an existing plan instead of starting `-v2` | This skill does NOT support append mode | Tell the user to edit `STATUS.md` / `LOG.md` / `sessions/` by hand. |
+| Recommendation feels wrong to the user | Scope judgment was off | The user simply picks a different option in the AskUserQuestion. The recommendation is non-binding. |
