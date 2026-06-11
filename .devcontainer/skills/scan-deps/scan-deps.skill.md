@@ -31,6 +31,20 @@ This skill is **two-layer** :
 - Pre-flight check before merging a branch that touches `package.json` /
   `composer.json` / `pyproject.toml` / `Cargo.toml` / `go.mod`.
 
+## When to use a different skill instead
+
+- User is still **evaluating** a new package (hasn't picked one yet,
+  needs to compare candidates) → spawn `/prepare-research` first. That
+  sidecar has registry + docs + GitHub search access. Once the package
+  is chosen and added to the lock, `/scan-deps` closes the loop. The
+  full multi-phase workflow is documented in
+  [knowledge/firewall.md § Adding a new dep to the project](../../knowledge/firewall.md#adding-a-new-dep-to-the-project-composer--npm).
+- User wants a one-shot lookup against 1–2 known hosts → propose a
+  surgical `domains.local.txt` entry per
+  [knowledge/firewall.md § Web search & research policy](../../knowledge/firewall.md#web-search--research-policy).
+  Reserve this for genuinely single-host, single-session reads — for
+  project deps, always route through `domains.d/<eco>.txt` via this skill.
+
 ## Process
 
 ### Step 1 — invoke extract-auto-dependencies (Layer 1)

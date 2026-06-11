@@ -23,22 +23,113 @@ When the user asks for :
 - Third-party API integration (POST to new hosts — Stripe, Linear, …)
 - Package evaluation involving registries beyond the baseline
 
-→ **Don't WebFetch/WebSearch silently and fail.** Surface the firewall
-constraint and offer one of two sanctioned paths :
+#### Step 0 — verify the host isn't already covered
 
-1. **Targeted allowlist addition** — propose appending the specific host(s)
-   to `firewall/domains.local.txt` (+ a `policy.local.d/<host>.yaml` if POST
-   needed). Suitable for : 1–2 read-only domains, ad-hoc single-session
-   lookup. The user must Rebuild Container for the change to take effect.
-2. **`/prepare-research`** (preferred when in doubt) — spawn a scoped
-   research devcontainer with its own expanded allowlist + isolated volumes.
-   Suitable for : multi-domain exploration, third-party API integration,
-   package evaluation, anything multi-session.
+**Before proposing *any* firewall path**, do this check :
 
-**Default to `/prepare-research`** when the scope is unclear or non-trivial
-— it's the sanctioned, audited path that avoids polluting the main
-`domains.local.txt`. Reserve the targeted allowlist for genuinely
-single-host, single-session reads.
+1. **Find the REAL domain.** Marketing domains (`.com`) almost never
+   match the tech / docs domains (`.io`, `.inc`, `.dev`). Sources, in
+   priority order :
+   - `.env.example` / `.env` for `*_BASE_URL`, `*_API_URL` env vars.
+   - Service / client code (language-appropriate path — e.g.
+     `src/services/*`, `app/Services/*`, `lib/clients/*`) for
+     hardcoded URLs.
+   - WebFetch the marketing homepage and grab the "Developers" / "Docs"
+     footer link.
+   - WebSearch as last resort (`"<vendor> developer documentation"`).
+
+   Example : a vendor's tech domain is often a `.io` / `.dev` / `.inc`
+   while marketing sits on `.com`. Always confirm the right one before
+   adding.
+
+2. **Grep the entire firewall config :**
+   ```bash
+   grep -riE "<root-domain>" .devcontainer/firewall/
+   ```
+   Check `domains.txt` (baseline with wildcards like `*.example.inc`),
+   `domains.local.txt`, `addons/`, `policy.d/`, `policy.local.d/`.
+   Wildcards count.
+
+3. **If anything matched, skip the firewall ceremony entirely.** Just
+   `WebFetch` directly. Don't add a redundant entry.
+
+#### Step 1 — surface the constraint, AskUserQuestion with recommendation
+
+If step 0 returned nothing, **don't `WebFetch` / `WebSearch` silently and
+fail**. Use `AskUserQuestion` to present the two sanctioned paths with a
+**recommended choice** :
+
+1. **Targeted allowlist addition** — for **1–2 read-only domains,
+   single-session lookup**. Append to `domains.local.txt` in a
+   **dedicated marked section** so the cleanup is visible :
+
+   ```
+   # === TEMP <topic> — to remove before session end ===
+   dev.example.inc
+   docs.example.inc
+   # === END TEMP <topic> ===
+   ```
+
+   Requires `Dev Containers: Rebuild Container` via the VS Code command
+   palette. **Remind the user to delete the marked section at end of
+   session** to keep `domains.local.txt` clean across reboots.
+
+2. **`/prepare-research`** — for multi-domain exploration, third-party
+   API integration, package evaluation, anything multi-session. Spawns
+   a scoped research devcontainer with isolated allowlist + volumes.
+   No cleanup needed.
+
+**Recommendation default** : **default to (1) `domains.local.txt`** with
+a marked TEMP section + cleanup reminder, for almost any ad-hoc lookup —
+even when fetching several pages of the same vendor's docs in the same
+session.
+
+**Reserve (2) `/prepare-research`** for *substantial* research efforts
+where spinning up a fresh devcontainer actually pays off :
+
+- Full third-party API integration evaluation (multiple endpoints,
+  auth flows, error handling, tests against a sandbox)
+- Comprehensive package / library comparison (3+ vendors, side-by-side
+  trials)
+- Multi-vendor research spanning several sessions or days
+- Anything POSTing to new hosts with real test data
+
+`/prepare-research` is a **long process** (container build, isolated
+volumes, broader allowlist). It's not a quick lookup — using it for a
+2-page docs read is overkill.
+
+Always present both via `AskUserQuestion`, the recommended one marked.
+
+### Adding a new dep to the project (composer / npm)
+
+When the user wants to add a NEW package they haven't chosen yet, the
+firewall + scan-deps workflow chains across three phases :
+
+1. **Research / evaluation phase — pre-decision.** Use `/prepare-research`
+   to spawn a sidecar with access to package registries + GitHub search +
+   library docs. Compare candidates there. No edit to the main firewall
+   yet. (For a quick lookup of 1–2 known hosts you already trust, the
+   targeted `domains.local.txt` route above is acceptable but rarely
+   worth the rebuild churn.)
+
+2. **Install phase — after decision.** Add the package to
+   `composer.json` / `package.json` and run `composer install` /
+   `npm install`. The first attempt will likely hit firewall blocks if
+   the new vendor/org isn't already in the lock — the `firewall-blocks`
+   output makes the missing paths visible.
+
+3. **Persistence phase — let `/scan-deps` close the loop.** Once the
+   lock file is updated (with the new dep), invoke `/scan-deps`. The
+   composer/npm extractor reads the new lock entries and emits the
+   required paths to `firewall/domains.d/<eco>.txt`. Rebuild Container
+   to load them. Re-install confirms zero blocks.
+
+**Anti-pattern** : do NOT manually add the new package's paths to
+`domains.local.txt` as a "permanent fix". `domains.local.txt` is
+personal/gitignored — your colleagues won't see those paths and their
+install will break. The committed allowlist for project deps lives in
+`domains.d/<eco>.txt`, owned by `/scan-deps`. The local layer is for
+dev-personal, single-host, single-session ad-hoc reads.
 
 ---
 
