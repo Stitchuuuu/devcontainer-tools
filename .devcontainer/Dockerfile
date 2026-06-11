@@ -2,7 +2,7 @@
 # Project DevContainer — slim layer.
 # All heavy lifting lives in `Dockerfile.base`, built once per
 # CLAUDE_CODE_VERSION by `.devcontainer/initialize.sh` and tagged
-# `claude-devcontainer-base:${CLAUDE_CODE_VERSION}`.
+# `claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}`.
 #
 # To bump Claude: edit CLAUDE_CODE_VERSION in `.devcontainer/.env` then
 # "Rebuild Container" in VS Code. The initializeCommand will detect the
