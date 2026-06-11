@@ -75,6 +75,17 @@ copy_templated() {
         "$src" > "$dst"
 }
 
+copy_templated_as() {
+    # $1 = relative src ; $2 = relative dst (when src and dst names differ —
+    # e.g. Dockerfile.php → Dockerfile for PHP installs). Same sed pipeline
+    # as copy_templated().
+    local src="$TEMPLATE_DIR/$1" dst="$DEST/$2"
+    mkdir -p "$(dirname "$dst")"
+    sed -e "s|{{PROJECT_ID}}|${PROJECT_ID_ESC}|g" \
+        -e "s|{{PROJECT_DISPLAY_NAME}}|${DISPLAY_NAME_ESC}|g" \
+        "$src" > "$dst"
+}
+
 copy_dir() {
     # $1 = relative dir ; recursive copy preserving structure
     local src="$TEMPLATE_DIR/$1" dst="$DEST/$1"
@@ -250,8 +261,8 @@ install_files() {
     # ── Build ──────────────────────────────────────────────────
     copy_verbatim Dockerfile.base
     case "$PROJECT_TYPE" in
-        node|custom) cp "$TEMPLATE_DIR/Dockerfile"     "$DEST/Dockerfile" ;;
-        php)         cp "$TEMPLATE_DIR/Dockerfile.php" "$DEST/Dockerfile" ;;
+        node|custom) copy_templated_as Dockerfile     Dockerfile ;;
+        php)         copy_templated_as Dockerfile.php Dockerfile ;;
     esac
     copy_templated docker-compose.yml
     copy_verbatim vscode-settings.json
@@ -283,7 +294,13 @@ install_files() {
     copy_dir firewall/policy.local.d
     copy_dir firewall/tests
 
-    # ── Claude (5 files) ───────────────────────────────────────
+    # ── Notify daemon (host-side, runs while container is up) ──
+    # vscode-ext-patchs/ rides on copy_dir claude (recursive) below.
+    copy_dir notify
+    copy_templated notify/tests/PROMPTS.md
+    copy_templated notify/tests/winrt-standalone.js
+
+    # ── Claude (5 files + vscode-ext-patchs/ via recursive copy_dir) ──
     copy_dir claude
     copy_templated claude/CLAUDE-project.md
 
@@ -304,7 +321,7 @@ install_files() {
 
     # ── Skills (sync + 5 generic) ──────────────────────────────
     copy_verbatim skills/sync-skills.sh
-    for s in prepare-pr watch-log prepare-research scan-deps prepare-plan; do
+    for s in prepare-pr watch-log prepare-research scan-deps prepare-plan notify-queue; do
         copy_dir "skills/$s"
     done
     copy_templated skills/prepare-research/prepare-research.skill.md
@@ -314,6 +331,9 @@ install_files() {
 
     # ── Gitignore (.devcontainer/-scope rules) ─────────────────
     copy_verbatim .gitignore
+
+    # ── Dockerignore (build-context exclusions) ────────────────
+    copy_verbatim .dockerignore
 
     # ── Gitignore-root (root-scope fragment ; appended to
     #    <target>/.gitignore by update_gitignore) ───────────────

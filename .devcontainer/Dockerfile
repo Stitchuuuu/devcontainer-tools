@@ -9,7 +9,8 @@
 # missing base tag and rebuild it before compose builds this layer.
 # -----------------------------------------------
 ARG CLAUDE_CODE_VERSION=2.1.145
-FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}
+ARG DC_PROJECT=devcontainer-tools
+FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}
 
 # Project-specific layer (empty by default — add project deps here).
 # Add `RUN apt-get install -y …` here for project apt deps that should NOT

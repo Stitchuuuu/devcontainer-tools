@@ -1,4 +1,4 @@
-name: ${DC_PROJECT:-dc-project}-claude-code
+name: ${DC_PROJECT:-devcontainer-tools}-claude-code
 
 services:
   app:
@@ -13,6 +13,7 @@ services:
         # initialize.sh. Default falls back to the version Dockerfile.base pins.
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.145}
         GIT_DELTA_VERSION: "0.18.2"
+        DC_PROJECT: ${DC_PROJECT:-devcontainer-tools}
     # Local Ollama backend (cf. .devcontainer/knowledge/ollama-local.md). Two aliases for
     # the same host gateway IP — the routing difference comes from NO_PROXY :
     #   ollama.internal  ∉ NO_PROXY  → routed via HTTP_PROXY (mitmproxy audit)
@@ -91,11 +92,11 @@ networks:
 
 volumes:
   bash-history:
-    name: claude-code-bashhistory-${DC_PROJECT:-dc-project}
+    name: claude-code-bashhistory-${DC_PROJECT:-devcontainer-tools}
   claude-config:
-    name: claude-code-config-${DC_PROJECT:-dc-project}
+    name: claude-code-config-${DC_PROJECT:-devcontainer-tools}
   claude-creds:
-    name: ${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-dc-project}}
+    name: ${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-devcontainer-tools}}
     external: true
   mitmproxy:
-    name: mitmproxy-${DC_PROJECT:-dc-project}
+    name: mitmproxy-${DC_PROJECT:-devcontainer-tools}

@@ -7,7 +7,8 @@
 # any project that builds with the same FROM + same RUN.
 # -----------------------------------------------
 ARG CLAUDE_CODE_VERSION=2.1.145
-FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}
+ARG DC_PROJECT={{PROJECT_ID}}
+FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}
 
 USER root
 

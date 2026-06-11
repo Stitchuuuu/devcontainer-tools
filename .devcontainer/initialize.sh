@@ -11,6 +11,49 @@ DEVCONTAINER_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$DEVCONTAINER_DIR/.." && pwd)"
 ENV_FILE="$DEVCONTAINER_DIR/.env"
 
+# === Host-OS detection ===
+# HOST_KIND : mac | linux | wsl | gitbash | cygwin | unknown
+# mac + linux are the historical targets. wsl + gitbash are Windows shims
+# (script + daemon run under either WSL bash or MSYS2 Git Bash). cygwin +
+# unknown are unsupported — the script aborts with one actionable line
+# instead of failing later with cryptic command-not-found errors.
+case "$(uname -s)" in
+	Darwin)        HOST_KIND=mac ;;
+	Linux)
+		if [ -n "${WSL_DISTRO_NAME:-}" ] \
+		   || [ -n "${WSL_INTEROP:-}" ] \
+		   || ( [ -r /proc/version ] && grep -qi 'microsoft' /proc/version ); then
+			HOST_KIND=wsl
+		else
+			HOST_KIND=linux
+		fi
+		;;
+	MINGW*|MSYS*)  HOST_KIND=gitbash ;;
+	CYGWIN*)       HOST_KIND=cygwin ;;
+	*)             HOST_KIND=unknown ;;
+esac
+
+if [ "$HOST_KIND" = "cygwin" ] || [ "$HOST_KIND" = "unknown" ]; then
+	echo "✗ initialize.sh does not support host kind: $HOST_KIND ($(uname -s))" >&2
+	echo "  Supported : Mac, native Linux, Windows-with-WSL, Windows-with-Git-Bash." >&2
+	exit 1
+fi
+export HOST_KIND
+
+# === Path translation : POSIX → host-OS native ===
+# Docker Desktop on Windows labels containers with Windows-format paths
+# (C:\foo\bar). Bash holds them POSIX-style (/mnt/c/foo/bar in WSL,
+# /c/foo/bar in Git Bash). Translate on demand so `docker ps --filter
+# label=…` matches what the daemon wrote. Identity on Mac + native Linux.
+to_host_path() {
+	local p="$1"
+	case "$HOST_KIND" in
+		wsl)     wslpath -w "$p" ;;
+		gitbash) cygpath -w "$p" ;;
+		*)       printf '%s' "$p" ;;
+	esac
+}
+
 # === Lifecycle logging ===
 # Always-on : human-readable output in <hook>-<ts>.log (stdout+stderr via tee).
 # DEBUG=1 only : xtrace in <hook>-<ts>.trace (every shell command + file:line).
@@ -63,9 +106,9 @@ if [ -f "$ENV_FILE" ]; then
 	set +a
 fi
 
-CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-dc-project}}"
+CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-devcontainer-tools}}"
 
-echo "  DC_PROJECT:   ${DC_PROJECT:-dc-project}"
+echo "  DC_PROJECT:   ${DC_PROJECT:-devcontainer-tools}"
 echo "  claude-creds: $CREDS_VOLUME"
 
 # Ensure firewall/ baked files exist before Dockerfile COPY (recursive).
@@ -319,6 +362,13 @@ dump_rebuild_context() {
 #   BUILD_BASE_NO_CACHE=1    → rebuild base with --no-cache
 #
 # Portable across Linux + macOS (no /proc dependency, ps + docker everywhere).
+#
+# Windows shims (WSL / Git Bash) : Channel 1's ps ancestor walk only sees the
+# shim's own subprocess tree — VS Code on the Windows host is unreachable and
+# the walk silently terminates without finding --no-cache. Channel 2 (docker
+# ps probe, path-translated via to_host_path so the label filter matches the
+# Windows-format paths VS Code wrote) is the reliable signal on those hosts.
+# Mac + native Linux see the full ancestry and both channels work.
 detect_no_cache_request() {
 	# Explicit env override wins on both signals.
 	if [ "${BUILD_BASE_NO_CACHE:-0}" = "1" ]; then
@@ -349,10 +399,17 @@ detect_no_cache_request() {
 	# so we get the exact container for THIS workspace + config.
 	# Skip the probe if BUILD_BASE_NO_CACHE already won (no need to refine).
 	if [ "${BUILD_BASE_NO_CACHE:-0}" != "1" ] && command -v docker >/dev/null 2>&1; then
-		local ctr_id=""
+		local ctr_id="" p_local p_cfg
+		# Docker labels are written by VS Code in host-OS-native format
+		# (C:\… on Windows). On WSL / Git Bash the POSIX form held in bash
+		# (/mnt/c/…, /c/…) never matches → the filter silently returns no
+		# hits and the daemon over-rebuilds. to_host_path() is identity on
+		# Mac + native Linux, so this is a no-op on the historical paths.
+		p_local=$(to_host_path "$PROJECT_DIR")
+		p_cfg=$(to_host_path "$DEVCONTAINER_DIR/devcontainer.json")
 		ctr_id=$(docker ps -a -q \
-			--filter "label=devcontainer.local_folder=$PROJECT_DIR" \
-			--filter "label=devcontainer.config_file=$DEVCONTAINER_DIR/devcontainer.json" \
+			--filter "label=devcontainer.local_folder=$p_local" \
+			--filter "label=devcontainer.config_file=$p_cfg" \
 			2>/dev/null | head -1)
 		if [ -z "$ctr_id" ]; then
 			export BUILD_BASE_REQUESTED=1
@@ -384,7 +441,7 @@ detect_no_cache_request() {
 # .devcontainer/logs/build-base-<version>-<ts>.log for post-mortem.
 build_base_if_missing() {
 	local version="${CLAUDE_CODE_VERSION:-2.1.145}"
-	local tag="claude-devcontainer-base:${version}"
+	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-devcontainer-tools}"
 	set_env_var "CLAUDE_CODE_VERSION" "$version"
 
 	detect_no_cache_request
@@ -616,6 +673,146 @@ echo "=== DevContainer Setup ==="
 sync_proxy_env "$(cat "$FW_FLAG" 2>/dev/null || echo strict)"
 
 print_summary
+
+# === Notify daemon (host-side, portable Node — runs while container is up) ===
+# Spawned detached, survives initialize.sh exit. Self-exits when the container
+# is gone (polls `docker ps` every 60 s). Idempotent — pid lockfile prevents
+# double-spawn. Skipped silently if `node` is not on the host PATH.
+#
+# Diagnostic visibility : pre-flight prints the resolved node binary + paths,
+# a spawn-boundary marker is appended to daemon.log, and ~1 s after the spawn
+# we classify the outcome (claimed lockfile / bowed out / still booting /
+# crashed silently). Catches the silent-crash failure mode where the previous
+# "spawn attempted" message gave no insight into whether anything actually
+# happened on disk.
+spawn_notify_daemon() {
+	local daemon_dir="$DEVCONTAINER_DIR/notify"
+	local queue_dir="$DEVCONTAINER_DIR/notify/queue"
+	local logfile="$queue_dir/daemon.log"
+	local pidfile="$queue_dir/.daemon.pid"
+
+	[ -f "$daemon_dir/index.js" ] || return 0
+	mkdir -p "$queue_dir"
+
+	local node_bin
+	node_bin=$(command -v node 2>/dev/null) || {
+		echo "ℹ Notify daemon : node not found on host PATH — skipping (install Node.js to enable desktop notifs)"
+		return 0
+	}
+
+	# Pre-flight visibility — written to the INIT log (terminal/tee).
+	echo "ℹ Notify daemon : node=$node_bin"
+	echo "ℹ Notify daemon : entrypoint=${daemon_dir#$DEVCONTAINER_DIR/}/index.js"
+	echo "ℹ Notify daemon : logfile=${logfile#$DEVCONTAINER_DIR/}"
+	if [ ! -x "$node_bin" ]; then
+		echo "⚠ Notify daemon : node binary not executable — skipping"
+		return 0
+	fi
+
+	# Node 18+ requirement. The daemon uses numeric separators, optional
+	# chaining, nullish coalescing, fs.rmSync etc. (lib/* files don't even
+	# parse on Node < 14). Bail out cleanly with a clear message instead of
+	# leaving a SyntaxError in daemon.log.
+	local node_major
+	node_major=$("$node_bin" --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+	if [ -n "$node_major" ] && [ "$node_major" -lt 18 ]; then
+		echo "⚠ Notify daemon : node $("$node_bin" --version) too old (need 18+) — skipping"
+		echo "  Upgrade via nvm: nvm install --lts && nvm use --lts"
+		return 0
+	fi
+
+	# Mark the spawn boundary in daemon.log so we can correlate with whatever
+	# the daemon writes (or doesn't write) after this point.
+	printf '\n=== initialize.sh spawn attempt %s ===\n' "$(date -u +%FT%TZ)" >> "$logfile"
+
+	# Wipe any residual status file from a previous run BEFORE spawn — otherwise
+	# the polling loop below could read stale STATUS lines from a crashed daemon
+	# that wrote its readback then died before cleanup. The new daemon will
+	# rewrite this file (atomically) after its consumers init.
+	rm -f "$queue_dir/.daemon.startup"
+
+	# Run from PROJECT_DIR so the daemon's cwd-based auto-detect picks up
+	# the right .devcontainer/notify/queue (queue dir is derived from cwd).
+	#
+	# The daemon owns its own lockfile (.daemon.pid) + liveness heartbeat —
+	# re-spawn is idempotent. A second instance detects the first via the
+	# pidfile (PID alive + mtime <= 30 s) and exits 0 silently. Stale zombies
+	# get SIGKILL'd by the new instance on Unix hosts.
+	pushd "$PROJECT_DIR" > /dev/null
+	nohup "$node_bin" "$daemon_dir/index.js" "--launcher-pid=$PPID" >> "$logfile" 2>&1 &
+	local new_pid=$!
+	disown "$new_pid" 2>/dev/null || true
+	popd > /dev/null
+
+	# Post-spawn outcome classification. Give the daemon ~1 s to either claim
+	# the lockfile, bow out via the existing-daemon guard, or crash.
+	sleep 1
+	local owner_pid=""
+	[ -f "$pidfile" ] && owner_pid=$(cat "$pidfile" 2>/dev/null | tr -d '\n')
+	if [ "$owner_pid" = "$new_pid" ]; then
+		echo "✓ Notify daemon spawned (pid $new_pid owns lockfile, log: ${logfile#$DEVCONTAINER_DIR/})"
+	elif [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+		echo "ℹ Notify daemon already running (pid $owner_pid) — attempt pid $new_pid exited cleanly"
+	elif kill -0 "$new_pid" 2>/dev/null; then
+		echo "ℹ Notify daemon : pid $new_pid still alive but no lockfile yet — may still be initializing (log: ${logfile#$DEVCONTAINER_DIR/})"
+	else
+		echo "⚠ Notify daemon : pid $new_pid gone, no lockfile claim — likely crashed silently."
+		echo "  Last 20 lines of ${logfile#$DEVCONTAINER_DIR/} :"
+		tail -20 "$logfile" 2>/dev/null | sed 's/^/    /'
+		return 0
+	fi
+
+	# === Channel readback =====================================================
+	# The daemon writes queue/.daemon.startup (atomic : tmp + rename) AFTER all
+	# consumers' start() returned. Format is line-based, plain ASCII / Unicode :
+	#   STATUS <name> <ok|skipped|fail> [k=v]...
+	#   READY  pid=<n> channels=<csv-of-ok-channels>
+	# We poll for ~3 s (100 ms × 30) then echo each line with an ANSI-colored
+	# bracket glyph. Consumer init is synchronous and <100 ms in practice ; 3 s
+	# covers the worst case (Linux sound probe across paplay/aplay/ffplay).
+	local startup_file="$queue_dir/.daemon.startup"
+	local waited=0
+	while [ ! -f "$startup_file" ] && [ "$waited" -lt 30 ]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+
+	if [ ! -f "$startup_file" ]; then
+		echo "⚠ Notify daemon : startup file absent après 3s — tail daemon.log :"
+		tail -n 5 "$logfile" 2>/dev/null | sed 's/^/    /'
+		return 0
+	fi
+
+	# Color guards : honor NO_COLOR (https://no-color.org). We CANNOT use
+	# `[ -t 1 ]` here — initialize.sh:34 redirects stdout through tee, so fd 1
+	# is always a pipe at this point (cf. comment at top of file). The original
+	# terminal TTY-ness was captured pre-redirect on line 33 as
+	# ORIG_STDOUT_TTY ; that's the signal `run_with_progress` uses too.
+	local c_ok='' c_skip='' c_fail='' c_reset=''
+	if [ -z "${NO_COLOR:-}" ] && [ "${ORIG_STDOUT_TTY:-0}" = "1" ]; then
+		c_ok=$'\033[32m'   # green
+		c_skip=$'\033[90m' # bright black / grey
+		c_fail=$'\033[31m' # red
+		c_reset=$'\033[0m'
+	fi
+
+	local line channels
+	while IFS= read -r line; do
+		case "$line" in
+			"STATUS "*" ok "*|"STATUS "*" ok")
+				printf '  %s[\xe2\x9c\x93]%s %s\n' "$c_ok"   "$c_reset" "${line#STATUS }" ;;
+			"STATUS "*" skipped "*|"STATUS "*" skipped")
+				printf '  %s[-]%s %s\n'            "$c_skip" "$c_reset" "${line#STATUS }" ;;
+			"STATUS "*" fail "*|"STATUS "*" fail")
+				printf '  %s[x]%s %s\n'            "$c_fail" "$c_reset" "${line#STATUS }" ;;
+			"READY "*)
+				channels="${line#*channels=}"
+				channels="${channels%% *}"
+				echo "ℹ Notify daemon : channels=$channels" ;;
+		esac
+	done < "$startup_file"
+}
+spawn_notify_daemon || true
 
 # Pause only when an interactive prompt actually ran. prompt_auth is now a
 # silent info banner (no input), so only prompt_claude_mode (which sets
