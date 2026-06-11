@@ -247,3 +247,48 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
 [GET] www.microsoft.com                # Microsoft PKI Operations — CRL distribution
   /pkiops/crl/*                        #   signed `.crl` binaries (Time-Stamp PCA etc.)
+
+
+# === Security research — vuln intel + patch level lookup ====================
+# Read-only access to public CVE databases (NIST / MITRE / Debian) and
+# Docker Desktop release metadata. Purpose : answer « is this CVE real,
+# does it affect us, when does the patch land » without leaving the
+# devcontainer. GET only, no upload — same risk profile as CRL above.
+# Notably useful for kernel CVE where `apt upgrade` is useless (container
+# kernel = Docker Desktop's linuxkit, not the FROM image) and the patch
+# only ships via Docker Desktop bump.
+
+# --- CVE databases (NIST + MITRE + Debian) ----------------------------------
+[GET] nvd.nist.gov                     # NIST NVD — HTML vuln detail pages
+  /vuln/*                              #   /vuln/detail/CVE-YYYY-NNNN
+
+[GET] services.nvd.nist.gov            # NVD REST API (JSON, machine-readable)
+  /rest/json/cves/*                    #   ?cveId=CVE-YYYY-NNNN
+
+[GET] cve.org                          # MITRE — vanity redirect
+[GET] www.cve.org                      # MITRE CVE record pages
+
+[GET] security-tracker.debian.org      # Debian security tracker — patch status per release
+  /tracker/*                           #   /tracker/CVE-YYYY-NNNN
+
+[GET] www.debian.org                   # Debian advisories (DSA / DLA)
+  /security/*                          #   /security/YYYY/dsa-NNNN
+
+# --- Docker Desktop / linuxkit (kernel patch level for the container host) --
+[GET] docs.docker.com                  # Release notes (mentions linuxkit kernel bump)
+  /desktop/release-notes/*             #   per-channel release notes
+
+[GET] desktop.docker.com               # Update appcast + installers — latest version metadata (XML)
+  /mac/*                               #   /mac/main/{arm64,amd64}/appcast.xml
+  /win/*                               #   /win/main/amd64/appcast.xml
+  /linux/*                             #   /linux/main/<arch>/ — Docker Desktop Linux release artefacts
+
+# linuxkit project — kernel build recipes + release tags. Docker Desktop's
+# bundled VM kernel comes from this repo (kernel/ subtree). Useful to
+# cross-reference « ma version Docker Desktop embarque quel kernel patché
+# vs vulnérable » quand les release notes Docker n'en parlent pas.
+# Merges additively with /repos/anthropics/* and /repos/blunt1337/wtfcmd/*
+# declared elsewhere in this file.
+[GET] api.github.com
+  /repos/linuxkit/linuxkit             #   repo metadata
+  /repos/linuxkit/linuxkit/*           #   releases, tags, commits, contents (kernel build files)
