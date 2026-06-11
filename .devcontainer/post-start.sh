@@ -27,6 +27,13 @@ echo "=== post-start $(date) ==="
 echo "  log:   ${LOG#/workspace/}"
 echo "  trace: $TRACE_LOC"
 
+# Wipe the Claude Code VS Code extension inbound log at every container start.
+# Observation/audit data — no value retaining across boots. The JS appendFile
+# in the user-action-observer patch creates the file on the first event.
+# Parent dir (.devcontainer/logs) is already created above by the lifecycle
+# block, so appendFile doesn't need to mkdir.
+rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl
+
 # Hide bind-mounted .vscode/settings.json from git
 # (the devcontainer overrides it via docker-compose volume mount)
 git -C /workspace update-index --skip-worktree .vscode/settings.json 2>/dev/null || true

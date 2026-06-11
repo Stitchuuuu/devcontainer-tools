@@ -16,10 +16,12 @@ scan-deps/*
 !research-bundles/.keep
 !scan-deps/.keep
 
+# Python bytecode cache — anywhere under .devcontainer/
+**/__pycache__/
+
 # Firewall — local overrides, caches, test logs
 firewall/domains.local.txt
 firewall/policy.local.d/*
-firewall/addons/__pycache__/
 firewall/tests/*.log
 firewall-blocks.*.log
 
@@ -31,6 +33,20 @@ skills/**/*.local/
 
 # claude-bridge sidecar runtime config (bootstrapped from .example.json)
 claude-bridge/config.json
+
+# Notify daemon — runtime artefacts under notify/queue/ (auto-generated)
+#   *.jsonl          : per-hook event queue (consumed + cleaned by the daemon)
+#   daemon.log       : daemon stderr/stdout sink (rotated at 1 MB → 100 KB)
+#   .daemon.pid      : single-instance lockfile + heartbeat (mtime touched every 10 s)
+#   .daemon.startup* : channel readback dropped after init (also covers the .tmp
+#                      sibling that survives a writeFileSync→renameSync crash window)
+#   state/           : pending.json + actions.jsonl (in-flight timers + audit
+#                      log, both reset per daemon lifetime — see lib/state.js)
+notify/queue/*.jsonl
+notify/queue/daemon.log
+notify/queue/.daemon.pid
+notify/queue/.daemon.startup*
+notify/queue/state/
 
 # Lessons — local / not-yet-generalisable (committed sibling is LESSONS.md)
 LESSONS.local.md
