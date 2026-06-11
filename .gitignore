@@ -1,7 +1,9 @@
 # DevContainer (v2) — root-scope
 
 # Claude — local runtime artefacts (root-only; templates/v2/.claude/ stays tracked)
-/.claude/
+# Note : `/.claude/*` (wildcard) rather than `/.claude/` so the counter-exclusion
+# below actually works — git can't un-ignore content inside a fully-ignored dir.
+/.claude/*
 !/.claude/settings.local.json.example
 
 # VS Code — bind-mount via docker-compose, single tracked file
