@@ -41,22 +41,6 @@ if [[ $- == *i* ]] && [ -x /workspace/.devcontainer/claude/sync-creds.sh ]; then
   VERBOSE=1 /workspace/.devcontainer/claude/sync-creds.sh
 fi
 
-# GitHub CLI auto-auth (only when not already authenticated — e.g. standard mode)
-# Require a real TTY ([ -t 0 ]) — VS Code's resolveShellPath spawns `zsh -lic`
-# which IS interactive ($- has 'i') but has NO TTY, and would block on the
-# gh auth login device flow, causing a 10s spawnSync timeout in the extension.
-if [[ $- == *i* ]] && [ -t 0 ] && ! gh auth status &>/dev/null; then
-  echo ""
-  echo "GitHub CLI is not authenticated. Starting login..."
-  echo ""
-  gh auth login
-  if gh auth status &>/dev/null; then
-    gh auth setup-git
-    echo ""
-    echo "Git credential helper configured."
-  fi
-fi
-
 # ⚠️ Warn if test-root still has sudo access (sudoers entry is the real risk)
 if [[ $- == *i* ]] && sudo -l 2>/dev/null | grep -q "test-root"; then
   echo ""
@@ -131,7 +115,6 @@ if [[ $- == *i* ]]; then
 
   echo ""
   echo "──────────────────────────────────"
-  echo "  GitHub:    $AUTH_MODE"
   echo "  Claude:    $CLAUDE_MODE"
   # v2.1-2 — show whether the Claude binary is the extension symlink (Phase B)
   # or an npm install fallback. Sentinel /etc/claude-fallback-warn is touched
