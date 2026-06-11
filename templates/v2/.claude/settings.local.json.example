@@ -44,6 +44,8 @@
 			"Bash(env *)",
 			"Bash(node -v*)",
 			"Bash(npm list*)",
+			"Bash(npm view*)",
+			"Bash(npm search*)",
 			"Bash(gh pr view*)",
 			"Bash(gh pr list*)",
 			"Bash(gh pr diff*)",

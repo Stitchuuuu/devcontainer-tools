@@ -194,7 +194,7 @@ Contents :
 
 To run session 1 :
   1. Open sessions/session-1-{{first_session_slug}}.md
-  2. Copy the "Prompt to paste" block (between the 4-backtick fences)
+  2. Copy the file content (the file is the prompt)
   3. Paste into a new Claude Code session
   4. When that session is done, its DoD prescribes the STATUS / LOG updates
 
@@ -358,11 +358,6 @@ formatted as sections.
 ````markdown
 # Session 1 — {{first_session_slug}}
 
-> **Effort** : ~0.5–1 day | **Dependencies** : none (first session)
-
-## Prompt to paste
-
-`````
 I'm starting session 1 of the `{{feature_name}}` rollout.
 
 Entry point : `/workspace/plans/{{feature_name}}/ROLLOUT.md`
@@ -370,7 +365,6 @@ Read also :
 - `STATUS.md` (where we are)
 - `LOG.md` (what's been done so far — empty on session 1)
 - `EXISTING.md` (current code inventory)
-- `sessions/session-1-{{first_session_slug}}.md` (this spec)
 
 Goal : {{description}}
 
@@ -388,19 +382,11 @@ DoD at the end of this session :
    Commit.
 3. EXISTING.md : update if new files / structures were created.
 4. Propose a commit (do NOT commit without explicit user confirmation).
-`````
-
-## Next session
-
-To be decided at the end of session 1 — add a new row in STATUS.md and
-create `sessions/session-2-<slug>.md` following the same minimal shape
-as this file.
 ````
 
-> 🚨 **The session template uses 5-backtick fences for the prompt block**
-> so the prompt can itself contain 4-backtick fences for embedded code
-> blocks if needed. When writing this file, keep the 5-backtick fences
-> intact.
+> The session file IS the prompt — no wrapper, no fence. The user copies the
+> file's full content into a fresh chat. Effort estimates, prerequisites, and
+> per-session metadata belong in STATUS.md (extra columns if needed), not here.
 
 ## Constraints
 

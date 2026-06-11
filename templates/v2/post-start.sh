@@ -145,14 +145,14 @@ check_claude_update() {
   [ -z "$latest" ] && return 0
   [ "$installed" = "$latest" ] && return 0
   printf '\033[1;33m'
-  printf '╔════════════════════════════════════════════════════════╗\n'
-  printf '║  ⚠  Claude Code update available                       ║\n'
-  printf '║     installed: %-40s║\n' "$installed"
-  printf '║     latest:    %-40s║\n' "$latest"
-  printf '║                                                        ║\n'
-  printf '║  Bump CLAUDE_CODE_VERSION in .devcontainer/.env then   ║\n'
-  printf '║  "Dev Containers: Rebuild Container" in VS Code.       ║\n'
-  printf '╚════════════════════════════════════════════════════════╝\n'
+  printf '╔════════════════════════════════════════════════════════════════╗\n'
+  printf '║  ⚠  Claude Code update available                               ║\n'
+  printf '║     installed: %-48s║\n' "$installed"
+  printf '║     latest:    %-48s║\n' "$latest"
+  printf '║                                                                ║\n'
+  printf '║  Bump CLAUDE_CODE_VERSION in .devcontainer/.env then           ║\n'
+  printf '║  "Dev Containers: Rebuild Container" in VS Code.               ║\n'
+  printf '╚════════════════════════════════════════════════════════════════╝\n'
   printf '\033[0m'
 }
 check_claude_update
@@ -209,18 +209,18 @@ if stale:
     yellow = '\033[1;33m'
     reset = '\033[0m'
     lines = [
-        '╔══════════════════════════════════════════════════════════════╗',
-        '║  ⚠  Project manifests changed since last firewall extract    ║',
-        '║                                                              ║',
-        '║  Refresh the allowlist (deterministic, no AI) :              ║',
-        '║     bash .devcontainer/skills/scan-deps/                     ║',
-        '║          extract-auto-dependencies                           ║',
-        '║                                                              ║',
-        '║  Then reload the firewall :                                  ║',
-        '║     sudo /usr/local/bin/init-firewall.sh                     ║',
-        '║                                                              ║',
-        '║  Or run /scan-deps in Claude for review + edge cases.        ║',
-        '╚══════════════════════════════════════════════════════════════╝',
+        '╔════════════════════════════════════════════════════════════════╗',
+        '║  ⚠  Project manifests changed since last firewall extract      ║',
+        '║                                                                ║',
+        '║  Refresh the allowlist (deterministic, no AI) :                ║',
+        '║     bash .devcontainer/skills/scan-deps/                       ║',
+        '║          extract-auto-dependencies                             ║',
+        '║                                                                ║',
+        '║  Then reload the firewall :                                    ║',
+        '║     sudo /usr/local/bin/init-firewall.sh                       ║',
+        '║                                                                ║',
+        '║  Or run /scan-deps in Claude for review + edge cases.          ║',
+        '╚════════════════════════════════════════════════════════════════╝',
     ]
     print(yellow + '\n'.join(lines) + reset)
 PY

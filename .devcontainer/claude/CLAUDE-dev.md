@@ -232,7 +232,11 @@ For code **you write** (§4 still wins for existing code) :
   (or composer / pip / …) :
   - **No known CVE / vulnerability** — hard requirement, never
     relaxed.
-  - **Latest stable version** available.
+  - **Latest stable version** available. Never write the version
+    from memory — query the registry (`npm view <pkg> version`,
+    `composer show -a <pkg>`, …) right before editing the
+    manifest. Memory lags by major versions and silently picks an
+    outdated baseline.
   - **Trust in the package** — any one of these signals is enough:
     actively maintained (recent commits, issues handled), widely
     adopted (downloads, dependents, stars), mature and stable
