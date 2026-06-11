@@ -1,5 +1,7 @@
 # DevContainer — Claude Code Sandbox (Niveau 1 strict)
 
+<!-- devcontainer version: 2.1.0 -->
+
 This devcontainer runs Claude Code under a default-deny outbound firewall. Niveau 1 strict (the default) blocks every outbound connection that is not in an explicit allowlist, filters paths and methods via mitmproxy, and bounds POST body sizes per endpoint. The container can read code and talk to `api.anthropic.com`; it cannot push, cannot create PRs, and cannot reach arbitrary third-party APIs.
 
 This README is the maintainer's handbook. Skim it once to understand what's where; consult [RUNBOOK.md](RUNBOOK.md) for step-by-step operations and [SECURITY.md](SECURITY.md) for the threat model. AI-modifiable internals live in [knowledge/INDEX.md](knowledge/INDEX.md).

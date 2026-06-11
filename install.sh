@@ -3,7 +3,7 @@
 # Drops the v2 baseline (~95 files) into a project's .devcontainer/.
 set -euo pipefail
 
-TEMPLATE_VERSION="2.0.0"
+TEMPLATE_VERSION="2.1.0"
 
 # -----------------------------------------------
 # Colors & messaging

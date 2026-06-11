@@ -1,5 +1,66 @@
 # Changelog
 
+## 2.1.0 (2026-06-11)
+
+### Added
+
+- Per-project base-image tagging (`ARG DC_PROJECT`) — splits the
+  `claude-devcontainer-base:<ver>` namespace so concurrent projects
+  on the same host don't orphan each other's image. (S5)
+- `.dockerignore` shipped with the template — excludes Python
+  bytecode, `.env*`, logs from build context. (S5)
+- Notify daemon (host-side desktop notifications) +
+  `claude/vscode-ext-patchs/` patcher framework + `notify-queue`
+  skill. (S4)
+- `host-helpers/docker-audit.sh` — generic docker image audit
+  utility, auto-detects images from Dockerfile/compose. (S7)
+- `skills/diagram/` — zero-dep Excalidraw JSON generator skill
+  (FR+EN auto-trigger). (S7)
+- `devcontainer.json:claudeCode.preferredLocation` = `"primary"` to
+  pin the Claude Code panel position. (S7)
+- `knowledge/firewall.md` : new "Adding a new dep to the project
+  (composer / npm)" section + Step 0 (find REAL domain + grep
+  firewall config) + recommendation inversion toward
+  `domains.local.txt` for single-vendor cases. (S7)
+- `scan-deps.skill.md` : "When to use a different skill instead"
+  cross-reference section. (S7)
+
+### Changed
+
+- `Dockerfile.base` Claude install section split into 6 cached RUN
+  blocks — patcher-script edits no longer invalidate the 243 MB
+  VSIX download layer. (S3)
+- Shell-init no longer prompts for interactive `gh auth login` —
+  the standard `gh` flow stays documented in README. (S2)
+- `prepare-plan` skill drops the session-prompt wrapper for a
+  simpler help-text + callout form. (S1)
+- 64-char banner alignment across all `post-start.sh` boxed
+  warnings. (S1)
+- `install.sh` : new `copy_templated_as()` helper for src→dst
+  placeholder substitution ; Dockerfile + Dockerfile.php now
+  routed through it (S5) ; `docker-audit.sh` templated + `diagram`
+  added to skills for-loop (S7).
+- `CLAUDE-dev.md` link paths qualified to
+  `.devcontainer/claude/CLAUDE-project.md` so the inline link
+  resolves when read via the `.claude/rules/mandatory.md` symlink
+  at the workspace root. (S7)
+- `Dockerfile` head doc-comment aligned with the FROM tag's
+  `-${DC_PROJECT}` suffix. (S7)
+
+### Fixed
+
+- Dogfood `dc-project` literal fallbacks aligned with
+  `devcontainer-tools` for coherent identity. (S5)
+- Port-forward default policy set to `ignore` (no more accidental
+  port forwarding on dev servers). (S2)
+- OMZ install moved to `Dockerfile.base` ; per-dev `zshrc.local`
+  override sourced by `shell-init.sh`. (S2)
+- `settings.local.json.example` auto-seeded on first boot. (S2)
+- Workspace-root `.gitignore` : `/.claude/` → `/.claude/*` so the
+  `!settings.local.json.example` counter-exclusion actually works ;
+  dogfood `.claude/settings.local.json.example` tracked to mirror
+  install.sh's downstream layout. (S6)
+
 ## 2.0.0 (2026-05-22)
 
 Major rewrite. v1.3 → v2.0 : one installer, scrubbed baseline, no
