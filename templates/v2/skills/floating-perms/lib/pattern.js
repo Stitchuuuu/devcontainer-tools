@@ -73,6 +73,11 @@ function canonicalizeDir(filePath) {
 // reliably a real filesystem path that, if outside /workspace, would
 // actually have prompted the user.
 const ABS_PATH_RE = /(?<![\w\\\-])(\/[a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)+)/g
+// Tilde-prefixed paths: ~/foo or ~user/foo. We expand ~ to $HOME so
+// canonicalizeDir buckets it correctly. Claude Code prompts on ~/.zshrc
+// (because it resolves to /home/<user>/.zshrc, outside /workspace) even
+// when the command itself is in allow — so we need to catch this form.
+const TILDE_PATH_RE = /(?<![\w\\\-])~(\/[a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)*)/g
 
 const PATH_POSITIONAL_BASH = new Set([
 	'grep', 'rg', 'ag', 'ack',
@@ -82,8 +87,15 @@ const PATH_POSITIONAL_BASH = new Set([
 	'wc', 'sort', 'uniq', 'diff', 'cmp',
 	'tar', 'zip', 'unzip', 'gzip', 'gunzip',
 	'cp', 'mv', 'ln',
-	'mkdir', 'touch', 'realpath', 'readlink', 'basename', 'dirname'
+	'mkdir', 'touch', 'realpath', 'readlink', 'basename', 'dirname',
+	'source', '.'
 ])
+
+function expandTilde(p) {
+	if (p === '~') return process.env.HOME || '/home/node'
+	if (p.startsWith('~/')) return (process.env.HOME || '/home/node') + p.slice(1)
+	return p
+}
 
 function extractOutOfWorkspacePath(command) {
 	if (typeof command !== 'string') return null
@@ -91,9 +103,14 @@ function extractOutOfWorkspacePath(command) {
 	if (!firstToken) return null
 	const cmdName = path.basename(firstToken)
 	if (!PATH_POSITIONAL_BASH.has(cmdName)) return null
-	const matches = command.match(ABS_PATH_RE)
-	if (!matches) return null
-	for (const p of matches) {
+
+	const candidates = []
+	const absMatches = command.match(ABS_PATH_RE)
+	if (absMatches) candidates.push(...absMatches)
+	const tildeMatches = command.match(TILDE_PATH_RE)
+	if (tildeMatches) candidates.push(...tildeMatches.map(expandTilde))
+
+	for (const p of candidates) {
 		if (p === '/workspace' || p.startsWith('/workspace/')) continue
 		const dir = canonicalizeDir(p)
 		if (dir) return `Read(${dir})`

@@ -101,6 +101,13 @@ node /workspace/.devcontainer/skills/floating-perms/apply.js \
      batch <pattern1> <pattern2> ... sid=<session_id> [ttl=15m]
 ```
 
+**CRITICAL**: the `triggerPattern` from the deny reason (the one named
+in "RETRY — re-run the tool call that was just denied (`<pattern>`)")
+**MUST** be in the batch. If you leave it out, the Step 4 retry will hit
+a fresh permission prompt and the whole point of the workflow is lost.
+Same for every other pattern the window listed — if the user said "allow
+all", include all of them.
+
 The `sid` is the current `session_id` — embedded literally in the hook's
 deny reason (e.g. `sid=abc12345`), and available as `payload.session_id`
 in any current/recent hook input. Copy it directly.

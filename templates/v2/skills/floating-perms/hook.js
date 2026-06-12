@@ -19,9 +19,16 @@ const { revokeForSession, revokeExpired } = require('./cleanup')
 // The pattern of each call is recorded so the deny reason can enumerate
 // every recent prompt for Claude to batch in one shot — not just the one
 // that crossed the threshold.
+//
+// No cooldown: after a deny, counter is cleared. The next 3 prompts will
+// trigger a new deny if Claude keeps hammering. Cooldown would just hide
+// further prompts from the user for N seconds without actually stopping
+// them. A short race-protection window (RACE_WINDOW_MS) prevents back-to-
+// back denies in the same millisecond (filesystem race when two PreToolUse
+// hooks fire concurrently on the same sid).
 const WINDOW_MS = 120 * 1000
 const SPIKE_THRESHOLD = 3
-const WARN_COOLDOWN_MS = 60 * 1000
+const RACE_WINDOW_MS = 500
 
 function readStdin() {
 	try {
@@ -93,8 +100,13 @@ function handlePreToolUse(payload) {
 
 		if (recent.length < SPIKE_THRESHOLD) return { state }
 
+		// Race guard only — no real cooldown. If two PreToolUse hooks fire
+		// in the same millisecond on the same sid (concurrent subagents or
+		// fast loops), don't emit two denies back-to-back. Past that, every
+		// new spike re-fires the deny: forces Claude to actually follow the
+		// workflow instead of letting prompts pile up silently.
 		const lastWarn = state.warned[sid] || 0
-		if (now - lastWarn < WARN_COOLDOWN_MS) return { state }
+		if (now - lastWarn < RACE_WINDOW_MS) return { state }
 
 		state.warned[sid] = now
 		state.counters[sid] = []
