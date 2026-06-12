@@ -1,4 +1,15 @@
 {
+	"PermissionRequest": [
+		{
+			"matcher": "",
+			"hooks": [
+				{
+					"type": "command",
+					"command": "node /workspace/.devcontainer/skills/floating-perms/hook.js permission_request"
+				}
+			]
+		}
+	],
 	"PreToolUse": [
 		{
 			"matcher": "",

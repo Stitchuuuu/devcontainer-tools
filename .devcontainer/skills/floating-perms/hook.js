@@ -1,23 +1,25 @@
 #!/usr/bin/env node
-// floating-perms/hook.js — dispatcher for PreToolUse, SessionEnd, SessionStart.
+// floating-perms/hook.js — dispatcher for PermissionRequest, PreToolUse,
+// SessionEnd, SessionStart.
 //
-// PreToolUse  : detect a spike (N permission-requiring tool calls within
-//               WINDOW_MS, regardless of pattern), emit a one-shot `deny`
-//               response with an educational reason that lists every
-//               unique pattern seen in the window so Claude can batch
-//               them through the mandatory AskUserQuestion flow.
-// SessionEnd  : revoke all grants tied to this session, log audit line.
-// SessionStart: surface orphans (grants from older sessions) via context
-//               injection, let the user decide via /floating-perms gc.
+// PermissionRequest : the actual Claude Code prompt fired — count it in
+//                     state.counters[sid] (120 s window). Pure observer:
+//                     this is the only handler that grows the counter.
+// PreToolUse        : prune the window, count entries; if ≥ threshold AND
+//                     the race-window has passed since the last warn, emit
+//                     a deny with an educational reason that lists every
+//                     unique pattern seen, then reset the counter.
+// SessionEnd        : revoke all grants tied to this session, drop counter
+//                     + warn slots, log audit line.
+// SessionStart      : surface state-side + allow-side orphans via context
+//                     injection, let the user decide via /floating-perms gc
+//                     and /floating-perms reconcile.
 
 const fs = require('fs')
-const { canonicalize, isAllowed, isSpikeTool } = require('./lib/pattern')
+const { canonicalize } = require('./lib/pattern')
 const { withState, readAllow, audit, findFloatingSection } = require('./lib/state')
 const { revokeForSession, revokeExpired } = require('./cleanup')
 
-// Tracked baseline shipped with the devcontainer — used by SessionStart
-// orphan detection to avoid flagging curated baseline entries that happen
-// to be canonical-form.
 const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
 
 const CANONICAL_BASH_RE      = /^Bash\([^:]+:\*\)$/
@@ -34,17 +36,16 @@ function readBaselineAllow() {
 	}
 }
 
-// Spike = N permission-requiring tool calls (any pattern) within WINDOW_MS.
-// The pattern of each call is recorded so the deny reason can enumerate
-// every recent prompt for Claude to batch in one shot — not just the one
-// that crossed the threshold.
+// Spike = N PermissionRequest events (any pattern) within WINDOW_MS.
+// PermissionRequest is the truth source: it fires exactly when Claude
+// Code shows a prompt, so the counter holds only events the user
+// actually paid attention to. No prediction, no allow-list match.
 //
-// No cooldown: after a deny, counter is cleared. The next 3 prompts will
-// trigger a new deny if Claude keeps hammering. Cooldown would just hide
-// further prompts from the user for N seconds without actually stopping
-// them. A short race-protection window (RACE_WINDOW_MS) prevents back-to-
-// back denies in the same millisecond (filesystem race when two PreToolUse
-// hooks fire concurrently on the same sid).
+// PreToolUse is the decision point: it prunes the window, checks the
+// length, and emits a one-shot deny when the threshold is crossed.
+// After a deny the counter is reset; a short race-protection window
+// prevents back-to-back denies in the same millisecond when two
+// PreToolUse fire concurrently on the same sid.
 const WINDOW_MS = 120 * 1000
 const SPIKE_THRESHOLD = 3
 const RACE_WINDOW_MS = 500
@@ -74,7 +75,7 @@ function uniquePatterns(entries) {
 	return out
 }
 
-function denyReason(triggerPattern, recentEntries, sid) {
+function denyReason(recentEntries, sid) {
 	const patterns = uniquePatterns(recentEntries)
 	const list = patterns.map(p => `  - \`${p}\``).join('\n')
 	return [
@@ -87,7 +88,7 @@ function denyReason(triggerPattern, recentEntries, sid) {
 		`1. ANALYZE — re-read the current task, enumerate EVERY Bash command and file path you expect to need to finish it (the patterns above PLUS everything you anticipate for the rest of the task).`,
 		`2. ASK — call the \`AskUserQuestion\` tool with a SPECIFIC question that lists the exact patterns you want granted. Example option labels: "Allow all of <pat1>, <pat2>, <pat3> until SessionEnd", "Allow all, TTL 15m", "Subset (specify which)", "Refuse — I'll change approach". Never call apply.js without this explicit confirmation step.`,
 		`3. EXECUTE — based on the user's answer, run: \`node /workspace/.devcontainer/skills/floating-perms/apply.js batch <pat1> <pat2> ... sid=${sid} [ttl=15m]\` (script handles blocklist, idempotence, audit, auto-cleanup).`,
-		`4. RETRY — re-run the tool call that was just denied (\`${triggerPattern}\`) once the grant lands.`,
+		`4. RETRY — once the grant lands, re-run the tool call that was just denied.`,
 		``,
 		`Do NOT try an alternative tool (wget instead of curl, etc.) before the ASK step — plan first.`,
 		`Do NOT call apply.js silently — every grant goes through an explicit AskUserQuestion confirmation.`,
@@ -95,35 +96,48 @@ function denyReason(triggerPattern, recentEntries, sid) {
 	].join('\n')
 }
 
-function handlePreToolUse(payload) {
-	revokeExpired()
-
+function handlePermissionRequest(payload) {
 	const sid = payload.session_id
 	const toolName = payload.tool_name
 	const toolInput = payload.tool_input
 	if (!sid || !toolName || !toolInput) return null
-	if (!isSpikeTool(toolName)) return null
 
-	const { allow } = readAllow()
-	const pattern = canonicalize(toolName, toolInput, allow)
+	const pattern = canonicalize(toolName, toolInput)
+	// Meta / unknown tools (ExitPlanMode, AskUserQuestion, TodoWrite,
+	// Task, MCP, future tools) all canonicalize to null. They aren't
+	// work-flow prompts — skip without counting or auditing.
 	if (!pattern) return null
-	if (isAllowed(pattern, allow)) return null
+
+	const now = Date.now()
+	withState((state) => {
+		const recent = pruneWindow(state.counters[sid] || [], now)
+		recent.push({ ts: now, pattern, tool_use_id: payload.tool_use_id })
+		state.counters[sid] = recent
+		return { state }
+	})
+
+	audit('permission_seen', { sid, pattern, tool_use_id: payload.tool_use_id })
+	return null
+}
+
+function handlePreToolUse(payload) {
+	revokeExpired()
+
+	const sid = payload.session_id
+	if (!sid) return null
 
 	const now = Date.now()
 	let denyOutput = null
 
 	withState((state) => {
 		const recent = pruneWindow(state.counters[sid] || [], now)
-		recent.push({ ts: now, pattern })
 		state.counters[sid] = recent
-
 		if (recent.length < SPIKE_THRESHOLD) return { state }
 
 		// Race guard only — no real cooldown. If two PreToolUse hooks fire
 		// in the same millisecond on the same sid (concurrent subagents or
-		// fast loops), don't emit two denies back-to-back. Past that, every
-		// new spike re-fires the deny: forces Claude to actually follow the
-		// workflow instead of letting prompts pile up silently.
+		// fast loops), don't emit two denies back-to-back. Past that, any
+		// new spike re-fires the deny.
 		const lastWarn = state.warned[sid] || 0
 		if (now - lastWarn < RACE_WINDOW_MS) return { state }
 
@@ -135,10 +149,10 @@ function handlePreToolUse(payload) {
 			hookSpecificOutput: {
 				hookEventName: 'PreToolUse',
 				permissionDecision: 'deny',
-				permissionDecisionReason: denyReason(pattern, recent, sid)
+				permissionDecisionReason: denyReason(recent, sid)
 			}
 		}
-		audit('spike_detected', { sid, trigger_pattern: pattern, count: recent.length, patterns })
+		audit('spike_detected', { sid, count: recent.length, patterns })
 		return { state }
 	})
 
@@ -233,9 +247,10 @@ function main() {
 		if (!payload) return
 
 		let response = null
-		if (arg === 'pre_tool_use')       response = handlePreToolUse(payload)
-		else if (arg === 'session_end')   response = handleSessionEnd(payload)
-		else if (arg === 'session_start') response = handleSessionStart(payload)
+		if      (arg === 'permission_request') response = handlePermissionRequest(payload)
+		else if (arg === 'pre_tool_use')       response = handlePreToolUse(payload)
+		else if (arg === 'session_end')        response = handleSessionEnd(payload)
+		else if (arg === 'session_start')      response = handleSessionStart(payload)
 
 		if (response) {
 			process.stdout.write(JSON.stringify(response))
@@ -251,4 +266,13 @@ function main() {
 	}
 }
 
-main()
+// Exported for tests — the dispatcher runs only when invoked as the
+// CLI entrypoint (Node's `require.main` check).
+module.exports = {
+	handlePermissionRequest, handlePreToolUse,
+	handleSessionEnd, handleSessionStart,
+	pruneWindow, uniquePatterns, denyReason,
+	WINDOW_MS, SPIKE_THRESHOLD, RACE_WINDOW_MS
+}
+
+if (require.main === module) main()

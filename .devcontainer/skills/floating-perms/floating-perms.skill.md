@@ -7,11 +7,12 @@ argument-hint: "batch <pat1> <pat2>... [ttl=15m] sid=<id>  |  list [sid=<id>]  |
 
 ## When this skill is triggered
 
-**Automatic trigger.** The `PreToolUse` hook watches for permission-requiring
-tool calls. When **3 prompts arrive within 120 s** — regardless of which
-patterns — the 3ʳᵈ is **denied** with a `permissionDecisionReason` that lists
-every unique pattern from the window. Rationale: repeated prompts are
-draining whatever the command, so we batch. You will see something like:
+**Automatic trigger.** Claude Code's `PermissionRequest` hook fires for
+every tool call that would prompt the user. When **3 prompts arrive
+within 120 s** in a session, the next tool call that reaches `PreToolUse`
+is **denied** with a `permissionDecisionReason` listing every unique
+pattern from the window. Rationale: repeated prompts are draining
+whatever the command, so we batch. You will see something like:
 
 > STOP — floating-perms: 3 permission prompts in under 120s. Repeated
 > prompts are draining whatever the command, so we batch.
@@ -27,14 +28,14 @@ draining whatever the command, so we batch. You will see something like:
 
 When you receive that, **stop** the tool retry. Plan first.
 
-Patterns already covered by `permissions.allow` don't count toward the
-spike (otherwise the user would be warned about things they already
-authorized). The match tolerates `Bash(cmd:*)`, `Bash(cmd*)` and `Bash(cmd *)`
-historical forms. For a Bash command already in allow at the command
-level, the canonicalizer falls back to a `Read(<path>/**)` pattern when
-the command targets a path outside `/workspace` — that captures the
-"grep is allowed but /tmp/scratch isn't" case. Paths under `/workspace`
-are skipped entirely (they're auto-allowed by Claude Code's cwd default).
+Because the counter is fed only by `PermissionRequest`, patterns
+already covered by `permissions.allow` are by construction never
+counted — Claude Code doesn't fire the hook for them. Meta tools
+that don't represent work (`ExitPlanMode`, `AskUserQuestion`,
+`TodoWrite`, `Task`, MCP) also never count: they canonicalize to
+`null` and the observer skips them silently. The deny message lists
+the unique work patterns from the recent window so you can copy
+them into the `apply.js batch` call verbatim.
 
 **Manual trigger.** The user typed `/floating-perms <subcmd>` directly, or
 asked things like "allow curl + npm for this session" / "session-scope
