@@ -1,0 +1,35 @@
+{
+	"PreToolUse": [
+		{
+			"matcher": "",
+			"hooks": [
+				{
+					"type": "command",
+					"command": "node /workspace/.devcontainer/skills/floating-perms/hook.js pre_tool_use"
+				}
+			]
+		}
+	],
+	"SessionEnd": [
+		{
+			"matcher": "",
+			"hooks": [
+				{
+					"type": "command",
+					"command": "node /workspace/.devcontainer/skills/floating-perms/hook.js session_end"
+				}
+			]
+		}
+	],
+	"SessionStart": [
+		{
+			"matcher": "",
+			"hooks": [
+				{
+					"type": "command",
+					"command": "node /workspace/.devcontainer/skills/floating-perms/hook.js session_start"
+				}
+			]
+		}
+	]
+}

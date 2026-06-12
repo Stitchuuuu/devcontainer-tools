@@ -11,6 +11,12 @@
 !.vscode/settings.json
 !.vscode/extensions.json
 
+# Notify queue + floating-perms — runtime artefacts (state, audit, locks, per-session queues)
+.devcontainer/notify/queue/
+.devcontainer/notify/floating-perms-state.json
+.devcontainer/notify/floating-perms-state.json.lock
+.devcontainer/notify/floating-perms-audit.jsonl
+
 # Build / OS
 .env.dev
 .DS_Store
