@@ -26,8 +26,9 @@ function revokeBy(predicate, reason) {
 			if (!patternsStillReferenced(remaining, g.pattern)) toDrop.add(g.pattern)
 		}
 		const newAllow = allow.filter(p => !toDrop.has(p))
-		if (newAllow.length !== allow.length) {
-			writeAllow(settings, newAllow)
+		const remainingFloating = remaining.map(g => g.pattern)
+		if (newAllow.length !== allow.length || remainingFloating.length === 0) {
+			writeAllow(settings, newAllow, remainingFloating)
 		}
 
 		audit('revoke', {

@@ -11,16 +11,51 @@
 //        manual revoke of one pattern across all sessions.
 //   gc sid=<current_sid>
 //        revoke grants whose sid != provided current sid (orphans).
+//   reconcile sid=<current_sid> [--auto]
+//        detect entries in settings.local.json that look floating but
+//        aren't in state.json. Interactive by default; --auto revokes
+//        without confirmation.
 //
 // Duration syntax for ttl: 15m, 30m, 2h, 1d. Bare integer = seconds.
 //
 // All mutations go through state.js withState() under lock. Audit lines
 // land in /workspace/.devcontainer/notify/floating-perms-audit.jsonl.
 
+const fs = require('fs')
 const { canonicalize, isAllowed } = require('./lib/pattern')
 const { isBlocked, reasonForPattern } = require('./lib/blocklist')
-const { withState, readAllow, writeAllow, audit } = require('./lib/state')
+const {
+	withState, readAllow, writeAllow, audit,
+	findFloatingSection
+} = require('./lib/state')
 const { revokeManual, revokeOrphans, revokeExpired } = require('./cleanup')
+
+// Tracked baseline shipped with the devcontainer. Used by reconcile to
+// avoid flagging canonical-form patterns that are part of the project's
+// curated allowlist (e.g. Bash(node -v*) is fine even though it kinda
+// matches the canonical shape).
+const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
+
+// Canonical-form detection for pre-V1.2 orphans: entries that look like
+// they came from floating-perms (strict canonical shape) but live outside
+// any sentinel section.
+const CANONICAL_BASH_RE     = /^Bash\([^:]+:\*\)$/
+const CANONICAL_FILE_TOOL_RE = /^(Edit|Write|Read|NotebookEdit)\(\/[^)]+\/\*\*\)$/
+
+function looksLikeFloating(p) {
+	return CANONICAL_BASH_RE.test(p) || CANONICAL_FILE_TOOL_RE.test(p)
+}
+
+function readBaselineAllow() {
+	try {
+		const buf = fs.readFileSync(BASELINE_PATH, 'utf8')
+		const parsed = JSON.parse(buf)
+		return parsed && parsed.permissions && Array.isArray(parsed.permissions.allow)
+			? parsed.permissions.allow : []
+	} catch {
+		return []
+	}
+}
 
 const DURATION_RE = /^(\d+)([smhd])?$/
 
@@ -83,6 +118,7 @@ function batch({ positional, opts }) {
 	const skipped   = []
 	const now = Date.now()
 	const expiresAt = ttlSeconds ? now + ttlSeconds * 1000 : null
+	let floatingPatterns = []
 
 	withState((state) => {
 		for (const p of ok) {
@@ -100,11 +136,12 @@ function batch({ positional, opts }) {
 		}
 		state.counters[sid] = []
 		state.warned[sid] = 0
+		floatingPatterns = state.grants.map(g => g.pattern)
 		return { state }
 	})
 
 	if (granted.length > 0) {
-		writeAllow(settings, Array.from(allowSet))
+		writeAllow(settings, Array.from(allowSet), floatingPatterns)
 		audit('grant', {
 			sid, ttl_seconds: ttlSeconds, expires_at: expiresAt,
 			patterns: granted.map(g => g.pattern)
@@ -163,6 +200,84 @@ function gc({ opts }) {
 	}
 }
 
+// Detect entries in permissions.allow that look like floating-perms grants
+// but have no matching record in state.grants. Two sources:
+//   (a) entries between the V1.2 sentinels (authoritative)
+//   (b) canonical-form entries outside any sentinel, not present in the
+//       tracked baseline (pre-V1.2 heuristic)
+// Returns { inSection, preV12, orphans }.
+function findOrphans({ allow, stateGrants, baseline }) {
+	const section = findFloatingSection(allow)
+	const inSection = section ? section.patterns : []
+	const baselineSet = new Set(baseline)
+
+	const preV12 = allow.filter(p => {
+		if (p === '' || p.startsWith('//')) return false
+		if (!looksLikeFloating(p)) return false
+		if (inSection.includes(p)) return false
+		if (baselineSet.has(p)) return false
+		return true
+	})
+
+	const stateSet = new Set(stateGrants.map(g => g.pattern))
+	const candidates = [...new Set([...inSection, ...preV12])]
+	const orphans = candidates.filter(p => !stateSet.has(p))
+
+	return { inSection, preV12, orphans }
+}
+
+function reconcile({ positional, opts }) {
+	if (!opts.sid) {
+		fail('reconcile requires sid=<current_session_id>')
+	}
+	const auto = positional.includes('--auto')
+
+	revokeExpired()
+
+	const { settings, allow } = readAllow()
+	const baseline = readBaselineAllow()
+
+	let stateGrants = []
+	withState((state) => { stateGrants = state.grants.slice(); return undefined })
+
+	const { inSection, preV12, orphans } = findOrphans({ allow, stateGrants, baseline })
+
+	if (orphans.length === 0) {
+		print('Nothing to reconcile — all floating-form entries in settings.local.json have a matching state.json grant.')
+		return
+	}
+
+	if (!auto) {
+		print(`Found ${orphans.length} orphan floating-form entry/entries in settings.local.json:`)
+		for (const p of orphans) {
+			const src = inSection.includes(p)
+				? 'inside sentinels'
+				: 'pre-V1.2 heuristic (canonical-form, not in baseline)'
+			print(`  - ${p}  [${src}]`)
+		}
+		print('')
+		print('To revoke them all, re-run with --auto:')
+		print(`  /floating-perms reconcile sid=${opts.sid} --auto`)
+		print('')
+		print('If any of these are legitimate manual entries you want to keep, hand-edit settings.local.json before running --auto.')
+		process.exit(1)
+	}
+
+	const orphanSet = new Set(orphans)
+	const newAllow = allow.filter(p => !orphanSet.has(p))
+	const remainingFloating = stateGrants.map(g => g.pattern)
+	writeAllow(settings, newAllow, remainingFloating)
+
+	audit('reconcile_auto', {
+		sid: opts.sid,
+		count: orphans.length,
+		patterns: orphans
+	})
+
+	print(`✓ Revoked ${orphans.length} orphan(s) from settings.local.json:`)
+	for (const p of orphans) print(`    ${p}`)
+}
+
 function report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid }) {
 	if (granted.length > 0) {
 		const expiry = expiresAt
@@ -194,11 +309,12 @@ function fail(msg) { process.stderr.write(`floating-perms: ${msg}\n`); process.e
 function main() {
 	const sub = process.argv[2]
 	const parsed = parseArgs(process.argv.slice(3))
-	if (sub === 'batch')        batch(parsed)
-	else if (sub === 'list')    list(parsed)
-	else if (sub === 'revoke')  revoke(parsed)
-	else if (sub === 'gc')      gc(parsed)
-	else fail(`unknown subcommand: "${sub}" (expected: batch | list | revoke | gc)`)
+	if (sub === 'batch')          batch(parsed)
+	else if (sub === 'list')      list(parsed)
+	else if (sub === 'revoke')    revoke(parsed)
+	else if (sub === 'gc')        gc(parsed)
+	else if (sub === 'reconcile') reconcile(parsed)
+	else fail(`unknown subcommand: "${sub}" (expected: batch | list | revoke | gc | reconcile)`)
 }
 
 main()

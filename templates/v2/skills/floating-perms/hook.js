@@ -12,8 +12,27 @@
 
 const fs = require('fs')
 const { canonicalize, isAllowed, isSpikeTool } = require('./lib/pattern')
-const { withState, readAllow, audit } = require('./lib/state')
+const { withState, readAllow, audit, findFloatingSection } = require('./lib/state')
 const { revokeForSession, revokeExpired } = require('./cleanup')
+
+// Tracked baseline shipped with the devcontainer — used by SessionStart
+// orphan detection to avoid flagging curated baseline entries that happen
+// to be canonical-form.
+const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
+
+const CANONICAL_BASH_RE      = /^Bash\([^:]+:\*\)$/
+const CANONICAL_FILE_TOOL_RE = /^(Edit|Write|Read|NotebookEdit)\(\/[^)]+\/\*\*\)$/
+
+function readBaselineAllow() {
+	try {
+		const buf = fs.readFileSync(BASELINE_PATH, 'utf8')
+		const parsed = JSON.parse(buf)
+		return parsed && parsed.permissions && Array.isArray(parsed.permissions.allow)
+			? parsed.permissions.allow : []
+	} catch {
+		return []
+	}
+}
 
 // Spike = N permission-requiring tool calls (any pattern) within WINDOW_MS.
 // The pattern of each call is recorded so the deny reason can enumerate
@@ -142,27 +161,66 @@ function handleSessionStart(payload) {
 	const sid = payload.session_id
 	if (!sid) return null
 	revokeExpired()
-	let orphans = []
+
+	let stateOrphans = []
+	let stateGrantsPatterns = []
 	withState((state) => {
-		orphans = state.grants.filter(g => g.sid !== sid)
+		stateOrphans = state.grants.filter(g => g.sid !== sid)
+		stateGrantsPatterns = state.grants.map(g => g.pattern)
 		return undefined
 	})
-	if (orphans.length === 0) return null
 
-	const list = orphans
-		.map(g => `  - \`${g.pattern}\` (sid ${g.sid.slice(0, 8)}, granted ${g.granted_at})`)
-		.join('\n')
-	const additional = [
-		`floating-perms: ${orphans.length} orphan grant(s) from a previous session:`,
-		list,
-		``,
-		`If you're resuming the same task, leave them in place.`,
-		`Otherwise, propose \`/floating-perms gc sid=${sid}\` to the user to revoke them.`
-	].join('\n')
+	// Detect orphans inside settings.local.json that don't have a matching
+	// state.grants record. Two sources: entries between V1.2 sentinels
+	// (authoritative) and pre-V1.2 canonical-form entries outside any
+	// sentinel and outside the tracked baseline. Together this catches the
+	// case where state.json was lost (rm, container rebuild) — the cleanup
+	// would never fire because state is the source of truth, but settings
+	// still holds the orphaned entries.
+	const { allow } = readAllow()
+	const section = findFloatingSection(allow)
+	const inSection = section ? section.patterns : []
+	const baseline = new Set(readBaselineAllow())
+	const stateSet = new Set(stateGrantsPatterns)
+
+	const looksFloating = allow.filter(p => {
+		if (p === '' || p.startsWith('//')) return false
+		return CANONICAL_BASH_RE.test(p) || CANONICAL_FILE_TOOL_RE.test(p)
+	})
+	const allowOrphans = looksFloating.filter(p => {
+		if (stateSet.has(p)) return false
+		if (baseline.has(p)) return false
+		return true
+	})
+
+	if (stateOrphans.length === 0 && allowOrphans.length === 0) return null
+
+	const lines = [`floating-perms — SessionStart reconciliation report:`, ``]
+	if (stateOrphans.length > 0) {
+		lines.push(`State-side orphans (${stateOrphans.length}) — grants from previous session(s) whose SessionEnd never fired:`)
+		for (const g of stateOrphans) {
+			lines.push(`  - \`${g.pattern}\` (sid ${g.sid.slice(0, 8)}, granted ${g.granted_at})`)
+		}
+		lines.push(``)
+	}
+	if (allowOrphans.length > 0) {
+		lines.push(`Allow-side orphans (${allowOrphans.length}) — entries in settings.local.json with no matching state.grants record (state file was likely lost):`)
+		for (const p of allowOrphans) {
+			const src = inSection.includes(p) ? 'inside sentinels' : 'pre-V1.2 form'
+			lines.push(`  - \`${p}\`  [${src}]`)
+		}
+		lines.push(``)
+	}
+	lines.push(`Resolution:`)
+	if (stateOrphans.length > 0) lines.push(`  - State-side: \`/floating-perms gc sid=${sid}\` to revoke.`)
+	if (allowOrphans.length > 0) lines.push(`  - Allow-side: \`/floating-perms reconcile sid=${sid}\` to inspect, then re-run with --auto to clean.`)
+	lines.push(``)
+	lines.push(`If you're resuming the same task, leave them in place — they'll behave like permanent grants until you choose to clean.`)
+
 	return {
 		hookSpecificOutput: {
 			hookEventName: 'SessionStart',
-			additionalContext: additional
+			additionalContext: lines.join('\n')
 		}
 	}
 }

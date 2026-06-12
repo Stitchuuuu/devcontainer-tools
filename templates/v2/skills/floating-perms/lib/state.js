@@ -115,6 +115,17 @@ function audit(event, fields) {
 
 const SETTINGS_LOCAL = '/workspace/.claude/settings.local.json'
 
+// Sentinel marker entries that bracket the floating-perms managed section
+// inside permissions.allow. They are strings that don't begin with any
+// known tool prefix (Bash, Read, Edit, Write, NotebookEdit, WebFetch, …)
+// so the Claude Code permission engine has nothing to match them against
+// — effective no-op patterns. They survive JSON.stringify round-trips
+// (they're array entries, not whitespace), giving the user a visible
+// "this section is auto-managed" marker inside the file. Detection is
+// strict equality on the constants below — do not vary the strings.
+const SENTINEL_START = '// ──────── floating-perms managed below — auto-revoked at SessionEnd ────────'
+const SENTINEL_END   = '// ──────── end floating-perms ────────'
+
 function readAllow() {
 	try {
 		const buf = fs.readFileSync(SETTINGS_LOCAL, 'utf8')
@@ -127,12 +138,38 @@ function readAllow() {
 	}
 }
 
-function writeAllow(settings, allow) {
+// Locate the sentinel-wrapped section inside an allow array. Returns
+// { startIdx, endIdx, patterns } or null if both sentinels aren't found
+// in order. Used by reconcile + SessionStart orphan detection.
+function findFloatingSection(allow) {
+	if (!Array.isArray(allow)) return null
+	const startIdx = allow.indexOf(SENTINEL_START)
+	const endIdx   = allow.indexOf(SENTINEL_END)
+	if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return null
+	return {
+		startIdx, endIdx,
+		patterns: allow.slice(startIdx + 1, endIdx)
+	}
+}
+
+// Partition allow into (human, floating) using the floatingPatterns set,
+// strip any existing sentinels, and rebuild as [...human, START, ...floating, END].
+// When floating is empty, sentinels disappear so the file stays clean.
+function mergeAllowSections(allow, floatingPatterns) {
+	const floatingSet = new Set(floatingPatterns || [])
+	const cleaned = allow.filter(p => p !== SENTINEL_START && p !== SENTINEL_END)
+	const human    = cleaned.filter(p => !floatingSet.has(p))
+	const floating = cleaned.filter(p =>  floatingSet.has(p))
+	if (floating.length === 0) return human
+	return [...human, SENTINEL_START, ...floating, SENTINEL_END]
+}
+
+function writeAllow(settings, allow, floatingPatterns) {
 	if (!settings || typeof settings !== 'object') settings = {}
 	if (!settings.permissions || typeof settings.permissions !== 'object') {
 		settings.permissions = {}
 	}
-	settings.permissions.allow = allow
+	settings.permissions.allow = mergeAllowSections(allow, floatingPatterns || [])
 	fs.mkdirSync(path.dirname(SETTINGS_LOCAL), { recursive: true })
 	const tmp = SETTINGS_LOCAL + '.tmp.' + process.pid
 	fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n')
@@ -141,6 +178,8 @@ function writeAllow(settings, allow) {
 
 module.exports = {
 	STATE_PATH, AUDIT_PATH, SETTINGS_LOCAL,
+	SENTINEL_START, SENTINEL_END,
 	emptyState, withState, audit,
-	readAllow, writeAllow
+	readAllow, writeAllow,
+	findFloatingSection, mergeAllowSections
 }

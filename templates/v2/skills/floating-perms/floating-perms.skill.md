@@ -138,7 +138,8 @@ Subcommands:
 | `batch <pat1> [pat2 …] [ttl=<duration>] sid=<id>` | Grant N patterns for the session. TTL optional. |
 | `list [sid=<id>]` | Show active grants. |
 | `revoke <pattern>` | Remove a single pattern across all sessions. |
-| `gc sid=<current_sid>` | Revoke grants whose sid != current (orphans). |
+| `gc sid=<current_sid>` | Revoke state-side grants whose sid != current (orphans from sessions whose SessionEnd never fired). |
+| `reconcile sid=<current_sid> [--auto]` | Detect entries in settings.local.json that look floating but have no matching state.json grant. Interactive by default; pass `--auto` to revoke without confirmation. |
 
 Duration syntax for `ttl=`: `15m`, `2h`, `1d`, or bare integer = seconds.
 
@@ -210,7 +211,67 @@ claude:     [runs] node apply.js revoke Bash(gh:*)
             Revoked 1 grant(s) for Bash(gh:*).
 ```
 
-## Constraints
+### Reconcile orphans
+
+```
+session_start additionalContext:
+  floating-perms — SessionStart reconciliation report:
+  Allow-side orphans (2) — entries in settings.local.json with no matching state.grants record:
+    - `Bash(npm:*)`  [pre-V1.2 form]
+    - `Bash(node:*)`  [pre-V1.2 form]
+  Resolution:
+    - Allow-side: /floating-perms reconcile sid=abc12345 to inspect, then re-run with --auto to clean.
+
+user:       /floating-perms reconcile sid=abc12345
+claude:     [runs] node apply.js reconcile sid=abc12345
+            Found 2 orphan floating-form entry/entries in settings.local.json:
+              - Bash(npm:*)  [pre-V1.2 heuristic]
+              - Bash(node:*) [pre-V1.2 heuristic]
+            To revoke them all, re-run with --auto:
+              /floating-perms reconcile sid=abc12345 --auto
+
+claude:     [asks user via AskUserQuestion: "Revoke these 2 orphans? Allow / Skip / Keep one"]
+user:       picks "Revoke all"
+claude:     [runs] node apply.js reconcile sid=abc12345 --auto
+            ✓ Revoked 2 orphan(s) from settings.local.json.
+```
+
+## What the sentinels mean
+
+Starting V1.2, `apply.js` and `cleanup.js` insert two marker strings into
+`permissions.allow` to bracket the floating-perms managed section:
+
+```
+"// ──────── floating-perms managed below — auto-revoked at SessionEnd ────────"
+…floating entries…
+"// ──────── end floating-perms ────────"
+```
+
+These are string array entries (not JSON comments — Claude Code doesn't
+support JSONC), but they don't begin with any tool prefix (`Bash`, `Read`,
+`Edit`, …) so the permission engine has nothing to match them against.
+Effective no-ops. They survive `JSON.stringify` round-trips. The user can
+scan the file and immediately tell which entries are managed.
+
+If you ever see one sentinel without its pair, the writer auto-heals on
+the next mutation — both sentinels are filtered on every write and
+re-emitted from scratch.
+
+## Orphan reconciliation
+
+Two failure modes leave stale entries in `permissions.allow`:
+
+1. **SessionEnd never fired** (process crash, kill -9, container yanked).
+   `state.json` still has the grants but no `SessionEnd` event will revoke
+   them. Detected by `gc` (state-side, grants whose `sid !== current`).
+2. **`state.json` was lost** (rm, container rebuild, corruption). The
+   `permissions.allow` entries remain but the state has no record of them.
+   `cleanup.js` is state-driven so it will never see them. Detected by
+   `reconcile` (allow-side, canonical-form entries with no state match).
+
+Both failure modes are surfaced at SessionStart via `additionalContext`,
+and the user is pointed at the right subcommand (`gc` for state-side,
+`reconcile` for allow-side).
 
 - **AskUserQuestion is mandatory before any auto-triggered grant.** No
   silent batch grants. The user must see the exact patterns spelled out
