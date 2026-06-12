@@ -106,9 +106,9 @@ if [ -f "$ENV_FILE" ]; then
 	set +a
 fi
 
-CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-{{PROJECT_ID}}}}"
+CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-devcontainer-tools}}"
 
-echo "  DC_PROJECT:   ${DC_PROJECT:-{{PROJECT_ID}}}"
+echo "  DC_PROJECT:   ${DC_PROJECT:-devcontainer-tools}"
 echo "  claude-creds: $CREDS_VOLUME"
 
 # Ensure firewall/ baked files exist before Dockerfile COPY (recursive).
@@ -407,20 +407,33 @@ detect_no_cache_request() {
 		# Mac + native Linux, so this is a no-op on the historical paths.
 		p_local=$(to_host_path "$PROJECT_DIR")
 		p_cfg=$(to_host_path "$DEVCONTAINER_DIR/devcontainer.json")
+		# Match the live devcontainer in ANY state. A "Restart VS Code" or
+		# "Reopen in Container" stops the container BEFORE initializeCommand
+		# runs (state=exited, ~seconds old) — without -a the probe misses it
+		# and falsely triggers a rebuild. The com.docker.compose.project
+		# label filter excludes manually-run zombies (`docker run` with the
+		# devcontainer labels but no compose orchestration) — couples this
+		# branch to compose mode, which this devcontainer.json always uses.
 		ctr_id=$(docker ps -a -q \
 			--filter "label=devcontainer.local_folder=$p_local" \
 			--filter "label=devcontainer.config_file=$p_cfg" \
+			--filter "label=com.docker.compose.project" \
 			2>/dev/null | head -1)
 		if [ -z "$ctr_id" ]; then
 			export BUILD_BASE_REQUESTED=1
-			echo "  ↳ No existing devcontainer for this workspace — rebuild or first-time"
+			echo "  ↳ No matching devcontainer for this workspace — rebuild or first-time"
 		else
-			echo "  ↳ Existing devcontainer present ($ctr_id) — reopen, no base rebuild"
+			echo "  ↳ Devcontainer present ($ctr_id, any state) — reopen, no base rebuild"
 		fi
 	fi
 
 	# Always return 0 — signal is via env vars, not exit code (set -e would
 	# kill the caller otherwise).
+
+	# Channel 2 diagnostic snapshot (paths / docker ps / ancestry / env / verdict) —
+	# uncomment the next line to capture into logs/rebuild-detect-<ts>.log.
+	# "$DEVCONTAINER_DIR/diag-rebuild-detect.sh" "$TS" || true
+
 	return 0
 }
 
@@ -441,7 +454,7 @@ detect_no_cache_request() {
 # .devcontainer/logs/build-base-<version>-<ts>.log for post-mortem.
 build_base_if_missing() {
 	local version="${CLAUDE_CODE_VERSION:-2.1.145}"
-	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-{{PROJECT_ID}}}"
+	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-devcontainer-tools}"
 	set_env_var "CLAUDE_CODE_VERSION" "$version"
 
 	detect_no_cache_request
