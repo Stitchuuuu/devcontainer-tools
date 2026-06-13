@@ -69,6 +69,14 @@ immediately preceding `AskUserQuestion` that lists the exact patterns
 you want to grant. The user must see "authorize THIS and THAT" — not a
 generic "want me to widen perms?".
 
+**VERBATIM rule.** Every pattern listed in the deny reason MUST appear
+**verbatim** as a grantable option in the `AskUserQuestion` you build.
+You MAY add anticipated patterns. You MUST NOT replace canonical-form
+patterns with rewordings, "fixed" forms, or a different tool family.
+If the deny lists `Read(/tmp/**)`, the question must propose
+`Read(/tmp/**)` — not `Bash(cat:*)`, not a narrower
+`Read(/tmp/extensions.js)`.
+
 Recommended shape:
 
 ```
@@ -189,6 +197,27 @@ claude:     [Step 3 — EXECUTE]
 
             [Step 4 — RETRY]
             [re-runs the originally denied curl call; passes now]
+```
+
+### Auto-triggered batch — dir-only (Read spike on /tmp)
+
+```
+hook deny:  STOP — 2 prompts in 8s. Patterns: Read(/tmp/**).
+            Workflow: ANALYZE → ASK → EXECUTE sid=abc12345 → RETRY.
+
+claude:     [Step 1 — ANALYZE]
+            Both prompts were Read on files directly under /tmp.
+            Anticipated patterns:
+              - Read(/tmp/**)              (verbatim from deny)
+              - Write(/tmp/**)             (likely follow-up)
+
+            [Step 2 — ASK]
+            → AskUserQuestion:
+              "Inspecting files under /tmp. Permissions needed:
+               Read(/tmp/**), Write(/tmp/**). Which grant?"
+              · Allow both until SessionEnd  (Recommended)
+              · Allow Read(/tmp/**) only
+              · Refuse — I'll work from in-memory data
 ```
 
 ### Manual TTL

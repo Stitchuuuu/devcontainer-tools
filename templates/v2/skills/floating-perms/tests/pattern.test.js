@@ -71,22 +71,27 @@ test('canonicalizeBash returns non-null on shell-form inputs (best-effort)', () 
 	assert.ok(canonicalizeBash('grep foo /dev/null'))
 })
 
-test('canonicalizeDir buckets at depth 2 from root', () => {
-	// Depth 2 = first two path segments under root, deeper paths
-	// collapse to the same bucket.
-	assert.equal(canonicalizeDir('/workspace/src/foo/bar.ts'),
-		'/workspace/src/**')
+test('canonicalizeDir buckets to the parent dir of a file path', () => {
+	// file_path inputs are always files (Edit/Write/Read/NotebookEdit
+	// never target directories), so the canonical bucket is the parent.
+	assert.equal(canonicalizeDir('/tmp/xxx'),
+		'/tmp/**')
+	assert.equal(canonicalizeDir('/tmp/extensions.js'),
+		'/tmp/**')
 	assert.equal(canonicalizeDir('/tmp/scratch/file'),
 		'/tmp/scratch/**')
+	assert.equal(canonicalizeDir('/workspace/src/foo/bar.ts'),
+		'/workspace/src/foo/**')
 	assert.equal(canonicalizeDir('/home/node/.config/something/x'),
-		'/home/node/**')
+		'/home/node/.config/something/**')
 })
 
-test('canonicalizeDir returns null on `/`', () => {
-	// Edge case: input that resolves to `/` should NOT bucket to the
+test('canonicalizeDir returns null on `/` and on `/foo` (parent too broad)', () => {
+	// Edge cases: parent resolving to `/` would bucket to the
 	// hyper-permissive `/**`. Returning null lets the observer skip
 	// the entry entirely.
-	assert.equal(canonicalizeDir('/'), null)
+	assert.equal(canonicalizeDir('/'),    null)
+	assert.equal(canonicalizeDir('/foo'), null)
 })
 
 test('canonicalizeDir normalises double-slash inputs', () => {
@@ -111,7 +116,7 @@ test('canonicalize wraps file tools with the tool name', () => {
 	)
 	assert.equal(
 		canonicalize('Write', { file_path: '/home/node/.config/foo' }),
-		'Write(/home/node/**)'
+		'Write(/home/node/.config/**)'
 	)
 	assert.equal(
 		canonicalize('Read',  { file_path: '/workspace/src/x.ts' }),

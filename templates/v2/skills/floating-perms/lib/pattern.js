@@ -34,20 +34,24 @@ function canonicalizeBash(command) {
 	return `Bash(${cmd}:*)`
 }
 
-// Bucket a path to its first 2 segments under root. Examples:
-//   /workspace/src/foo/bar.ts        → /workspace/src/**
-//   /tmp/scratch/file                → /tmp/scratch/**
-//   /home/node/.config/something/x   → /home/node/.config/**
+// file_path inputs are always concrete files (Edit/Write/Read/NotebookEdit
+// never target directories), so the canonical bucket is the parent dir.
+// Examples:
+//   /tmp/xxx                         → /tmp/**
+//   /tmp/extensions.js               → /tmp/**
+//   /tmp/scratch/file.txt            → /tmp/scratch/**
+//   /workspace/src/foo/bar.ts        → /workspace/src/foo/**
+//   /home/node/.config/something/x   → /home/node/.config/something/**
 // Edge cases:
-//   '/'                              → null (too broad to be useful)
-//   '//home/node/x'                  → /home/node/** (double-slash normalised)
+//   '/'                              → null (no parent)
+//   '/foo'                           → null (parent is `/`, too broad)
+//   '//a/b/c'                        → /a/b/** (double-slash normalised)
 function canonicalizeDir(filePath) {
 	if (typeof filePath !== 'string' || !filePath) return null
 	const abs = path.resolve(filePath).replace(/\/+/g, '/')
-	const parts = abs.split('/').filter(Boolean)
-	if (parts.length === 0) return null
-	const head = parts.slice(0, 2).join('/')
-	return `/${head}/**`
+	const dir = path.dirname(abs)
+	if (!dir || dir === '/' || dir === '.') return null
+	return `${dir}/**`
 }
 
 function canonicalize(toolName, toolInput) {
