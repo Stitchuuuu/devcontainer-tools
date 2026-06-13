@@ -8,9 +8,13 @@
 const fs = require('fs')
 const path = require('path')
 
-const STATE_PATH = '/workspace/.devcontainer/notify/floating-perms-state.json'
+// Paths overridable via env vars for test isolation; defaults match
+// the devcontainer canonical layout.
+const STATE_PATH = process.env.FP_STATE_PATH
+	|| '/workspace/.devcontainer/notify/floating-perms-state.json'
 const LOCK_PATH  = STATE_PATH + '.lock'
-const AUDIT_PATH = '/workspace/.devcontainer/notify/floating-perms-audit.jsonl'
+const AUDIT_PATH = process.env.FP_AUDIT_PATH
+	|| '/workspace/.devcontainer/notify/floating-perms-audit.jsonl'
 
 const LOCK_ATTEMPTS = 6
 const LOCK_BASE_MS  = 20
@@ -113,7 +117,8 @@ function audit(event, fields) {
 // settings.local.json operations — only `permissions.allow` is touched.
 // Order: caller already holds the state lock before mutating allow.
 
-const SETTINGS_LOCAL = '/workspace/.claude/settings.local.json'
+const SETTINGS_LOCAL = process.env.FP_SETTINGS_LOCAL
+	|| '/workspace/.claude/settings.local.json'
 
 // Sentinel marker entries that bracket the floating-perms managed section
 // inside permissions.allow. They are strings that don't begin with any

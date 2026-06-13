@@ -22,7 +22,7 @@
 // land in /workspace/.devcontainer/notify/floating-perms-audit.jsonl.
 
 const fs = require('fs')
-const { canonicalize, isAllowed } = require('./lib/pattern')
+const { canonicalize } = require('./lib/pattern')
 const { isBlocked, reasonForPattern } = require('./lib/blocklist')
 const {
 	withState, readAllow, writeAllow, audit,
