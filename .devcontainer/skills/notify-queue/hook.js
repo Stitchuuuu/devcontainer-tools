@@ -36,6 +36,18 @@ function truncate(str, max) {
 	return str.slice(0, max - 1) + '…'
 }
 
+// Decode literal `\uXXXX` JSON-style escapes that a model may emit
+// instead of raw UTF-8. Conservative: only `\u` followed by exactly
+// 4 hex digits, and not preceded by another `\` (so `\\u00e9` — an
+// escaped backslash before a `u00e9` literal — is left alone).
+// Surrogate pairs decode correctly because each half is replaced
+// independently and JS re-joins them in the result string.
+function decodeUnicodeEscapes(s) {
+	if (typeof s !== 'string') return s
+	return s.replace(/(?<!\\)\\u([0-9a-fA-F]{4})/g,
+		(_, hex) => String.fromCharCode(parseInt(hex, 16)))
+}
+
 // V2 : look for an explicit `**Recap** — <summary>` line near the end
 // of the reply. Convention documented in CLAUDE-dev.md §14. Accepts
 // em-dash (—), en-dash (–), or hyphen (-) as the separator. If the
@@ -44,7 +56,7 @@ function truncate(str, max) {
 function excerptV2(msg) {
 	if (typeof msg !== 'string' || !msg) return ''
 	const m = msg.match(/\*\*Recap\*\*\s*[—–-]\s*(.+?)\s*$/im)
-	if (m && m[1]) return truncate(m[1].trim(), MAX_EXCERPT)
+	if (m && m[1]) return truncate(decodeUnicodeEscapes(m[1].trim()), MAX_EXCERPT)
 	return excerptV1(msg)
 }
 
@@ -70,7 +82,7 @@ function excerptV1(msg) {
 			.replace(/\*([^*]+)\*/g, '$1')
 			.replace(/`([^`]+)`/g, '$1')
 			.trim()
-		if (clean) return truncate(clean, MAX_EXCERPT)
+		if (clean) return truncate(decodeUnicodeEscapes(clean), MAX_EXCERPT)
 	}
 	return ''
 }
@@ -225,4 +237,6 @@ function main() {
 	}
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes }

@@ -265,8 +265,10 @@ a recap you crafted on purpose.
 Guidelines for the summary :
 
 - **≤ 80 characters.** Beyond that, it gets truncated.
-- **Plain text after the dash.** No nested bold, no emoji, no
-  backticks — the host notification renders as system text.
+- **Raw UTF-8 after the dash.** Type accents and em-dashes
+  directly (`é`, `—`), not as `\uXXXX` escapes or HTML entities.
+  No nested bold, no emoji, no backticks — the host notification
+  renders as system text.
 - **Action-oriented, past tense.** "Tests passing, PR ready",
   "Build failed — see logs", "Refactor done, 3 files touched".
   Not "I have completed the task".
