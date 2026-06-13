@@ -8,19 +8,20 @@ argument-hint: "batch <pat1> <pat2>... [ttl=15m] sid=<id>  |  list [sid=<id>]  |
 ## When this skill is triggered
 
 **Automatic trigger.** Claude Code's `PermissionRequest` hook fires for
-every tool call that would prompt the user. When **3 prompts arrive
+every tool call that would prompt the user. When **2 prompts arrive
 within 120 s** in a session, the next tool call that reaches `PreToolUse`
 is **denied** with a `permissionDecisionReason` listing every unique
-pattern from the window. Rationale: repeated prompts are draining
-whatever the command, so we batch. You will see something like:
+pattern from the window — *before* the third permission dialog ever
+fires. The user has paid attention cost twice, not a third time.
+Rationale: repeated prompts are draining whatever the command, so we
+batch. You will see something like:
 
-> STOP — floating-perms: 3 permission prompts in under 120s. Repeated
+> STOP — floating-perms: 2 permission prompts in under 120s. Repeated
 > prompts are draining whatever the command, so we batch.
 >
 > Patterns seen in the recent window:
 >   - `Bash(curl:*)`
 >   - `Edit(/tmp/scratch/**)`
->   - `Read(/home/node/**)`
 >
 > Mandatory workflow before any further tool call: 1. ANALYZE, 2. ASK via
 > AskUserQuestion, 3. EXECUTE /floating-perms batch ... sid=<id>, 4. RETRY

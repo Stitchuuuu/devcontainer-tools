@@ -38,7 +38,9 @@ function withFixedNow(ts, fn) {
 	try { return fn() } finally { Date.now = real }
 }
 
-test('happy path: 3 × PermissionRequest then 1 × PreToolUse → deny', () => {
+test('happy path: 2 × PermissionRequest then 1 × PreToolUse → deny', () => {
+	// Threshold = 2 ⇒ the 3rd call that would prompt is intercepted by
+	// PreToolUse before the dialog opens.
 	const sid = uniqueSid()
 	const base = 1_700_000_000_000
 
@@ -56,13 +58,6 @@ test('happy path: 3 × PermissionRequest then 1 × PreToolUse → deny', () => {
 			tool_use_id: 'b'
 		})
 	})
-	withFixedNow(base + 30, () => {
-		hook.handlePermissionRequest({
-			session_id: sid, tool_name: 'Read',
-			tool_input: { file_path: '/home/node/.config/x' },
-			tool_use_id: 'c'
-		})
-	})
 
 	const out = withFixedNow(base + 1000, () =>
 		hook.handlePreToolUse({
@@ -75,7 +70,28 @@ test('happy path: 3 × PermissionRequest then 1 × PreToolUse → deny', () => {
 	const reason = out.hookSpecificOutput.permissionDecisionReason
 	assert.match(reason, /Bash\(curl:\*\)/)
 	assert.match(reason, /Edit\(\/tmp\/scratch\/\*\*\)/)
-	assert.match(reason, /Read\(\/home\/node\/\*\*\)/)
+})
+
+test('below threshold: 1 × PermissionRequest then 1 × PreToolUse → no deny', () => {
+	const sid = uniqueSid()
+	const base = 1_700_000_050_000
+
+	withFixedNow(base + 10, () => {
+		hook.handlePermissionRequest({
+			session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'curl https://example.com' },
+			tool_use_id: 'a'
+		})
+	})
+
+	const out = withFixedNow(base + 1000, () =>
+		hook.handlePreToolUse({
+			session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'ls' }
+		}))
+
+	assert.equal(out, null,
+		'1 PermissionRequest alone must not trip the deny')
 })
 
 test('no false positives: 100 × PreToolUse with 0 PermissionRequest → 0 denies', () => {
@@ -109,11 +125,11 @@ test('no false positives: 100 × PreToolUse with 0 PermissionRequest → 0 denie
 	assert.deepEqual(st.counters[sid] || [], [])
 })
 
-test('race window: 3 × PermissionRequest then 2 × PreToolUse same ms → exactly 1 deny', () => {
+test('race window: 2 × PermissionRequest then 2 × PreToolUse same ms → exactly 1 deny', () => {
 	const sid = uniqueSid()
 	const base = 1_700_000_200_000
 
-	for (let i = 0; i < 3; i++) {
+	for (let i = 0; i < 2; i++) {
 		withFixedNow(base + i, () => {
 			hook.handlePermissionRequest({
 				session_id: sid, tool_name: 'Bash',
@@ -151,19 +167,13 @@ test('backward-compat: legacy entries without tool_use_id still counted', () => 
 		warned: {}
 	}))
 
-	// Two fresh PermissionRequest events on top push us past threshold.
+	// One fresh PermissionRequest on top of the legacy entry brings the
+	// window to 2 entries — at threshold.
 	withFixedNow(base + 10, () => {
 		hook.handlePermissionRequest({
 			session_id: sid, tool_name: 'Bash',
 			tool_input: { command: 'curl https://x' },
 			tool_use_id: 't1'
-		})
-	})
-	withFixedNow(base + 20, () => {
-		hook.handlePermissionRequest({
-			session_id: sid, tool_name: 'Edit',
-			tool_input: { file_path: '/tmp/x' },
-			tool_use_id: 't2'
 		})
 	})
 
@@ -175,7 +185,6 @@ test('backward-compat: legacy entries without tool_use_id still counted', () => 
 	const reason = out.hookSpecificOutput.permissionDecisionReason
 	assert.match(reason, /Bash\(legacy:\*\)/, 'legacy pattern should appear in reason')
 	assert.match(reason, /Bash\(curl:\*\)/)
-	assert.match(reason, /Edit\(\/tmp\/x\/\*\*\)/)
 })
 
 test('handlePermissionRequest ignores meta tools (ExitPlanMode, etc.)', () => {

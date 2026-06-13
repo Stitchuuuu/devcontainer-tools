@@ -46,8 +46,13 @@ function readBaselineAllow() {
 // After a deny the counter is reset; a short race-protection window
 // prevents back-to-back denies in the same millisecond when two
 // PreToolUse fire concurrently on the same sid.
+//
+// Threshold = 2 ⇒ after the user has approved two prompts, the third
+// tool call that would prompt is intercepted at PreToolUse and denied
+// before the PermissionRequest dialog appears. The user pays attention
+// cost twice, not three times.
 const WINDOW_MS = 120 * 1000
-const SPIKE_THRESHOLD = 3
+const SPIKE_THRESHOLD = 2
 const RACE_WINDOW_MS = 500
 
 function readStdin() {
