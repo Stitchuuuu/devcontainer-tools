@@ -430,7 +430,14 @@ Both `state/` files are documented at the top of
 			"eventType": "stop",
 			"armed_at":  "2026-06-06T14:59:30.000Z",
 			"fire_at":   "2026-06-06T15:00:00.000Z",
-			"delay_ms":  30000
+			"delay_ms":  30000,
+			"payload": {
+				"ts":                    "2026-06-06T14:59:30.000Z",
+				"sid":                   "abc12345-…",
+				"event":                 "stop",
+				"session_name":          "Build host notification daemon",
+				"last_message_excerpt":  "Tests passing, PR ready"
+			}
 		}
 	]
 }
@@ -438,8 +445,8 @@ Both `state/` files are documented at the top of
 
 ```jsonc
 // state/actions.jsonl — one JSON object per line
-{"ts":"…","action":"armed","sid":"abc…","eventType":"stop","delayMs":30000,"fireAt":"…"}
-{"ts":"…","action":"replaced","sid":"abc…","prevEventType":"stop","newEventType":"stop","delayMs":30000,"fireAt":"…"}
+{"ts":"…","action":"armed","sid":"abc…","eventType":"stop","delayMs":30000,"fireAt":"…","payload":{"ts":"…","sid":"abc…","event":"stop","session_name":"…","last_message_excerpt":"…"}}
+{"ts":"…","action":"replaced","sid":"abc…","prevEventType":"stop","newEventType":"stop","delayMs":30000,"fireAt":"…","payload":{"ts":"…","sid":"abc…","event":"stop","session_name":"…","last_message_excerpt":"…"}}
 {"ts":"…","action":"cancelled","sid":"abc…","eventType":"stop","cause":"user_replied"}
 {"ts":"…","action":"fired","sid":"abc…","eventType":"stop"}
 {"ts":"…","action":"unmapped","sid":"abc…","eventType":"unknown_event"}
@@ -447,6 +454,18 @@ Both `state/` files are documented at the top of
 
 The `action` enum maps directly to the 5 branches in
 [watcher.handleLine](lib/watcher.js) below.
+
+The `payload` field on `armed` / `replaced` entries (both
+`pending.json` and `actions.jsonl`) is the raw parsed JSONL `line`
+from [notify-queue/hook.js `buildLine`](../skills/notify-queue/hook.js) —
+verbatim, no truncation. Per-event it carries `last_message_excerpt`
+(stop), `tool_name`/`tool_input`/`tool_use_id?` (permission_request),
+or `notification_type`/`message` (notification), plus the optional
+`session_name`. This lets external consumers (status bars,
+dashboards, alternative renderers) render or route from `pending.json`
+alone, without re-reading the source queue file. `cancelled` /
+`fired` / `unmapped` lines omit `payload` — the matching `armed` is
+searchable in `actions.jsonl` by `sid + ts`.
 
 ### `watcher.handleLine` — 5-branch decision
 

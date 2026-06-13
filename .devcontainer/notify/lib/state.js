@@ -27,9 +27,16 @@
 //
 // SCHEMAS (see notify/README.md for the human-readable doc)
 //   pending.json :
-//     { updated_at, pid, pending: [{ sid, eventType, armed_at, fire_at, delay_ms }, …] }
+//     { updated_at, pid, pending: [{ sid, eventType, armed_at, fire_at, delay_ms, payload }, …] }
 //   actions.jsonl line :
 //     { ts, action, sid, eventType, …action-specific keys }
+//
+//   `payload` is the raw parsed JSONL `line` from notify-queue/hook.js
+//   buildLine — carries tool_name / tool_input / session_name /
+//   last_message_excerpt / message / notification_type … per eventType.
+//   Present on `armed` and `replaced` (pending.json + audit line) ; omitted
+//   on `cancelled` / `fired` / `unmapped` (the matching `armed` is
+//   searchable by sid + ts).
 // =============================================================================
 
 const fs = require('fs')
@@ -39,7 +46,7 @@ const { writeAtomic } = require('./atomic-write')
 let pendingPath = ''
 let actionsPath = ''
 let ownPid      = 0
-const pendingMap = new Map()  // sid → { sid, eventType, armed_at, fire_at, delay_ms }
+const pendingMap = new Map()  // sid → { sid, eventType, armed_at, fire_at, delay_ms, payload? }
 
 /**
  * Boot the state module. Resolves the on-disk paths under queue/state/,
@@ -113,14 +120,17 @@ function appendAction(entry) {
  * @param {string} evt.sid         session ID (Claude Code session UUID or short form)
  * @param {string} evt.eventType   event class label (e.g. 'permission_request')
  * @param {number} evt.delayMs     debounce delay in ms; fire_at = now + delayMs
+ * @param {object} [evt.payload]   raw parsed JSONL `line` (notify-queue/hook.js buildLine).
+ *                                 Mirrored into pending.json and the audit line so an external
+ *                                 consumer can render / route from state alone.
  * @returns {void}                 mutates pendingMap, flushes pending.json, appends to actions.jsonl
  */
-function armed({ sid, eventType, delayMs }) {
+function armed({ sid, eventType, delayMs, payload }) {
 	const armed_at = nowIso()
 	const fire_at  = new Date(Date.now() + delayMs).toISOString()
-	pendingMap.set(sid, { sid, eventType, armed_at, fire_at, delay_ms: delayMs })
+	pendingMap.set(sid, { sid, eventType, armed_at, fire_at, delay_ms: delayMs, payload })
 	flushPending()
-	appendAction({ action: 'armed', sid, eventType, delayMs, fireAt: fire_at })
+	appendAction({ action: 'armed', sid, eventType, delayMs, fireAt: fire_at, payload })
 }
 
 /**
@@ -133,14 +143,16 @@ function armed({ sid, eventType, delayMs }) {
  * @param {string} evt.prevEventType    event class previously armed for this sid
  * @param {string} evt.newEventType     event class taking over
  * @param {number} evt.delayMs          debounce delay in ms for the new timer
+ * @param {object} [evt.payload]        raw parsed JSONL `line` for the NEW event ; mirrored into
+ *                                      pending.json and the audit line (overrides the prior payload).
  * @returns {void}                      mutates pendingMap, flushes pending.json, appends to actions.jsonl
  */
-function replaced({ sid, prevEventType, newEventType, delayMs }) {
+function replaced({ sid, prevEventType, newEventType, delayMs, payload }) {
 	const armed_at = nowIso()
 	const fire_at  = new Date(Date.now() + delayMs).toISOString()
-	pendingMap.set(sid, { sid, eventType: newEventType, armed_at, fire_at, delay_ms: delayMs })
+	pendingMap.set(sid, { sid, eventType: newEventType, armed_at, fire_at, delay_ms: delayMs, payload })
 	flushPending()
-	appendAction({ action: 'replaced', sid, prevEventType, newEventType, delayMs, fireAt: fire_at })
+	appendAction({ action: 'replaced', sid, prevEventType, newEventType, delayMs, fireAt: fire_at, payload })
 }
 
 /**

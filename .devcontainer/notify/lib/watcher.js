@@ -247,6 +247,11 @@ function readNewLines(file, offsets) {
  *      and arm a fresh one based on the new event ("latest wins").
  *   5. ARM — no previous timer ; setTimeout(delays[type]) and store.
  *
+ * The raw parsed `line` is passed as `payload` into `state.armed` and
+ * `state.replaced` so pending.json + actions.jsonl expose the full
+ * notification payload to external consumers, not just the timer
+ * bookkeeping.
+ *
  * The `notification` super-event is flattened to its `notification_type`
  * sub-string (idle_prompt / permission_prompt / elicitation_dialog) so
  * the rest of the pipeline only sees flat event types.
@@ -342,10 +347,10 @@ function handleLine(line, { timers, bus, delays, state }) {
 	if (existing) {
 		clearTimeout(existing.timeout)
 		log.info(`[watcher] ${eventType.padEnd(14)} ${sid8} — REPLACED previous ${existing.eventType} timer`)
-		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs })
+		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs, payload: line })
 		bus.emit('cancelled:notification', { id: existing.id, eventType: existing.eventType, reason: `replaced-by-${eventType}` })
 	} else {
-		state?.armed({ sid, eventType, delayMs })
+		state?.armed({ sid, eventType, delayMs, payload: line })
 	}
 
 	const timeout = setTimeout(() => {
