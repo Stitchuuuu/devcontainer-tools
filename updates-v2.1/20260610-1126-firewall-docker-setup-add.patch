@@ -1,0 +1,56 @@
+From a87c2e8242fe0efef60a5d138d09704e4e89b06d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ke=CC=81vin=20=CA=98=E2=80=BF=CA=98?= <cmoi@kevledev.fr>
+Date: Wed, 10 Jun 2026 11:25:26 -0700
+Subject: [PATCH] fix(devcontainer): add missing firewall-docker-setup.sh
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The script was referenced by Dockerfile.base (COPY + chmod at lines
+309/313) plus Dockerfile and Dockerfile.php (RUN at project-image
+build time) since the v2.0.0 baseline (b996ffd21), but never actually
+committed — the base image was un-rebuildable from scratch since
+then. Restored from spec : finalize perms/ownership on the
+project-specific firewall data under /etc/devcontainer-firewall/ +
+touch domains.local.txt that init-firewall.sh expects at runtime.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .../firewall/firewall-docker-setup.sh         | 25 +++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+ create mode 100755 .devcontainer/firewall/firewall-docker-setup.sh
+
+diff --git a/.devcontainer/firewall/firewall-docker-setup.sh b/.devcontainer/firewall/firewall-docker-setup.sh
+new file mode 100755
+index 000000000..67c43f8dd
+--- /dev/null
++++ b/.devcontainer/firewall/firewall-docker-setup.sh
+@@ -0,0 +1,25 @@
++#!/usr/bin/env bash
++# firewall-docker-setup.sh — runs ONCE at project-layer Docker build time
++# (RUN'd from .devcontainer/Dockerfile or .devcontainer/Dockerfile.php).
++#
++# Finalizes perms/ownership on the project-specific firewall data COPY'd
++# into /etc/devcontainer-firewall/ by the project Dockerfile :
++#   - domains.txt           (per-project baseline allowlist)
++#   - policy.d/             (per-project L7 policies)
++#
++# Also touches an empty domains.local.txt that init-firewall.sh expects
++# at runtime (whether or not the project provides local overrides).
++#
++# Lives in the base image (/usr/local/bin/) — one source of truth, evolves
++# per CLAUDE_CODE_VERSION bump without forcing project-side re-install.sh.
++#
++# capital-X in chmod = "x only if dir or already +x" — gives 755 on dirs
++# + 644 on files in one pass, no per-path enumeration. Idempotent on
++# base-layer files (already at those perms, no-op).
++set -euo pipefail
++
++FW=/etc/devcontainer-firewall
++
++touch "$FW/domains.local.txt"
++chown -R root:root "$FW"
++chmod -R u=rwX,go=rX "$FW"
+-- 
+2.39.5
+

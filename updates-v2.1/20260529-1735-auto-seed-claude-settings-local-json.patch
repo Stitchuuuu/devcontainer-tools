@@ -1,0 +1,127 @@
+From 1c26dd40c66bf9fa54980082a0a2ef1f1308611c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ke=CC=81vin=20=CA=98=E2=80=BF=CA=98?= <cmoi@kevledev.fr>
+Date: Fri, 29 May 2026 17:35:03 +0000
+Subject: [PATCH] feat(devcontainer): auto-seed .claude/settings.local.json on
+ rebuild
+
+Add an idempotent seed step in post-create.sh that copies
+.claude/settings.local.json.example -> settings.local.json when the
+live file is missing. install.sh seeds at install time; this extends
+coverage to container rebuilds.
+
+Also track .claude/settings.local.json.example via a .gitignore
+counter-exclusion so the baseline ships with the repo.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .claude/settings.local.json.example | 60 +++++++++++++++++++++++++++++
+ .devcontainer/post-create.sh        | 13 +++++++
+ .gitignore                          |  1 +
+ 3 files changed, 74 insertions(+)
+ create mode 100644 .claude/settings.local.json.example
+
+diff --git a/.claude/settings.local.json.example b/.claude/settings.local.json.example
+new file mode 100644
+index 0000000..5697416
+--- /dev/null
++++ b/.claude/settings.local.json.example
+@@ -0,0 +1,60 @@
++{
++	"permissions": {
++		"allow": [
++			"Read",
++			"Grep",
++			"Glob",
++			"WebSearch",
++			"WebFetch",
++			"Bash(git log*)",
++			"Bash(git diff*)",
++			"Bash(git status*)",
++			"Bash(git branch*)",
++			"Bash(git show*)",
++			"Bash(git blame*)",
++			"Bash(git tag*)",
++			"Bash(git remote*)",
++			"Bash(git rev-parse*)",
++			"Bash(git ls-files*)",
++			"Bash(git merge-base*)",
++			"Bash(ls *)",
++			"Bash(cat *)",
++			"Bash(find *)",
++			"Bash(head *)",
++			"Bash(tail *)",
++			"Bash(tree *)",
++			"Bash(wc *)",
++			"Bash(diff *)",
++			"Bash(grep *)",
++			"Bash(sort *)",
++			"Bash(uniq *)",
++			"Bash(cut *)",
++			"Bash(awk *)",
++			"Bash(sed *)",
++			"Bash(pwd*)",
++			"Bash(which *)",
++			"Bash(file *)",
++			"Bash(stat *)",
++			"Bash(dirname *)",
++			"Bash(basename *)",
++			"Bash(realpath *)",
++			"Bash(whoami*)",
++			"Bash(date*)",
++			"Bash(uname *)",
++			"Bash(env *)",
++			"Bash(node -v*)",
++			"Bash(npm list*)",
++			"Bash(gh pr view*)",
++			"Bash(gh pr list*)",
++			"Bash(gh pr diff*)",
++			"Bash(gh pr checks*)",
++			"Bash(gh issue view*)",
++			"Bash(gh issue list*)",
++			"Bash(gh repo view*)",
++			"Bash(gh release list*)",
++			"Bash(gh run list*)",
++			"Bash(gh run view*)",
++			"WebFetch(domain:github.com)"
++		]
++	}
++}
+diff --git a/.devcontainer/post-create.sh b/.devcontainer/post-create.sh
+index eba8f53..6482ba7 100755
+--- a/.devcontainer/post-create.sh
++++ b/.devcontainer/post-create.sh
+@@ -47,6 +47,19 @@ fi
+ ln -sf ".devcontainer/claude/$CLAUDE_FILE" /workspace/CLAUDE.md
+ echo "✓ CLAUDE.md → $CLAUDE_FILE"
+ 
++# Seed .claude/settings.local.json from .example baseline if missing.
++# Mirrors install.sh:485-486 — install.sh runs once on host, this rerun-safe
++# check restores the live file after a rebuild or accidental delete.
++# Fallback path covers the dogfood repo, which never runs install.sh on itself.
++EX=/workspace/.claude/settings.local.json.example
++[ -f "$EX" ] || EX=/workspace/templates/v2/.claude/settings.local.json.example
++LIVE=/workspace/.claude/settings.local.json
++if [ -f "$EX" ] && [ ! -f "$LIVE" ]; then
++	mkdir -p /workspace/.claude
++	cp "$EX" "$LIVE"
++	echo "✓ .claude/settings.local.json seeded from ${EX#/workspace/}"
++fi
++
+ # Warn if test-root has sudo access (the real risk is the sudoers entry, not the file)
+ if sudo -l 2>/dev/null | grep -q "test-root"; then
+ 	echo ""
+diff --git a/.gitignore b/.gitignore
+index f1ff115..2c71781 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,6 +4,7 @@
+ .claude/*
+ !.claude/rules/
+ !.claude/rules/**
++!.claude/settings.local.json.example
+ 
+ # VS Code — bind-mount via docker-compose, single tracked file
+ .vscode/*
+-- 
+2.39.5
+

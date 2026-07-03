@@ -1,0 +1,43 @@
+From 5ebf5059cfd2c69633b74715d740ebfea29413a8 Mon Sep 17 00:00:00 2001
+From: "Olivier :3" <contact@blunt.sh>
+Date: Thu, 4 Jun 2026 12:23:49 +0200
+Subject: [PATCH] Improve CLAUDE: install latest packages
+
+---
+ .claude/settings.local.json.example | 2 ++
+ .devcontainer/claude/CLAUDE-dev.md  | 6 +++++-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/.claude/settings.local.json.example b/.claude/settings.local.json.example
+index 5697416..ca48356 100644
+--- a/.claude/settings.local.json.example
++++ b/.claude/settings.local.json.example
+@@ -44,6 +44,8 @@
+ 			"Bash(env *)",
+ 			"Bash(node -v*)",
+ 			"Bash(npm list*)",
++			"Bash(npm view*)",
++			"Bash(npm search*)",
+ 			"Bash(gh pr view*)",
+ 			"Bash(gh pr list*)",
+ 			"Bash(gh pr diff*)",
+diff --git a/.devcontainer/claude/CLAUDE-dev.md b/.devcontainer/claude/CLAUDE-dev.md
+index 0a9953a..e6d9e85 100644
+--- a/.devcontainer/claude/CLAUDE-dev.md
++++ b/.devcontainer/claude/CLAUDE-dev.md
+@@ -232,7 +232,11 @@ For code **you write** (§4 still wins for existing code) :
+   (or composer / pip / …) :
+   - **No known CVE / vulnerability** — hard requirement, never
+     relaxed.
+-  - **Latest stable version** available.
++  - **Latest stable version** available. Never write the version
++    from memory — query the registry (`npm view <pkg> version`,
++    `composer show -a <pkg>`, …) right before editing the
++    manifest. Memory lags by major versions and silently picks an
++    outdated baseline.
+   - **Trust in the package** — any one of these signals is enough:
+     actively maintained (recent commits, issues handled), widely
+     adopted (downloads, dependents, stars), mature and stable
+-- 
+2.39.5
+

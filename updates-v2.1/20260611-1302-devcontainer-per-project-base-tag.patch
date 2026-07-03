@@ -1,0 +1,60 @@
+diff --git a/.devcontainer/.dockerignore b/.devcontainer/.dockerignore
+new file mode 100644
+index 0000000..9ddd4b9
+--- /dev/null
++++ b/.devcontainer/.dockerignore
+@@ -0,0 +1,15 @@
++# Python bytecode — cause directe du SHA drift sur claude/vscode-ext-patchs/
++# Sans cette exclusion, COPY claude/vscode-ext-patchs/ embarque les .pyc
++# locaux dans le layer → SHA différent entre machines/projets → images
++# dérivées orphelinées au prochain rebuild du base.
++**/__pycache__/
++**/*.pyc
++**/*.pyo
++
++# Sécurité — jamais dans une image
++.env
++.env.*
++
++# Logs locaux
++*.log
++logs/
+diff --git a/.devcontainer/Dockerfile b/.devcontainer/Dockerfile
+index a7d8cf9..3201c79 100644
+--- a/.devcontainer/Dockerfile
++++ b/.devcontainer/Dockerfile
+@@ -9,7 +9,8 @@
+ # missing base tag and rebuild it before compose builds this layer.
+ # -----------------------------------------------
+ ARG CLAUDE_CODE_VERSION=2.1.145
+-FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}
++ARG DC_PROJECT=symptems
++FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}
+ 
+ # Project-specific layer (empty by default — add project deps here).
+ # Add `RUN apt-get install -y …` here for project apt deps that should NOT
+diff --git a/.devcontainer/docker-compose.yml b/.devcontainer/docker-compose.yml
+index 0ba905d..c9eaa5f 100644
+--- a/.devcontainer/docker-compose.yml
++++ b/.devcontainer/docker-compose.yml
+@@ -13,6 +13,7 @@ services:
+         # initialize.sh. Default falls back to the version Dockerfile.base pins.
+         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.145}
+         GIT_DELTA_VERSION: "0.18.2"
++        DC_PROJECT: ${DC_PROJECT:-symptems}
+     # Local Ollama backend (cf. .devcontainer/knowledge/ollama-local.md). Two aliases for
+     # the same host gateway IP — the routing difference comes from NO_PROXY :
+     #   ollama.internal  ∉ NO_PROXY  → routed via HTTP_PROXY (mitmproxy audit)
+diff --git a/.devcontainer/initialize.sh b/.devcontainer/initialize.sh
+index 859c998..4e48a1f 100755
+--- a/.devcontainer/initialize.sh
++++ b/.devcontainer/initialize.sh
+@@ -441,7 +441,7 @@ detect_no_cache_request() {
+ # .devcontainer/logs/build-base-<version>-<ts>.log for post-mortem.
+ build_base_if_missing() {
+ 	local version="${CLAUDE_CODE_VERSION:-2.1.145}"
+-	local tag="claude-devcontainer-base:${version}"
++	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-symptems}"
+ 	set_env_var "CLAUDE_CODE_VERSION" "$version"
+ 
+ 	detect_no_cache_request

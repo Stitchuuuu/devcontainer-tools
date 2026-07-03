@@ -1,0 +1,107 @@
+From 0e335ad6e54aedf77dfafe675cfb336bbf1dc90c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ke=CC=81vin=20=CA=98=E2=80=BF=CA=98?= <cmoi@kevledev.fr>
+Date: Fri, 29 May 2026 17:00:22 +0000
+Subject: [PATCH] chore(devcontainer): default port-forward to ignore +
+ document opt-in
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+VS Code's otherPortsAttributes is now set to "ignore" in
+devcontainer.json — processes listening inside the container no
+longer silently expose themselves to the host. Ports appear under
+"Not Forwarded" in the Ports panel and are forwarded manually
+(right-click → Forward Port) or by adding a portsAttributes entry
+with onAutoForward="silent" / "notify". A new "Port forwarding
+(dev servers)" section in README.md walks through the opt-in flow
+with a wtf + Vite dev-server example.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .devcontainer/README.md         | 37 +++++++++++++++++++++++++++++++++
+ .devcontainer/devcontainer.json | 15 +++++++++++++
+ 2 files changed, 52 insertions(+)
+
+diff --git a/.devcontainer/README.md b/.devcontainer/README.md
+index d279ea3..ca06acc 100644
+--- a/.devcontainer/README.md
++++ b/.devcontainer/README.md
+@@ -6,6 +6,7 @@ This README is the maintainer's handbook. Skim it once to understand what's wher
+ 
+ ## Table of contents
+ 
++- [Port forwarding (dev servers)](#port-forwarding-dev-servers)
+ - [TL;DR](#tldr)
+ - [The three-container model](#the-three-container-model)
+ - [Quick start](#quick-start)
+@@ -45,6 +46,42 @@ This README is the maintainer's handbook. Skim it once to understand what's wher
+ - [FAQ](#faq)
+ - [See also](#see-also)
+ 
++## Port forwarding (dev servers)
++
++By default this devcontainer **does not auto-forward** any port — VS Code's `otherPortsAttributes` is set to `ignore` in [devcontainer.json](devcontainer.json) so a process listening inside the container does not silently expose itself to the host. Ports detected in `LISTEN` state appear in the VS Code **Ports** panel under *Not Forwarded* and have to be activated by hand (right-click → *Forward Port*).
++
++To **whitelist a port** for automatic forwarding — typical for a long-running dev server you start every time — uncomment the `portsAttributes` block in `.devcontainer/devcontainer.json` and adapt the port number / label :
++
++```jsonc
++"portsAttributes": {
++  "5173": { "label": "client dev", "onAutoForward": "silent" }
++},
++"otherPortsAttributes": { "onAutoForward": "ignore" }
++```
++
++`onAutoForward` accepts `"silent"` (forward without notification), `"notify"` (toast on detect), or `"openBrowser"` (forward + auto-open). Reload the window (or rebuild) for changes to apply.
++
++### Example — client dev server via `wtf`
++
++The image bakes [`wtf`](knowledge/wtf.md) as the project task runner. Drop a `.wtfcmd.yaml` at the repo root to expose your client compile / dev-server commands :
++
++```yaml
++- name: client
++  desc: Client (frontend) tasks
++- name: dev
++  group: client
++  desc: Start the client dev server on :5173
++  cmd: cd client && npm run dev -- --host 0.0.0.0 --port 5173
++- name: build
++  group: client
++  desc: Build the client for production
++  cmd: cd client && npm run build
++```
++
++Then `wtf client dev` from any container shell starts the Vite / webpack dev server, and once `devcontainer.json` whitelists port `5173` (block above), VS Code forwards it to the host — open `http://localhost:5173` in your host browser.
++
++> The `--host 0.0.0.0` flag is critical : a dev server bound to `127.0.0.1` only is unreachable through Docker's port forward. Bind to `0.0.0.0` (or `::`) so the container's listener accepts proxied connections from the VS Code port-forward.
++
+ ## TL;DR
+ 
+ - **Strict by default**: outbound is `default-deny`, only Anthropic + a small allowlist resolves
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+index e934396..8e192b0 100644
+--- a/.devcontainer/devcontainer.json
++++ b/.devcontainer/devcontainer.json
+@@ -61,5 +61,20 @@
+   "onCreateCommand": "bash .devcontainer/on-create.sh",
+   "postCreateCommand": "bash .devcontainer/post-create.sh",
+   "postStartCommand": "bash .devcontainer/post-start.sh",
++  // Port forwarding policy.
++  // Default (otherPortsAttributes: ignore) — VS Code does not
++  // auto-forward any port. Detected LISTEN sockets show up in the
++  // "Ports" panel under "Not Forwarded"; activate manually via
++  // right-click → "Forward Port".
++  //
++  // To whitelist a port for auto-forward, add an entry to
++  // portsAttributes with onAutoForward = "silent" (no toast) or
++  // "notify" (with toast). Vite example (commented — uncomment and
++  // adapt to the project's dev server):
++  //
++  //   "portsAttributes": {
++  //     "5173": { "label": "vite", "onAutoForward": "silent" }
++  //   },
++  "otherPortsAttributes": { "onAutoForward": "ignore" },
+   "waitFor": "postStartCommand"
+ }
+-- 
+2.39.5
+

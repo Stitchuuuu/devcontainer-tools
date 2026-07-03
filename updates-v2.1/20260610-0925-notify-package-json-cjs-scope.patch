@@ -1,0 +1,14 @@
+diff --git a/.devcontainer/notify/package.json b/.devcontainer/notify/package.json
+new file mode 100644
+index 0000000..a3c15a7
+--- /dev/null
++++ b/.devcontainer/notify/package.json
+@@ -0,0 +1 @@
++{ "type": "commonjs" }
+diff --git a/.devcontainer/skills/notify-queue/package.json b/.devcontainer/skills/notify-queue/package.json
+new file mode 100644
+index 0000000..a3c15a7
+--- /dev/null
++++ b/.devcontainer/skills/notify-queue/package.json
+@@ -0,0 +1 @@
++{ "type": "commonjs" }

@@ -1,0 +1,22 @@
+From db8120ffd70bafcb65bac7b53057d2d6d485b152 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ke=CC=81vin=20=CA=98=E2=80=BF=CA=98?= <cmoi@kevledev.fr>
+Date: Fri, 29 May 2026 08:13:56 +0000
+Subject: [PATCH] Missed replacement
+
+---
+ .devcontainer/claude/CLAUDE-project.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/.devcontainer/claude/CLAUDE-project.md b/.devcontainer/claude/CLAUDE-project.md
+index ef7028b..3880f47 100644
+--- a/.devcontainer/claude/CLAUDE-project.md
++++ b/.devcontainer/claude/CLAUDE-project.md
+@@ -1,4 +1,4 @@
+-# <PROJECT_DISPLAY_NAME> — Project rules
++# Symptems — Project rules
+ 
+ > This file is a stub. On first container boot, ask Claude :
+ >
+-- 
+2.39.5
+

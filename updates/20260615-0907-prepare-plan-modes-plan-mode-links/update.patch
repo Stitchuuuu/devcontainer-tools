@@ -1,0 +1,313 @@
+diff --git a/.devcontainer/skills/prepare-plan/prepare-plan.skill.md b/.devcontainer/skills/prepare-plan/prepare-plan.skill.md
+index f74a6b2..b902807 100644
+--- a/.devcontainer/skills/prepare-plan/prepare-plan.skill.md
++++ b/.devcontainer/skills/prepare-plan/prepare-plan.skill.md
+@@ -1,5 +1,5 @@
+ ---
+-description: Scaffold a plan directory (ROLLOUT + STATUS + LOG + EXISTING + sessions/) under /workspace/plans/<feature>/ to route code work to a later session. Always asks first whether to (1) implement in the current session, (2) scaffold a single-session plan, or (3) scaffold a multi-session plan — and recommends the most fitting based on scope. Auto-triggers on phrases like "fais-moi un plan", "scaffold a plan", "j'ai pas le temps".
++description: Route code work to the right context after a plan is built. Three modes — (1) implement in the current session, (2) produce a self-contained prompt to paste into a fresh chat (no scaffold), or (3) scaffold a multi-session rollout directory under /workspace/plans/<feature>/. Always asks first via AskUserQuestion and recommends the most fitting based on scope. AUTO-TRIGGER at Phase 4 of Plan mode (after exploration, just before writing the final plan file) to route the implementation context. Also auto-triggers on natural phrases like "fais-moi un plan", "scaffold a plan", "j'ai pas le temps".
+ argument-hint: "<feature-name> [<free-text scope description>]"
+ ---
+ 
+@@ -12,13 +12,17 @@ end), so the pattern is self-perpetuating — no companion skill, no hook.
+ 
+ ## When to use
+ 
+-Whenever the user wants to **route code work to the right context** after a
+-plan is done. Common triggers: "fais-moi un plan", "prépare un rollout",
+-"monte un plan pour", "scaffold a plan", "prep a rollout for", "j'ai pas le
+-temps de m'en occuper", "je verrai ça plus tard".
++**Auto-invoked at Phase 4 of Plan mode** (after exploration, just before writing
++the final plan file) to route the implementation context — Claude should call
++the skill at that moment rather than waiting for an explicit user trigger.
+ 
+-The scope decision (this session / single / multi) is the user's pick at step 0
+-— not gated by this section.
++Outside Plan mode, invoke whenever the user wants to **route code work to the
++right context** after a plan is done. Common triggers: "fais-moi un plan",
++"prépare un rollout", "monte un plan pour", "scaffold a plan", "prep a rollout
++for", "j'ai pas le temps de m'en occuper", "je verrai ça plus tard".
++
++The scope decision (this session / prompt only / multi-session scaffold) is the
++user's pick at step 0 — not gated by this section.
+ 
+ ## When NOT to use
+ 
+@@ -31,21 +35,23 @@ The scope decision (this session / single / multi) is the user's pick at step 0
+ ### 0. Context-routing decision — mandatory AskUserQuestion
+ 
+ **Always ask** before touching disk — whether triggered via `/prepare-plan`
+-slash or auto-proposed from a natural-language phrase. The user picks ; the
+-skill recommends.
++slash, auto-proposed from a natural-language phrase, or auto-invoked at Phase 4
++of Plan mode. The user picks ; the skill recommends.
+ 
+ **What the question routes:** the **context budget for the code work that
+ follows the plan**. The plan is built *now* ; the implementation happens
+ *next*. Three options:
+ 
+ - **This session** — implement in the current chat. Right for small fixes with
+-  few exchanges and a chat that still has headroom. Scaffold would be overhead.
+-- **New single session** — scaffold the 5 files ; implement in a fresh chat.
+-  Right when the change is non-trivial but fits in one session, or the current
+-  chat is already deep.
+-- **Multi-session** — scaffold the 5 files + signal that follow-up sessions
+-  are expected. Right when the change exceeds one session, has irreversible
+-  phases, or spans several areas.
++  few exchanges and a chat that still has headroom. Any scaffold would be overhead.
++- **Fresh chat, prompt only** — produce a self-contained prompt shown in chat,
++  paste into a fresh session. No files written, no scaffold directory. Right
++  for one PR-worth of focused work that fits in one fresh session and won't
++  need a scoreboard to come back to.
++- **Multi-session scaffold** — scaffold 5 files under `/workspace/plans/<name>/`
++  (ROLLOUT + STATUS + LOG + EXISTING + sessions/session-1-*). Right when the
++  change spans ≥2 sessions, has irreversible phases, crosses several areas,
++  or needs an audit trail to resume on later.
+ 
+ Call `AskUserQuestion` ONCE. **Reorder the options so the recommended one is
+ first** and append `(Recommended)` to its label.
+@@ -55,34 +61,73 @@ Recommendation heuristic:
+ | Scope signal | Recommend |
+ |---|---|
+ | 1-line fix, config tweak, isolated single-file edit, ≤ ~10 exchanges expected | This session |
+-| One PR-worth of work, one focused feature/refactor, fits in one fresh chat | New single session |
+-| ≥2 distinct steps, irreversible phases, cross-cutting refactor | Multi-session |
++| One PR-worth of work, one focused feature/refactor, fits in one fresh chat | Fresh chat, prompt only |
++| ≥2 distinct sessions, irreversible phases, cross-cutting refactor, audit trail wanted | Multi-session scaffold |
+ 
+ ```
+ Question : "Where should we implement `<inferred feature name>` ?
+             (planning is done — picking the context for the code work)"
+ Options (Recommended one first) :
+-  - "This session"        — Implement in the active chat, no scaffold.
+-  - "New single session"  — Scaffold 5 files, implement in a fresh chat.
+-  - "Multi-session"       — Scaffold 5 files, expect ≥2 sessions.
++  - "This session"             — Implement in the active chat, no scaffold.
++  - "Fresh chat, prompt only"  — Self-contained prompt shown in chat. No files.
++  - "Multi-session scaffold"   — Scaffold 5 files, expect ≥2 sessions.
+ ```
+ 
+ Exactly one option carries `(Recommended)` — never zero, never two.
+ 
+ **On the answer:**
+ 
+-- **This session** → abort cleanly, no files written. Print:
++- **This session** → abort cleanly, no files written. Print one line:
+   `Plan scaffold skipped — implementing in current session.`
+   Return control so Claude implements now.
+-- **New single session** → proceed to step 1 with `mode = single`.
+-- **Multi-session** → proceed to step 1 with `mode = multi`.
+-
+-`single` and `multi` produce **identical scaffolds**. The mode is purely a
+-framing signal to the user about whether to expect follow-up — the session
+-prompt's DoD already covers both outcomes inline.
++- **Fresh chat, prompt only** → branch to §"Prompt-only mode" below. Skip
++  steps 1–6 entirely.
++- **Multi-session scaffold** → proceed to step 1 with `mode = multi`.
+ 
+ Never call `AskUserQuestion` a second time in the same invocation.
+ 
++### 0.5. Prompt-only mode (branch from step 0)
++
++Reached only if the user picked **"Fresh chat, prompt only"** at step 0.
++Steps 1–6 are skipped entirely — zero files are written.
++
++1. Resolve `feature_name`, `feature_title`, `description` per step 1's rules
++   (kebab + title + scope text). If `description` is empty, ask for a one-line
++   scope before continuing.
++2. Build the prompt from the template in §"File templates" → "Template —
++   `prompt-only` mode". Substitute:
++   - `{{feature_title}}` → human title
++   - `{{description}}`   → scope text
++   - `{{plan_approach}}` → the design just produced (when invoked at Phase 4
++     of Plan mode) or the upstream context. If empty, leave a one-line
++     placeholder `_(no approach captured — first session will design it)_`.
++   - `{{tests}}`         → verification steps from the plan, or a generic
++     `tests pass / feature exercises end-to-end` line.
++3. **Always print the prompt directly in chat, wrapped in a 5-backtick
++   fence.** Same behavior in Plan mode and outside Plan mode — never embed
++   into the plan file, never use Unicode rules, never use 3- or 4-backtick
++   fences. 5 backticks is required because the rendered prompt contains
++   inner 3-backtick code blocks (PHP/JS/SQL snippets) ; a 4-backtick outer
++   fence breaks the moment the prompt contains a 4-backtick block, and 3
++   backticks break immediately. 5 backticks gives the VS Code "copy code"
++   button on the rendered fence — one click, full prompt copied.
++
++   Output exactly :
++
++   `````
++   ✅ Self-contained prompt ready. Use the copy button on the code block below, paste into a fresh Claude Code session.
++
++   ``````
++   <rendered prompt>
++   ``````
++   `````
++
++   (Use **6 backticks** for the outer fence when the prompt itself contains
++   a 5-backtick block — escalate as needed. Default is 5.)
++
++   Then stop. No "next-steps" block, no file paths, no collision check, no
++   plan-file edit. The prompt lives in chat only.
++
+ ### 1. Parse invocation and derive identifiers
+ 
+ `/prepare-plan <feature-name> [<description>]` or the natural-language
+@@ -135,6 +180,12 @@ fill-me stub and session 1 populates it.
+ 
+ ### 4. Generate the 5 files
+ 
++> **Skip this step entirely if Plan mode is active** — disk writes are
++> forbidden in Plan mode. Instead, embed the full rendered content of all 5
++> files into the current plan file under `## Scaffold spec` with target
++> paths annotated. See §"Plan mode integration" below. The actual writes
++> happen *after* `ExitPlanMode` approval, as part of post-plan execution.
++
+ `ROOT="/workspace/plans/${feature_name}"`. Run `mkdir -p "$ROOT/sessions"`,
+ then write each file substituting every `{{placeholder}}` from the templates
+ in §"File templates". Variables:
+@@ -170,26 +221,56 @@ If grep finds anything, wipe `$ROOT` and stop. Empty result beats broken plan.
+ 
+ ### 6. Print the next-steps block
+ 
+-```
+-✅ Plan scaffolded at /workspace/plans/{{feature_name}}/
+-
+-Contents :
+-  ROLLOUT.md                 entry point — read first
+-  STATUS.md                  session scoreboard
+-  LOG.md                     append-only journal (empty)
+-  EXISTING.md                code inventory (filled or stub)
+-  sessions/session-1-{{first_session_slug}}.md
+-                             first session prompt — copy-paste into a fresh chat
+-
+-To run session 1 :
+-  1. Open sessions/session-1-{{first_session_slug}}.md
+-  2. Copy the file content (the file is the prompt)
+-  3. Paste into a new Claude Code session
+-  4. At the end, the session's DoD prescribes the STATUS / LOG updates
+-
+-To add a next session (multi mode) : edit STATUS.md (new row) and create
+-  sessions/session-2-<slug>.md following the same shape as session 1.
+-```
++**Render as raw markdown — NOT inside a code fence.** The VS Code extension
++renders `[name](path)` as clickable links only when they're not inside a code
++block. Paths are **relative to the workspace root** (`plans/<name>/...`),
++never absolute (`/workspace/plans/...`), per the project's link convention.
++
++Output exactly this template, substituting `{{feature_name}}` and
++`{{first_session_slug}}` — and emit it as plain markdown in the chat, not
++wrapped in any fence:
++
++> ✅ Plan scaffolded at [plans/{{feature_name}}/](plans/{{feature_name}}/)
++>
++> **Files** :
++> - [ROLLOUT.md](plans/{{feature_name}}/ROLLOUT.md) — entry point, read first
++> - [STATUS.md](plans/{{feature_name}}/STATUS.md) — session scoreboard
++> - [LOG.md](plans/{{feature_name}}/LOG.md) — append-only journal (empty)
++> - [EXISTING.md](plans/{{feature_name}}/EXISTING.md) — code inventory
++> - [sessions/session-1-{{first_session_slug}}.md](plans/{{feature_name}}/sessions/session-1-{{first_session_slug}}.md) — **first session prompt** ← open this and paste its content into a fresh Claude Code chat
++>
++> To add a session-2 later : edit [STATUS.md](plans/{{feature_name}}/STATUS.md) (new row) and create `sessions/session-2-<slug>.md` following the same shape as session 1.
++
++Critical : the line linking to `session-1` is the only immediate action — keep
++it bold + `←` marker so the eye lands on it first. Never print file paths
++between single backticks or inside a 4-backtick fence in this block ; both
++break click-through.
++
++## Plan mode integration
++
++When the skill is invoked **during Plan mode** (Claude knows via the system
++reminder that plan mode is active), it MUST NOT mutate disk. The skill
++produces a *spec* that Claude embeds into the current plan file
++(`/home/node/.claude/plans/<plan-name>.md`). Actual writes happen *after*
++the user approves via `ExitPlanMode`, as part of post-plan execution.
++
++**Per-mode behavior in Plan mode :**
++
++| Mode | What goes into the plan file | Post-`ExitPlanMode` action |
++|---|---|---|
++| `This session` | Nothing (just the approved plan body). Print the one-line skip message. | Claude implements directly in the current chat. |
++| `Fresh chat, prompt only` | Nothing — the rendered prompt is printed directly in chat wrapped in a 5-backtick fence (see §0.5 step 3). The plan file is NOT touched ; the user copies straight from the chat code block. | Nothing automatic — user pastes the prompt elsewhere. |
++| `Multi-session scaffold` | Append a `## Scaffold spec` section listing **each of the 5 files with its target path and full rendered content** (e.g. `### plans/<name>/ROLLOUT.md` then the body). | Claude executes the scaffold : `mkdir -p` + 5 `Write` calls + sanity grep + the step 6 next-steps block with clickable links. |
++
++**Hard constraint** : during Plan mode, the skill calls only `Read`,
++`AskUserQuestion`, and text output. No `Write`, no `Edit`, no
++`Bash mkdir`, no disk mutation of any kind. The Plan mode runtime allows
++only the plan file as a write target, and that write is mediated by Claude
++embedding the spec into it.
++
++**Detection cue** : if you see "Plan mode is active" in a system reminder,
++or you've been auto-invoked at Phase 4 of the Plan mode workflow, you are
++in Plan mode. Default to deferred behavior whenever in doubt.
+ 
+ ## File templates
+ 
+@@ -378,19 +459,56 @@ DoD at the end of this session :
+ > file's full content into a fresh chat. Effort estimates, prerequisites, and
+ > per-session metadata belong in STATUS.md (extra columns if needed), not here.
+ 
++### Template — `prompt-only` mode (no file, displayed in chat or embedded in plan)
++
++````markdown
++# {{feature_title}}
++
++Goal : {{description}}
++
++Approach :
++{{plan_approach}}
++
++DoD :
++1. Implement the change described above.
++2. Verify : {{tests}}
++3. Propose a commit (do NOT commit without explicit user confirmation).
++````
++
++Fallback when `{{plan_approach}}` is unavailable (skill invoked outside Plan
++mode, no upstream design captured) : replace the *Approach* block with the
++single line `_(no approach captured — first session will design it)_`.
++
++Fallback when `{{tests}}` is unavailable : replace with the generic line
++`existing tests pass; new behavior verified end-to-end`.
++
++The user copies this prompt verbatim into a fresh Claude Code chat — no
++ROLLOUT/STATUS/LOG references, no scoreboard to maintain. Pure one-shot
++context.
++
+ ## Constraints
+ 
+-- Output path is always `/workspace/plans/<feature_name>/`. Never elsewhere.
++- Output path for scaffolded plans is always `/workspace/plans/<feature_name>/`.
++  Never elsewhere.
+ - Never overwrite an existing plan directory — propose `-v2`, `-v3`, …
+ - `feature_name` must match `[a-z][a-z0-9-]*`. Reject `/`, `..`, uppercase,
+   spaces.
+ - Every generated file has resolved placeholders. Step 5 enforces this.
+ - Generated files are in **English** per the project's CLAUDE.md rule, even
+   when the conversation is in French.
+-- The skill writes **exactly 5 files** (4 top-level + 1 session-1). No `docs/`,
+-  no extra sessions — added on demand by later sessions.
++- Multi-session scaffold writes **exactly 5 files** (4 top-level + 1 session-1).
++  No `docs/`, no extra sessions — added on demand by later sessions.
+ - `AskUserQuestion` is called ONCE at step 0. Never a second time.
+-- Mode "This session" writes zero files and prints one line.
++- Mode **"This session"** writes zero files and prints one line.
++- Mode **"Fresh chat, prompt only"** writes zero files in all cases. The
++  rendered prompt is ALWAYS printed in chat wrapped in a 5-backtick fence —
++  identical behavior in or out of Plan mode. Never embed into the plan file.
++- **Inside Plan mode**, the skill writes ONLY through Claude into the plan
++  file. No direct disk mutation (no `Write`, no `Edit`, no `Bash mkdir`).
++  Disk writes are deferred to post-`ExitPlanMode` execution.
++- The final message after a Multi-session scaffold uses **clickable markdown
++  links with workspace-relative paths** (`plans/<name>/...`), never inside a
++  code fence — see step 6.
+ 
+ ## Failure modes
+ 
+@@ -401,5 +519,7 @@ DoD at the end of this session :
+ | Exploration agent times out or returns nothing | Scope mis-bounded for Explore | Fall back to the stub EXISTING.md. The first session can fill it. |
+ | Sanity-check at step 5 finds a `{{placeholder}}` | Substitution missed a token in the templates | Wipe the output directory and abort. Better empty than broken. |
+ | User picks "This session" at step 0 | Scope small enough that scaffolding is overhead | Print "Plan scaffold skipped — implementing in current session." and stop. No files. Return control so Claude implements now. |
++| User picks "Fresh chat, prompt only" but no plan approach was captured | Skill invoked outside Plan mode, no upstream design | Use the fallback `Approach` line in the template, warn the user the prompt is thin. |
++| Skill invoked during Plan mode | Plan mode active, disk writes forbidden | Produce the spec into the plan file (see §"Plan mode integration"); defer the actual scaffold to post-`ExitPlanMode` execution. Never call `Write` / `Edit` / `Bash mkdir` during Plan mode. |
+ | User wants to extend an existing plan instead of starting `-v2` | This skill does NOT support append mode | Tell the user to edit `STATUS.md` / `LOG.md` / `sessions/` by hand. |
+ | Recommendation feels wrong to the user | Scope judgment was off | The user simply picks a different option in the AskUserQuestion. The recommendation is non-binding. |

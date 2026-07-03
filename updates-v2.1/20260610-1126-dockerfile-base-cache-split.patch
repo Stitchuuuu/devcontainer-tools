@@ -1,0 +1,218 @@
+From 41eedf6fac6f6b3074b58a5d73c6549e8d4611f3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ke=CC=81vin=20=CA=98=E2=80=BF=CA=98?= <cmoi@kevledev.fr>
+Date: Wed, 10 Jun 2026 11:26:17 -0700
+Subject: [PATCH] refactor(devcontainer): split Claude-install into 6 cached
+ RUN blocks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Restructure the Claude-install section of Dockerfile.base into 6 RUN
+blocks (RUN 0…5) with /etc/claude-build-env carrying VP/EXT_DIR/BIN/REL
+across them, and the COPY of claude/vscode-ext-patchs/ interleaved
+between RUN 1 (243 MB VSIX DL) and RUN 2 (patcher invocation).
+
+Why : a single-line edit to vscode-ext-patchs/*.py or run-all.sh used
+to bust the 243 MB VSIX download layer. Now it only invalidates the
+COPY + RUN 2+. Validated via 3-stage rebuild test (clean / no-op /
+targeted invalidation) — RUN 1 stays CACHED while RUN 2-5 rebuild in
+~0.8s after the COPY checksum changes.
+
+Targeted chown on package.json + extension.js in RUN 2 — a blanket
+chown -R "\$EXT_DIR" would copy-up the entire 243 MB tree into RUN 2's
+layer (overlayfs SETATTR semantics), defeating the split.
+
+Preserved the renamed vscode-ext-patchs/run-all.sh wiring (NOT the
+original patch-claude-extension.py from the patch 09 spec — that
+script was renamed in 828c1d4a1).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .devcontainer/Dockerfile.base | 117 ++++++++++++++++++++++++----------
+ 1 file changed, 82 insertions(+), 35 deletions(-)
+
+diff --git a/.devcontainer/Dockerfile.base b/.devcontainer/Dockerfile.base
+index a7e7b5149..b74f82dc2 100644
+--- a/.devcontainer/Dockerfile.base
++++ b/.devcontainer/Dockerfile.base
+@@ -145,6 +145,30 @@ RUN ARCH=$(dpkg --print-architecture) && \
+ # AND the npm-fallback CLI install. Marketplace download runs during
+ # `docker build` on the host — out of the runtime firewall scope.
+ #
++# Layout — 6 RUN blocks sorted by weight, for granular cache invalidation :
++#   RUN 0 (light)  : compute ARCH/VP/EXT_DIR/BIN/REL → /etc/claude-build-env.
++#                    Single source of truth ; each subsequent RUN sources it
++#                    instead of re-running `dpkg --print-architecture` + case.
++#   RUN 1 (HEAVY)  : DL + unzip + `cp -a` VSIX (~243 MB) + `chown -R`.
++#                    The `chown -R` MUST stay paired with `cp -a` here —
++#                    splitting it would duplicate the 243 MB tree in a
++#                    second layer (Docker records inode metadata changes
++#                    as a full file copy in the layer diff).
++#   COPY           : claude/vscode-ext-patchs/ — placed AFTER RUN 1 so a
++#                    change to a patcher script doesn't re-invalidate the
++#                    243 MB DL above.
++#   RUN 2 (light)  : `bash vscode-ext-patchs/run-all.sh` (idempotent) +
++#                    targeted `chown` on the files patchers rewrite
++#                    (package.json, extension.js). A full `chown -R` on
++#                    $EXT_DIR would copy-up the 243 MB tree into this layer
++#                    via overlayfs SETATTR semantics, defeating the split.
++#   RUN 3 (light)  : decide CLI source — symlink the extension's native
++#                    binary if it works, otherwise mark `/etc/claude-source`
++#                    as `npm-fallback (...)` for RUN 4 to act on.
++#   RUN 4 (HEAVY?) : conditional `npm install` (no-op when the symlink
++#                    works — 0 byte added to the layer).
++#   RUN 5 (light)  : write `extensions.json` so VS Code sees the baked ext.
++#
+ # Failsafe chain — `docker build` NEVER fails on a Claude-side problem :
+ #   1. VSIX DL OK + binary symlink OK  → /usr/local/bin/claude is a symlink
+ #      into the extension's embedded native binary. No npm install
+@@ -160,51 +184,72 @@ RUN ARCH=$(dpkg --print-architecture) && \
+ # `/etc/claude-source` records which branch fired (consumed by post-start.sh
+ # + shell-init.sh banners).
+ #
+-# Local patches: after extraction, .devcontainer/claude/vscode-ext-patchs/
+-# runs one .py per feature against the extracted extension dir. Each .py is
+-# a generic regex-based patcher; on a Claude Code version bump that breaks
++# Local patches (RUN 2): claude/vscode-ext-patchs/ ships one .py per feature
++# (icon-fix-open-in-current-panel, user-action-observer, …). Each is a
++# generic regex-based patcher; on a Claude Code version bump that breaks
+ # its anchor, it prints a red banner and exits 1, but the orchestrator
+ # (run-all.sh) absorbs the failure and exits 0 — the container build stays
+ # green. The non-zero exit per .py is visible in build logs, so it's
+ # immediately obvious WHICH feature's regex broke.
+ # -----------------------------------------------
+-COPY claude/vscode-ext-patchs/ /usr/local/bin/vscode-ext-patchs/
+ 
+-RUN set -u ; \
++# RUN 0 — compute shared build env (light, ~150 bytes)
++RUN set -eu ; \
+     ARCH=$(dpkg --print-architecture) ; \
+     case "$ARCH" in \
+       amd64) VP=linux-x64   ;; \
+       arm64) VP=linux-arm64 ;; \
+-      *) echo "Unsupported arch: $ARCH" ; exit 1 ;; \
++      *) echo "Unsupported arch: $ARCH" >&2 ; exit 1 ;; \
+     esac ; \
+     EXT_DIR="${HOME}/.vscode-server/extensions/anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
++    BIN="${EXT_DIR}/resources/native-binary/claude" ; \
++    REL="anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
++    printf 'VP=%s\nEXT_DIR=%s\nBIN=%s\nREL=%s\n' \
++      "$VP" "$EXT_DIR" "$BIN" "$REL" \
++      > /etc/claude-build-env ; \
++    chmod 644 /etc/claude-build-env
++
++# RUN 1 — DL + extract VSIX + chown -R (HEAVY, ~243 MB layer)
++# `--compressed` advertises Accept-Encoding: gzip ; Marketplace responds
++# with Content-Encoding: gzip on the VSIX (zip) stream — curl decompresses
++# transparently, leaving the raw ZIP (PK\x03\x04 magic) on disk.
++RUN set -u ; \
++    . /etc/claude-build-env ; \
+     URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/anthropic/vsextensions/claude-code/${CLAUDE_CODE_VERSION}/vspackage?targetPlatform=${VP}" ; \
+     mkdir -p "$EXT_DIR" ; \
+-    # `--compressed` advertises Accept-Encoding: gzip ; Marketplace responds
+-    # with Content-Encoding: gzip on the VSIX (zip) stream — curl decompresses
+-    # transparently, leaving the raw ZIP (PK\x03\x04 magic) on disk.
+     if curl -fsSL --compressed -A 'VSCode/devcontainer' -o /tmp/claude.vsix "$URL" \
+        && unzip -q /tmp/claude.vsix -d /tmp/claude-vsix \
+        && [ -d /tmp/claude-vsix/extension ] ; then \
+       cp -a /tmp/claude-vsix/extension/. "$EXT_DIR/" ; \
+       echo "VSIX downloaded + extracted (${VP})" ; \
+-      bash /usr/local/bin/vscode-ext-patchs/run-all.sh "$EXT_DIR" ; \
+     else \
+       echo "VSIX download/extract failed — runtime fallback via devcontainer.json pin" >&2 ; \
+       rm -rf "$EXT_DIR" ; \
+     fi ; \
+     rm -rf /tmp/claude.vsix /tmp/claude-vsix ; \
+-    # Ownership flip MUST stay in the same RUN as the `cp -a` above. Running
+-    # `chown -R` in a later RUN block duplicates the ~243 MB extension tree
+-    # into a second layer (Docker records inode metadata changes as a full
+-    # file copy in the layer diff).
+     chown -R node:node "${HOME}/.vscode-server"
+ 
++# COPY placed here (not earlier) so a change to the patcher scripts invalidates
++# only RUN 2+ — RUN 1's 243 MB DL stays cached.
++COPY claude/vscode-ext-patchs/ /usr/local/bin/vscode-ext-patchs/
++
++# RUN 2 — apply patches (light, idempotent)
++# run-all.sh iterates over each .py in vscode-ext-patchs/ ; each patcher
++# absorbs its own failures (red banner + exit 1) without breaking the build.
++# Targeted chown on the 2 files patchers rewrite — `chown -R "$EXT_DIR"`
++# would copy-up the 243 MB tree into this layer (overlayfs SETATTR semantics).
+ RUN set -u ; \
+-    ARCH=$(dpkg --print-architecture) ; \
+-    case "$ARCH" in amd64) VP=linux-x64 ;; arm64) VP=linux-arm64 ;; esac ; \
+-    EXT_DIR="${HOME}/.vscode-server/extensions/anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
+-    BIN="${EXT_DIR}/resources/native-binary/claude" ; \
++    . /etc/claude-build-env ; \
++    if [ -d "$EXT_DIR" ] ; then \
++      bash /usr/local/bin/vscode-ext-patchs/run-all.sh "$EXT_DIR" || true ; \
++      chown node:node "$EXT_DIR/package.json" "$EXT_DIR/extension.js" 2>/dev/null || true ; \
++    else \
++      echo "patch skipped: no $EXT_DIR (VSIX DL failed in RUN 1)" >&2 ; \
++    fi
++
++# RUN 3 — decide CLI source + write /etc/claude-source (light)
++RUN set -u ; \
++    . /etc/claude-build-env ; \
+     EXT_BAKED=0 ; [ -d "$EXT_DIR" ] && EXT_BAKED=1 ; \
+     SOURCE=npm-fallback ; \
+     if [ "$EXT_BAKED" = "1" ] && [ -x "$BIN" ] ; then \
+@@ -215,36 +260,38 @@ RUN set -u ; \
+       else \
+         rm -f /usr/local/bin/claude ; \
+         echo "claude-binary: version mismatch (got '$INSTALLED', want '$CLAUDE_CODE_VERSION')" >&2 ; \
++        SOURCE="npm-fallback (VSIX baked, binary path issue)" ; \
+       fi ; \
+     elif [ "$EXT_BAKED" = "1" ] ; then \
+       echo "claude-binary: extension extracted but $BIN missing/not executable" >&2 ; \
++      SOURCE="npm-fallback (VSIX baked, binary path issue)" ; \
+     else \
+       echo "claude-binary: no extension dir (VSIX DL failed earlier)" >&2 ; \
++      SOURCE="npm-fallback (no VSIX, runtime ext install via Marketplace)" ; \
+     fi ; \
+-    if [ "$SOURCE" = "npm-fallback" ] ; then \
++    printf '%s\n' "$SOURCE" > /etc/claude-source ; \
++    chmod 644 /etc/claude-source
++
++# RUN 4 — conditional npm fallback (HEAVY when triggered, no-op otherwise)
++RUN set -u ; \
++    if grep -q '^npm-fallback' /etc/claude-source ; then \
+       NPM_ARCH=$(node -e 'console.log(process.arch)') ; \
+       npm install -g --os=linux --cpu="${NPM_ARCH}" \
+           @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} ; \
+       npm cache clean --force ; \
+       rm -rf /home/node/.npm /root/.npm /tmp/* ; \
+       touch /etc/claude-fallback-warn ; \
+-      # Disambiguate the two npm-fallback flavours in /etc/claude-source so the
+-      # banner can hint at the right thing to investigate at next bump.
+-      if [ "$EXT_BAKED" = "1" ] ; then \
+-        SOURCE="npm-fallback (VSIX baked, binary path issue)" ; \
+-      else \
+-        SOURCE="npm-fallback (no VSIX, runtime ext install via Marketplace)" ; \
+-      fi ; \
+-    fi ; \
+-    printf '%s\n' "$SOURCE" > /etc/claude-source ; \
+-    chmod 644 /etc/claude-source ; \
+-    # extensions.json is only written when the VSIX was actually extracted.
+-    # Otherwise we let VS Code install the extension at runtime via the pin
+-    # in devcontainer.json (firewall already allows GET marketplace +
+-    # *.gallerycdn.vsassets.io). UUIDs are stable per-extension/per-publisher.
+-    if [ "$EXT_BAKED" = "1" ] ; then \
++    fi
++
++# RUN 5 — write extensions.json so VS Code sees the baked extension (light)
++# Only written when the VSIX was actually extracted. Otherwise VS Code
++# installs the extension at runtime via the pin in devcontainer.json
++# (firewall already allows GET marketplace + *.gallerycdn.vsassets.io).
++# UUIDs are stable per-extension/per-publisher.
++RUN set -u ; \
++    . /etc/claude-build-env ; \
++    if [ -d "$EXT_DIR" ] ; then \
+       TS=$(date +%s)000 ; \
+-      REL="anthropic.claude-code-${CLAUDE_CODE_VERSION}-${VP}" ; \
+       printf '[{"identifier":{"id":"anthropic.claude-code","uuid":"3c13ae49-babe-45fe-8c48-5e45077a62bf"},"version":"%s","location":{"$mid":1,"fsPath":"%s","external":"file://%s","path":"%s","scheme":"file"},"relativeLocation":"%s","metadata":{"isApplicationScoped":true,"installedTimestamp":%s,"pinned":true,"source":"gallery","id":"3c13ae49-babe-45fe-8c48-5e45077a62bf","publisherId":"89769da0-cc4b-40b0-8216-93ffb5a96b56","publisherDisplayName":"Anthropic","targetPlatform":"%s","updated":false,"private":false,"isPreReleaseVersion":false,"hasPreReleaseVersion":false}}]\n' \
+         "${CLAUDE_CODE_VERSION}" "${EXT_DIR}" "${EXT_DIR}" "${EXT_DIR}" "${REL}" "${TS}" "${VP}" \
+         > "${HOME}/.vscode-server/extensions/extensions.json" ; \
+-- 
+2.39.5
+
