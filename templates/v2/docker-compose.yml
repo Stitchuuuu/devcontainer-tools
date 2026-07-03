@@ -66,6 +66,10 @@ services:
   # layers (boot <10 s after first build). HEALTHCHECK + CMD live in the
   # Dockerfile.
   claude-bridge:
+    # Disabled by default via profile — start manually with
+    #   docker compose --profile bridge up -d claude-bridge
+    # or through .devcontainer/host-helpers/claude-bridge up.
+    profiles: [bridge]
     build:
       context: ./claude-bridge
       dockerfile: Dockerfile
