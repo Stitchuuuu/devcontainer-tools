@@ -24,6 +24,9 @@
 
 set -uo pipefail
 
+# Opt-out via .devcontainer/.env (docker-compose loads it as env_file) — any
+# non-empty value silences the nudge ; /scan-deps stays invokable on demand.
+[ -n "${SCAN_DEPS_HOOK_DISABLED:-}" ] && exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
 stale=$(python3 << 'PY'

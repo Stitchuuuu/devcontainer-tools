@@ -154,7 +154,7 @@ if [[ $- == *i* ]]; then
   # is newer than its corresponding `domains.d/npm.txt`. Mirrors the loud
   # yellow ASCII box shown once per container start in post-start.sh — but
   # quieter, refreshed every shell open.
-  if command -v python3 >/dev/null 2>&1; then
+  if [ -z "${SCAN_DEPS_HOOK_DISABLED:-}" ] && command -v python3 >/dev/null 2>&1; then
     python3 - <<'PY' 2>/dev/null || true
 import os, subprocess
 DOMAINS_D = '/workspace/.devcontainer/firewall/domains.d'
