@@ -265,7 +265,7 @@ install_files() {
         php)         copy_templated_as Dockerfile.php Dockerfile ;;
     esac
     copy_templated docker-compose.yml
-    copy_verbatim vscode-settings.json
+    copy_verbatim vscode-settings.jsonc
 
     # ── Lifecycle (6) ──────────────────────────────────────────
     copy_templated initialize.sh

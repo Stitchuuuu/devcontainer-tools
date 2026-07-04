@@ -46,7 +46,7 @@ services:
       - default
     volumes:
       - ..:/workspace:delegated
-      - ./vscode-settings.json:/workspace/.vscode/settings.json:bind
+      - ./vscode-settings.jsonc:/workspace/.vscode/settings.json:bind
       - bash-history:/commandhistory
       - claude-config:/home/node/.claude
       - claude-creds:/home/node/.claude-creds

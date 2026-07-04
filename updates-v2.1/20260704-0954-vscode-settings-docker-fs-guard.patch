@@ -1,0 +1,255 @@
+diff --git a/.devcontainer/docker-compose.yml b/.devcontainer/docker-compose.yml
+index a4c8e60..8d8043c 100644
+--- a/.devcontainer/docker-compose.yml
++++ b/.devcontainer/docker-compose.yml
+@@ -46,7 +46,7 @@ services:
+       - default
+     volumes:
+       - ..:/workspace:delegated
+-      - ./vscode-settings.json:/workspace/.vscode/settings.json:bind
++      - ./vscode-settings.jsonc:/workspace/.vscode/settings.json:bind
+       - bash-history:/commandhistory
+       - claude-config:/home/node/.claude
+       - claude-creds:/home/node/.claude-creds
+diff --git a/.devcontainer/vscode-settings.json b/.devcontainer/vscode-settings.json
+deleted file mode 100644
+index 9e869ac..0000000
+--- a/.devcontainer/vscode-settings.json
++++ /dev/null
+@@ -1,3 +0,0 @@
+-{
+-	"claudeCode.preferredLocation": "primary"
+-}
+\ No newline at end of file
+diff --git a/.devcontainer/vscode-settings.jsonc b/.devcontainer/vscode-settings.jsonc
+new file mode 100644
+index 0000000..dc81e31
+--- /dev/null
++++ b/.devcontainer/vscode-settings.jsonc
+@@ -0,0 +1,93 @@
++{
++	// ─────────────────────────────────────────────────────────────
++	// Docker FS overflow guard — DISABLED BY DEFAULT
++	// ─────────────────────────────────────────────────────────────
++	// Uncomment ONE tier below based on how much Docker Desktop's
++	// virtual FS (VirtioFS/gRPCFS) is suffering. Tiers are cumulative:
++	// TIER 2 assumes TIER 1 is on, TIER 3 assumes TIER 1 + 2.
++	//
++	// TIER 1 — LOWER
++	//   Excludes the noisy dirs from file watcher + search. GitLens,
++	//   git auto-refresh, SCM panel stay fully active.
++	//   Use when: workspace is dense but Docker FS only occasionally
++	//   spins; VSCode feels sluggish on save/search.
++	//
++	// TIER 2 — MEDIUM
++	//   Adds: kills git auto-fetch/refresh, auto-repo detection, gutter
++	//   decorations, GitLens auto-blame. SCM panel still visible but
++	//   no longer polls / walks the tree. `git.untrackedChanges: hidden`
++	//   reduces `git status -uall` walks — NOT fully (see microsoft/
++	//   vscode#131020) but enough in practice.
++	//   Use when: opening a file or the devcontainer boot makes Docker
++	//   FS choke; container CPU stays high at idle.
++	//
++	// TIER 3 — EXTREME (fatal for VSCode Git UI)
++	//   Adds: `git.enabled: false`. Kills the entire VSCode Git
++	//   extension. No SCM panel, no gutter diff, no GitLens (depends
++	//   on git.enabled). Manual `git` in a terminal is 100 % unaffected.
++	//   Use when: Docker FS still crashes at devcontainer boot even
++	//   with TIER 2 applied.
++	//
++	// If you have ONE identifiable dense directory, also uncomment the
++	// "YOUR_DENSE_DIR" line in TIER 1 (benefits all tiers).
++	//
++	// After editing: Reload Window (Cmd/Ctrl+Shift+P → "Reload Window").
++	// Bind-mount → no rebuild needed.
++	// ─────────────────────────────────────────────────────────────
++
++	// ─── TIER 1 (lower) ──────────────────────────────────────────
++	//
++	// "files.watcherExclude": {
++	// 	"**/.git/objects/**": true,
++	// 	"**/.git/subtree-cache/**": true,
++	// 	"**/node_modules/**": true,
++	// 	"**/vendor/**": true,
++	// 	"**/dist/**": true,
++	// 	"**/build/**": true,
++	// 	"**/.next/**": true,
++	// 	"**/.cache/**": true,
++	// 	"**/coverage/**": true,
++	// 	"**/.turbo/**": true,
++	// 	"**/target/**": true,
++	// 	"**/__pycache__/**": true,
++	// 	"**/.venv/**": true
++	// 	// ,"**/YOUR_DENSE_DIR/**": true
++	// },
++	// "search.exclude": {
++	// 	"**/node_modules": true,
++	// 	"**/vendor": true,
++	// 	"**/dist": true,
++	// 	"**/build": true,
++	// 	"**/.next": true,
++	// 	"**/coverage": true,
++	// 	"**/target": true,
++	// 	"**/__pycache__": true,
++	// 	"**/.venv": true,
++	// 	"**/*.tar.gz": true,
++	// 	"**/*.tar": true,
++	// 	"**/*.zip": true
++	// 	// ,"**/YOUR_DENSE_DIR": true
++	// },
++
++	// ─── TIER 2 (medium) — needs TIER 1 above ────────────────────
++	//
++	// "git.autofetch": false,
++	// "git.autorefresh": false,
++	// "git.decorations.enabled": false,
++	// "git.untrackedChanges": "hidden",
++	// "git.autoRepositoryDetection": false,
++	// "git.repositoryScanMaxDepth": 1,
++	// "gitlens.currentLine.enabled": false,
++	// "gitlens.codeLens.enabled": false,
++	// "gitlens.statusBar.enabled": false,
++
++	// ─── TIER 3 (extreme / fatal) — needs TIER 1 + 2 above ───────
++	//
++	// "git.enabled": false,
++	//
++	// ─────────────────────────────────────────────────────────────
++
++	"claudeCode.preferredLocation": "primary",
++	"revealInOS.debug": true,
++	"revealInOS.implementation": "spawn-only"
++}
+diff --git a/install.sh b/install.sh
+index 26d54a1..f9f7581 100755
+--- a/install.sh
++++ b/install.sh
+@@ -265,7 +265,7 @@ install_files() {
+         php)         copy_templated_as Dockerfile.php Dockerfile ;;
+     esac
+     copy_templated docker-compose.yml
+-    copy_verbatim vscode-settings.json
++    copy_verbatim vscode-settings.jsonc
+ 
+     # ── Lifecycle (6) ──────────────────────────────────────────
+     copy_templated initialize.sh
+diff --git a/templates/v2/docker-compose.yml b/templates/v2/docker-compose.yml
+index bbcf91a..5f1cd63 100644
+--- a/templates/v2/docker-compose.yml
++++ b/templates/v2/docker-compose.yml
+@@ -46,7 +46,7 @@ services:
+       - default
+     volumes:
+       - ..:/workspace:delegated
+-      - ./vscode-settings.json:/workspace/.vscode/settings.json:bind
++      - ./vscode-settings.jsonc:/workspace/.vscode/settings.json:bind
+       - bash-history:/commandhistory
+       - claude-config:/home/node/.claude
+       - claude-creds:/home/node/.claude-creds
+diff --git a/templates/v2/vscode-settings.json b/templates/v2/vscode-settings.json
+deleted file mode 100644
+index 9e869ac..0000000
+--- a/templates/v2/vscode-settings.json
++++ /dev/null
+@@ -1,3 +0,0 @@
+-{
+-	"claudeCode.preferredLocation": "primary"
+-}
+\ No newline at end of file
+diff --git a/templates/v2/vscode-settings.jsonc b/templates/v2/vscode-settings.jsonc
+new file mode 100644
+index 0000000..f8a88b6
+--- /dev/null
++++ b/templates/v2/vscode-settings.jsonc
+@@ -0,0 +1,91 @@
++{
++	// ─────────────────────────────────────────────────────────────
++	// Docker FS overflow guard — DISABLED BY DEFAULT
++	// ─────────────────────────────────────────────────────────────
++	// Uncomment ONE tier below based on how much Docker Desktop's
++	// virtual FS (VirtioFS/gRPCFS) is suffering. Tiers are cumulative:
++	// TIER 2 assumes TIER 1 is on, TIER 3 assumes TIER 1 + 2.
++	//
++	// TIER 1 — LOWER
++	//   Excludes the noisy dirs from file watcher + search. GitLens,
++	//   git auto-refresh, SCM panel stay fully active.
++	//   Use when: workspace is dense but Docker FS only occasionally
++	//   spins; VSCode feels sluggish on save/search.
++	//
++	// TIER 2 — MEDIUM
++	//   Adds: kills git auto-fetch/refresh, auto-repo detection, gutter
++	//   decorations, GitLens auto-blame. SCM panel still visible but
++	//   no longer polls / walks the tree. `git.untrackedChanges: hidden`
++	//   reduces `git status -uall` walks — NOT fully (see microsoft/
++	//   vscode#131020) but enough in practice.
++	//   Use when: opening a file or the devcontainer boot makes Docker
++	//   FS choke; container CPU stays high at idle.
++	//
++	// TIER 3 — EXTREME (fatal for VSCode Git UI)
++	//   Adds: `git.enabled: false`. Kills the entire VSCode Git
++	//   extension. No SCM panel, no gutter diff, no GitLens (depends
++	//   on git.enabled). Manual `git` in a terminal is 100 % unaffected.
++	//   Use when: Docker FS still crashes at devcontainer boot even
++	//   with TIER 2 applied.
++	//
++	// If you have ONE identifiable dense directory, also uncomment the
++	// "YOUR_DENSE_DIR" line in TIER 1 (benefits all tiers).
++	//
++	// After editing: Reload Window (Cmd/Ctrl+Shift+P → "Reload Window").
++	// Bind-mount → no rebuild needed.
++	// ─────────────────────────────────────────────────────────────
++
++	// ─── TIER 1 (lower) ──────────────────────────────────────────
++	//
++	// "files.watcherExclude": {
++	// 	"**/.git/objects/**": true,
++	// 	"**/.git/subtree-cache/**": true,
++	// 	"**/node_modules/**": true,
++	// 	"**/vendor/**": true,
++	// 	"**/dist/**": true,
++	// 	"**/build/**": true,
++	// 	"**/.next/**": true,
++	// 	"**/.cache/**": true,
++	// 	"**/coverage/**": true,
++	// 	"**/.turbo/**": true,
++	// 	"**/target/**": true,
++	// 	"**/__pycache__/**": true,
++	// 	"**/.venv/**": true
++	// 	// ,"**/YOUR_DENSE_DIR/**": true
++	// },
++	// "search.exclude": {
++	// 	"**/node_modules": true,
++	// 	"**/vendor": true,
++	// 	"**/dist": true,
++	// 	"**/build": true,
++	// 	"**/.next": true,
++	// 	"**/coverage": true,
++	// 	"**/target": true,
++	// 	"**/__pycache__": true,
++	// 	"**/.venv": true,
++	// 	"**/*.tar.gz": true,
++	// 	"**/*.tar": true,
++	// 	"**/*.zip": true
++	// 	// ,"**/YOUR_DENSE_DIR": true
++	// },
++
++	// ─── TIER 2 (medium) — needs TIER 1 above ────────────────────
++	//
++	// "git.autofetch": false,
++	// "git.autorefresh": false,
++	// "git.decorations.enabled": false,
++	// "git.untrackedChanges": "hidden",
++	// "git.autoRepositoryDetection": false,
++	// "git.repositoryScanMaxDepth": 1,
++	// "gitlens.currentLine.enabled": false,
++	// "gitlens.codeLens.enabled": false,
++	// "gitlens.statusBar.enabled": false,
++
++	// ─── TIER 3 (extreme / fatal) — needs TIER 1 + 2 above ───────
++	//
++	// "git.enabled": false,
++	//
++	// ─────────────────────────────────────────────────────────────
++
++	"claudeCode.preferredLocation": "primary"
++}
