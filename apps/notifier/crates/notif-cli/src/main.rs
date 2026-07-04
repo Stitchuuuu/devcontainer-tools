@@ -33,7 +33,9 @@ enum Command {
         /// auto-created by this call).
         #[arg(long)]
         name: Option<String>,
-        /// Path to a `.icns` icon (used only on first-time auto-create).
+        /// Path to a `.icns` icon file (used only on first-time auto-create).
+        /// For an installed app's icon, prefer `--app <hint>` which resolves
+        /// it via Spotlight without needing to know the path.
         #[arg(long)]
         icon: Option<std::path::PathBuf>,
         /// `CFBundleIdentifier` override — Tier 1 spoof (e.g.
@@ -74,6 +76,19 @@ enum Command {
     /// List every materialized sender bundle with its key, display name,
     /// identifier, and on-disk path.
     Senders,
+    /// Unregister and remove sender bundles — resets their notification
+    /// permission via `tccutil` and deletes the bundle folder.
+    Clean {
+        /// Clean a single sender by key.
+        #[arg(long, conflicts_with = "all", required_unless_present = "all")]
+        sender: Option<String>,
+        /// Clean every materialized bundle (prompts unless `--yes`).
+        #[arg(long, conflicts_with = "sender", required_unless_present = "sender")]
+        all: bool,
+        /// Skip the confirmation prompt for `--all`.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -285,7 +300,46 @@ fn run_macos(cmd: Command) -> Result<()> {
                 setup_outer(&sender.key).context("setup")
             }
         }
+        Command::Clean { sender, all, yes } => run_clean(sender.as_deref(), all, yes),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn run_clean(sender: Option<&str>, all: bool, yes: bool) -> Result<()> {
+    use anyhow::{bail, Context};
+    match (sender, all) {
+        (Some(key), false) => {
+            let report = notif_macos::clean::clean_sender(key)
+                .with_context(|| format!("clean sender {key:?}"))?;
+            print_clean(&report);
+            Ok(())
+        }
+        (None, true) => {
+            let reports = notif_macos::clean::clean_all(yes).context("clean --all")?;
+            if reports.is_empty() {
+                println!("(nothing to clean)");
+                return Ok(());
+            }
+            for r in &reports {
+                print_clean(r);
+            }
+            Ok(())
+        }
+        _ => bail!("clean requires either --sender <KEY> or --all"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn print_clean(r: &notif_macos::clean::CleanReport) {
+    let removal = if r.bundle_removed { "removed" } else { "absent" };
+    println!(
+        "{key:<24} {id:<40} {tcc:<24} {removal:<8} {path}",
+        key = r.key,
+        id = r.identifier,
+        tcc = format!("{}", r.tcc_reset),
+        removal = removal,
+        path = r.bundle_path.display(),
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -397,6 +451,93 @@ fn run_stub(cmd: Command) -> Result<()> {
         Command::Senders => {
             println!("[stub] would list senders, host={HOST}");
         }
+        Command::Clean { sender, all, yes } => {
+            let s = sender.unwrap_or_default();
+            println!("[stub] would clean sender={s}, all={all}, yes={yes}, host={HOST}");
+        }
     }
     Ok(())
 }
+
+// ---- CLI parsing tests ------------------------------------------------------
+//
+// clap catches most argument-shape bugs at compile time via `#[derive(Parser)]`,
+// but positional-vs-flag and group-required-mutex constraints are runtime.
+// These tests lock the CLI surface : any renamed / dropped / re-shaped flag
+// will fail the corresponding case, so regressions land in `cargo test`
+// output instead of surfacing to the user at runtime.
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Result<Cli, clap::Error> {
+        let mut full = vec!["notif"];
+        full.extend_from_slice(argv);
+        Cli::try_parse_from(full)
+    }
+
+    #[test]
+    fn send_minimal() {
+        let cli = parse(&["send", "--title", "T", "--body", "B"]).unwrap();
+        assert!(matches!(cli.command, Command::Send { .. }));
+    }
+
+    #[test]
+    fn send_icon_path_accepted() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B",
+            "--icon", "/Applications/Foo.app/Contents/Resources/Bar.icns",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Send { icon, .. } => assert_eq!(
+                icon.as_deref().and_then(|p| p.to_str()),
+                Some("/Applications/Foo.app/Contents/Resources/Bar.icns"),
+            ),
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn clean_sender_accepted() {
+        let cli = parse(&["clean", "--sender", "vscode"]).unwrap();
+        match cli.command {
+            Command::Clean { sender, all, yes } => {
+                assert_eq!(sender.as_deref(), Some("vscode"));
+                assert!(!all);
+                assert!(!yes);
+            }
+            _ => panic!("expected Clean"),
+        }
+    }
+
+    #[test]
+    fn clean_all_accepted() {
+        let cli = parse(&["clean", "--all"]).unwrap();
+        assert!(matches!(cli.command, Command::Clean { all: true, .. }));
+    }
+
+    #[test]
+    fn clean_all_yes_accepted() {
+        let cli = parse(&["clean", "--all", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Clean { all: true, yes: true, .. },
+        ));
+    }
+
+    #[test]
+    fn clean_no_args_rejected() {
+        // Regression : without `required_unless_present` the empty invocation
+        // parsed successfully and failed only downstream in the mac handler.
+        assert!(parse(&["clean"]).is_err());
+    }
+
+    #[test]
+    fn clean_sender_and_all_mutually_exclusive() {
+        assert!(parse(&["clean", "--sender", "x", "--all"]).is_err());
+    }
+}
+

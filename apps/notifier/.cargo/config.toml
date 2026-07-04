@@ -1,0 +1,24 @@
+# Cross-compile linker flags for the vendored macOS SDK stubs.
+#
+# `cargo zigbuild --target {aarch64,x86_64}-apple-darwin` feeds these
+# `link-arg`s to `zig cc`, which then resolves Foundation /
+# UserNotifications / CoreFoundation / CoreLocation via the `-F` search
+# path and `libobjc` via the `-L` search path — all pointing at our
+# vendored `.tbd` stubs under `vendor/macos-sdk/`.
+#
+# Paths are relative to cargo's cwd (the workspace root at
+# `apps/notifier/`). Session 3.5 restored this file after session 3
+# drafted then deleted it; zig 0.16.0's TBD-v4 parser handles the
+# vendored Foundation.tbd that zig 0.14/0.15 SIGSEGV'd on.
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-F./vendor/macos-sdk/System/Library/Frameworks",
+    "-C", "link-arg=-L./vendor/macos-sdk/usr/lib",
+]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-F./vendor/macos-sdk/System/Library/Frameworks",
+    "-C", "link-arg=-L./vendor/macos-sdk/usr/lib",
+]
