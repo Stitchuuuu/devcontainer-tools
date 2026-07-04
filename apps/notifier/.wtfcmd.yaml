@@ -1,0 +1,15 @@
+- name: [build, b]
+  desc: Compile the notif binary (debug, host target).
+  cmd: cargo build --bin notif
+
+- name: [setup, s]
+  desc: Build + materialize the default bundle (auto-signs) + trigger the macOS permission dialog.
+  cmd: |
+    cargo build --bin notif
+    ./target/debug/notif setup
+
+- name: send
+  desc: Build + send a smoke-test notification via the default sender.
+  cmd: |
+    cargo build --bin notif
+    ./target/debug/notif send --title "wtf smoke" --body "notif works"
