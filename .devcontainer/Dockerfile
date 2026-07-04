@@ -29,3 +29,11 @@ COPY firewall/ /etc/devcontainer-firewall/
 RUN /usr/local/bin/firewall-docker-setup.sh
 
 USER node
+
+# Rust toolchain — installed as `node` so /home/node/.cargo is user-owned.
+# Minimal profile keeps the image small; rustfmt/clippy/rust-analyzer are
+# needed by the notif-cli workspace built in follow-up sessions.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal \
+                   --component rustfmt --component clippy --component rust-analyzer
+ENV PATH="/home/node/.cargo/bin:${PATH}"

@@ -1,0 +1,9 @@
+# Rust toolchain runtime endpoints — build-time install goes through
+# docker build (unfiltered); this file covers cargo / rustup calls made
+# from inside a running container.
+
+[GET,HEAD] sh.rustup.rs             # rustup-init.sh (re-install / bootstrap)
+[GET,HEAD] static.rust-lang.org     # rustup toolchain + component tarballs
+[GET,HEAD] index.crates.io          # Cargo sparse HTTP index (default >=1.70)
+[GET,HEAD] crates.io                # legacy git index fallback
+[GET,HEAD] static.crates.io         # crate tarballs
