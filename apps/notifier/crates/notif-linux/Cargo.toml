@@ -1,0 +1,8 @@
+[package]
+name = "notif-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notif-core = { path = "../notif-core" }

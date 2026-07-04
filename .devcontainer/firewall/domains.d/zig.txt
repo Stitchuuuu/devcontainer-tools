@@ -1,0 +1,6 @@
+# Zig toolchain download endpoints — used as a cross-linker by
+# `cargo-zigbuild` for macOS / Windows / Linux-musl cross-compilation
+# of the `apps/notifier/` Rust workspace. Added session 2 of the
+# notif-cli rollout.
+
+[GET,HEAD] ziglang.org              # official index + tarball downloads

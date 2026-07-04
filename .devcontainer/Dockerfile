@@ -37,3 +37,23 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --default-toolchain stable --profile minimal \
                    --component rustfmt --component clippy --component rust-analyzer
 ENV PATH="/home/node/.cargo/bin:${PATH}"
+
+# Rust cross-compile via zig-as-linker + cargo-zigbuild. Ships the SDK stubs
+# needed for macOS / Windows / Linux-musl targets without installing Xcode CLT
+# or MinGW-w64. Enables cross-building the apps/notifier/ workspace from this
+# aarch64 Linux container. Bump ZIG_VERSION as new stables ship.
+ARG ZIG_VERSION=0.14.0
+RUN ARCH="$(uname -m)" \
+ && curl -fsSL -o /tmp/zig.tar.xz \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ARCH}-${ZIG_VERSION}.tar.xz" \
+ && mkdir -p /home/node/.local/zig \
+ && tar -xJf /tmp/zig.tar.xz -C /home/node/.local/zig --strip-components=1 \
+ && rm /tmp/zig.tar.xz
+ENV PATH="/home/node/.local/zig:${PATH}"
+
+# cargo-zigbuild wraps `cargo build` and swaps the C linker for `zig cc`.
+# Apple Silicon + Intel Mac targets pre-installed so `cargo zigbuild --target
+# {aarch64,x86_64}-apple-darwin` works out of the box. Windows / Linux-x86
+# targets get added in v0.3 / v0.4 sessions.
+RUN cargo install --locked cargo-zigbuild \
+ && rustup target add aarch64-apple-darwin x86_64-apple-darwin
