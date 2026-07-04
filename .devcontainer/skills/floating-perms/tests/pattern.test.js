@@ -26,9 +26,6 @@ test('canonicalize returns null on missing/invalid input', () => {
 })
 
 test('canonicalizeBash strips a leading env VAR=x prefix', () => {
-	// Note: only the canonical `env VAR=x cmd …` shape is stripped.
-	// Multi-VAR forms (`env FOO=1 BAR=2 cmd`) are a known
-	// pre-existing limitation of the regex.
 	assert.equal(
 		canonicalizeBash('env FOO=1 curl https://x'),
 		'Bash(curl:*)'
@@ -69,6 +66,47 @@ test('canonicalizeBash returns non-null on shell-form inputs (best-effort)', () 
 	assert.ok(canonicalizeBash('if [ -f /tmp/x ]; then echo ok; fi'))
 	assert.ok(canonicalizeBash('TOK=$(jq .foo file)'))
 	assert.ok(canonicalizeBash('grep foo /dev/null'))
+})
+
+test('canonicalizeBash: bare RUSTFLAGS= assignment with quoted value', () => {
+	// Prod regression from 2026-07-04: naive whitespace split extracted
+	// `macos-sdk` from the quoted value's path component.
+	assert.equal(canonicalizeBash(
+		'RUSTFLAGS="-C link-arg=-F/workspace/apps/notifier/vendor/macos-sdk/System/Library/Frameworks" cargo zigbuild --release'
+	), 'Bash(cargo:*)')
+})
+
+test('canonicalizeBash: env + quoted value with spaces + redirections', () => {
+	// Prod regression: old regex stripped `env RUSTFLAGS="-C ` (stopping
+	// at the space inside quotes) and returned `Bash(Frameworks":*)`.
+	assert.equal(canonicalizeBash(
+		'env RUSTFLAGS="-C link-arg=-F/workspace/apps/notifier/vendor/macos-sdk/System/Library/Frameworks" cargo zigbuild --release 2>&1 > /tmp/build.log'
+	), 'Bash(cargo:*)')
+})
+
+test('canonicalizeBash: multi-var env prefix', () => {
+	assert.equal(canonicalizeBash('env FOO=1 BAR=2 cmd arg'), 'Bash(cmd:*)')
+})
+
+test('canonicalizeBash: pipe stops at the first command', () => {
+	assert.equal(canonicalizeBash('cargo build 2>&1 | tail -25'), 'Bash(cargo:*)')
+})
+
+test('canonicalizeBash: quoted args do not confuse the first-token pick', () => {
+	assert.equal(canonicalizeBash('git commit -m "some message with dashes"'),
+		'Bash(git:*)')
+})
+
+test('canonicalizeBash: single-quoted assignment value', () => {
+	assert.equal(canonicalizeBash("FOO='single quoted' cmd"), 'Bash(cmd:*)')
+})
+
+test('canonicalizeBash: backslash-escaped space joins tokens', () => {
+	assert.equal(canonicalizeBash('/usr/bin/my\\ cmd'), 'Bash(my cmd:*)')
+})
+
+test('canonicalizeBash: cd with quoted path still strips', () => {
+	assert.equal(canonicalizeBash('cd "/tmp/a b" && grep foo bar'), 'Bash(grep:*)')
 })
 
 test('canonicalizeDir buckets to the parent dir of a file path', () => {
