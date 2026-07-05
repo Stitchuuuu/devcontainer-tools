@@ -493,11 +493,9 @@ mod inner {
                 // title today set the label to what they want displayed.
                 let title_s = NSString::from_str(label);
                 let opts = UNNotificationActionOptions::empty();
-                let action = unsafe {
-                    UNNotificationAction::actionWithIdentifier_title_options(
-                        &id_s, &title_s, opts,
-                    )
-                };
+                let action = UNNotificationAction::actionWithIdentifier_title_options(
+                    &id_s, &title_s, opts,
+                );
                 action_ptrs.push(action);
             }
             let refs: Vec<&UNNotificationAction> =
@@ -505,14 +503,13 @@ mod inner {
             let actions_arr = NSArray::from_slice(&refs);
             let intents_arr: Retained<NSArray<NSString>> = NSArray::new();
             let cat_opts = UNNotificationCategoryOptions::empty();
-            let category = unsafe {
+            let category =
                 UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
                     &cat_id,
                     &actions_arr,
                     &intents_arr,
                     cat_opts,
-                )
-            };
+                );
             let cat_ref: &UNNotificationCategory = category.as_ref();
             let categories: Retained<NSSet<UNNotificationCategory>> =
                 NSSet::from_slice(&[cat_ref]);
