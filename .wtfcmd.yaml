@@ -1,0 +1,57 @@
+# Root wtf config — global aliases for common project workflows.
+# Each command runs from the repo root ; per-project cwd is set via `cd`
+# in the cmd body so callers can invoke `wtf <cmd>` from anywhere.
+
+# ---- notif — cross-compile + logs -----------------------------------------
+# The container can't RUN Mach-O binaries, only produce them. Once built,
+# the binary lands at apps/notifier/target/aarch64-apple-darwin/release/notif
+# and is visible from the Mac host via the workspace bind-mount.
+#
+# `cwd: ./apps/notifier` — leading `.` resolves relative to this config
+# file's directory (per wtfcmd), so commands run inside the crate root
+# regardless of where the caller invoked `wtf` from.
+
+- group: notif
+  name: build
+  cwd: ./apps/notifier
+  desc: Cross-compile the release Mach-O for Apple Silicon.
+  cmd: cargo zigbuild --release --target aarch64-apple-darwin --bin notif
+
+- group: notif
+  name: build-debug
+  cwd: ./apps/notifier
+  desc: Cross-compile the debug Mach-O (faster rebuild, unoptimized).
+  cmd: cargo zigbuild --target aarch64-apple-darwin --bin notif
+
+- group: notif
+  name: test
+  cwd: ./apps/notifier
+  desc: Run every test + clippy on the workspace.
+  cmd: |
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test -p notif-cli -p notif-core -p notif-macos
+
+- group: notif
+  name: bin-path
+  cwd: ./apps/notifier
+  desc: Print the absolute container path of the release Mach-O.
+  cmd: echo "$(pwd)/target/aarch64-apple-darwin/release/notif"
+
+- group: notif
+  name: log
+  desc: Tail the shared audit log (NOTIF_LOG env or ~/.local/share/notif/notif.log).
+  cmd: tail -f "${NOTIF_LOG:-$HOME/.local/share/notif/notif.log}"
+
+- group: notif
+  name: dev
+  cwd: ./apps/notifier
+  desc: |
+    Build (debug) + run the Mach-O with arbitrary passthrough args.
+    Example : wtf notif dev -- send --title Hello --body World
+  cmd: |
+    cargo zigbuild --target aarch64-apple-darwin --bin notif >/dev/null
+    ./target/aarch64-apple-darwin/debug/notif {{ range .args }}{{ esc . }} {{ end }}
+  args:
+    - name: args
+      desc: Arguments forwarded verbatim to the notif binary.
+      is_array: true
