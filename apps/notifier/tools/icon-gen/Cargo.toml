@@ -1,0 +1,15 @@
+[package]
+name = "notif-icon-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dev tool: rasterize an SVG master into .icns (macOS) + .ico (Windows/favicon) + optional PNG previews."
+
+[[bin]]
+name = "notif-icon-gen"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+resvg = "0.47.0"

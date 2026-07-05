@@ -28,11 +28,13 @@ use crate::sender::{DEFAULT_DISPLAY_NAME, DEFAULT_KEY};
 /// Icon embedded for the default Tier 0 sender when the caller does not
 /// provide an override.
 ///
-/// Currently the OSS `code.icns` from
-/// `github.com/microsoft/vscode/resources/darwin/`. Session 6 replaces with a
-/// project-scoped icon; a user can also override per-sender at `register`
-/// time via `--icon <path>` (see [`ensure_bundle`]).
-const DEFAULT_ICON: &[u8] = include_bytes!("../assets/code.icns");
+/// Source of truth lives at `assets/notify.svg` (a `.icns` alone would be
+/// opaque to code review). The `.icns` is regenerated from the SVG via
+/// `cargo run -p notif-icon-gen -- assets/notify.svg --icns assets/notify.icns`.
+/// A user can also override per-sender at `register` time via `--icon <path>`
+/// (see [`ensure_bundle`]) or at any time via `notif set-icon` (see
+/// [`set_bundle_icon`]).
+const DEFAULT_ICON: &[u8] = include_bytes!("../assets/notify.icns");
 
 /// `Info.plist` payload serialized via `plist::to_writer_xml`.
 ///
@@ -289,5 +291,99 @@ pub fn ad_hoc_codesign(bundle: &Path) -> Result<(), MacosError> {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(MacosError::Codesign(stderr));
     }
+    Ok(())
+}
+
+/// Swap the icon on an already-materialized sender bundle.
+///
+/// Locates the bundle via [`crate::sender::find_bundle_by_key`], writes the
+/// bytes of `icon_path` to `Contents/Resources/icon.icns`, updates the
+/// Info.plist to declare `CFBundleIconFile = "icon"` when absent, then
+/// re-signs the bundle ad-hoc (LaunchServices refuses launching a mutated
+/// signed bundle without a refreshed signature).
+///
+/// Idempotent : if `icon.icns` already matches `icon_path` byte-for-byte AND
+/// the plist already declares `CFBundleIconFile = "icon"`, the function
+/// short-circuits without touching the filesystem or spawning `codesign`.
+///
+/// # Preconditions
+/// `key` MUST NOT be [`crate::sender::DEFAULT_KEY`]. The default sender's
+/// icon is embedded via `include_bytes!` at compile time ; the CLI layer
+/// refuses this case with a clear message before calling in.
+///
+/// # Errors
+/// - [`MacosError::Io`] if the bundle for `key` cannot be located, `icon_path`
+///   is unreadable, or any filesystem write fails.
+/// - [`MacosError::Plist`] on Info.plist serialization / deserialization.
+/// - [`MacosError::Codesign`] if `codesign --sign - --deep --force` exits non-zero.
+pub fn set_bundle_icon(key: &str, icon_path: &Path) -> Result<PathBuf, MacosError> {
+    let bundle = crate::sender::find_bundle_by_key(key)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no materialized bundle for sender {key:?}"),
+        )
+    })?;
+    let contents = bundle.join("Contents");
+    let resources_dir = contents.join("Resources");
+    let icon_dest = resources_dir.join("icon.icns");
+    let plist_path = contents.join("Info.plist");
+
+    let new_bytes = fs::read(icon_path)?;
+
+    // Idempotency short-circuit — bytes match on disk AND the plist already
+    // declares CFBundleIconFile. Either half missing still triggers the full
+    // path (a bundle registered without --icon has neither).
+    if let Ok(existing) = fs::read(&icon_dest) {
+        if existing == new_bytes && icon_declared_in_plist(&plist_path)? {
+            return Ok(bundle);
+        }
+    }
+
+    fs::create_dir_all(&resources_dir)?;
+    fs::write(&icon_dest, &new_bytes)?;
+    ensure_icon_declared_in_plist(&plist_path)?;
+    ad_hoc_codesign(&bundle)?;
+
+    Ok(bundle)
+}
+
+/// Check whether the Info.plist at `plist_path` already declares
+/// `CFBundleIconFile = "icon"`.
+///
+/// Used by [`set_bundle_icon`] to decide whether the plist mutation half of
+/// the idempotency check can be skipped.
+///
+/// # Errors
+/// [`MacosError::Plist`] if the file cannot be parsed as a plist dictionary.
+fn icon_declared_in_plist(plist_path: &Path) -> Result<bool, MacosError> {
+    let dict: plist::Dictionary = plist::from_file(plist_path)?;
+    Ok(dict.get("CFBundleIconFile").and_then(|v| v.as_string()) == Some("icon"))
+}
+
+/// Add `CFBundleIconFile = "icon"` to the Info.plist if absent. Preserves
+/// every other key by round-tripping the plist as a [`plist::Dictionary`]
+/// instead of rebuilding an [`InfoPlist`] (which would drop unknown keys
+/// like `NotifSenderKey`).
+///
+/// No-op when the declaration already matches the target value — a plain
+/// read + compare short-circuit avoids a write when the plist is already
+/// in sync.
+///
+/// # Errors
+/// - [`MacosError::Plist`] on serialization / deserialization failure.
+/// - [`MacosError::Io`] on file open / write failure.
+fn ensure_icon_declared_in_plist(plist_path: &Path) -> Result<(), MacosError> {
+    let mut dict: plist::Dictionary = plist::from_file(plist_path)?;
+    if dict.get("CFBundleIconFile").and_then(|v| v.as_string()) == Some("icon") {
+        return Ok(());
+    }
+    dict.insert(
+        "CFBundleIconFile".to_string(),
+        plist::Value::String("icon".to_string()),
+    );
+    let mut buf = Vec::new();
+    plist::to_writer_xml(&mut buf, &dict)?;
+    let mut f = fs::File::create(plist_path)?;
+    f.write_all(&buf)?;
     Ok(())
 }

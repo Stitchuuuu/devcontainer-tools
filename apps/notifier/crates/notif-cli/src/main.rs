@@ -166,6 +166,19 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Swap the icon on an already-materialized sender bundle. Refuses the
+    /// reserved `default` sender — its icon is embedded at compile time and
+    /// only changes with a `notif` rebuild.
+    SetIcon {
+        /// Sender key whose bundle icon should be replaced.
+        #[arg(long)]
+        sender: String,
+        /// Path to a `.icns` file. Read verbatim into
+        /// `Contents/Resources/icon.icns` ; the bundle is re-signed
+        /// ad-hoc so LaunchServices picks up the change.
+        #[arg(long)]
+        icon: std::path::PathBuf,
+    },
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -416,6 +429,19 @@ fn run_macos(cmd: Command) -> Result<()> {
             }
         }
         Command::Clean { sender, all, yes } => run_clean(sender.as_deref(), all, yes),
+        Command::SetIcon { sender, icon } => {
+            if sender == DEFAULT_KEY {
+                bail!(
+                    "'{DEFAULT_KEY}' is reserved — its icon is embedded at compile time. Rebuild `notif` after replacing assets/notify.icns to change it."
+                );
+            }
+            let s = Sender::new(sender.clone()).context("invalid sender key")?;
+            let path = bundle::set_bundle_icon(&s.key, &icon).with_context(|| {
+                format!("set icon for sender {:?} from {}", s.key, icon.display())
+            })?;
+            println!("icon updated for sender {} at {}", s.key, path.display());
+            Ok(())
+        }
     }
 }
 
@@ -687,6 +713,12 @@ fn run_stub(cmd: Command) -> Result<()> {
             let s = sender.unwrap_or_default();
             println!("[stub] would clean sender={s}, all={all}, yes={yes}, host={HOST}");
         }
+        Command::SetIcon { sender, icon } => {
+            println!(
+                "[stub] would set-icon sender={sender}, icon={}, host={HOST}",
+                icon.display(),
+            );
+        }
     }
     Ok(())
 }
@@ -770,6 +802,43 @@ mod cli_tests {
     #[test]
     fn clean_sender_and_all_mutually_exclusive() {
         assert!(parse(&["clean", "--sender", "x", "--all"]).is_err());
+    }
+
+    #[test]
+    fn set_icon_minimal() {
+        let cli = parse(&[
+            "set-icon", "--sender", "vscode", "--icon", "/tmp/notify.icns",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::SetIcon { sender, icon } => {
+                assert_eq!(sender, "vscode");
+                assert_eq!(icon.to_str(), Some("/tmp/notify.icns"));
+            }
+            _ => panic!("expected SetIcon"),
+        }
+    }
+
+    #[test]
+    fn set_icon_requires_sender() {
+        assert!(parse(&["set-icon", "--icon", "/tmp/notify.icns"]).is_err());
+    }
+
+    #[test]
+    fn set_icon_requires_icon() {
+        assert!(parse(&["set-icon", "--sender", "vscode"]).is_err());
+    }
+
+    #[test]
+    fn set_icon_default_sender_parses_but_refused_at_runtime() {
+        // clap does not know about the reserved-key contract — parse succeeds
+        // and the mac handler bails with a clear message. Locking the parse
+        // shape here so the runtime refusal stays reachable.
+        let cli = parse(&[
+            "set-icon", "--sender", "default", "--icon", "/tmp/notify.icns",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::SetIcon { .. }));
     }
 
     #[test]

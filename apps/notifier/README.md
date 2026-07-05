@@ -14,6 +14,14 @@ dispatch currently living in `.devcontainer/notify/lib/consumers/notifier.js`.
 | `notif-windows` | `#[cfg(target_os = "windows")]` backend (WinRT toast, AUMID). |
 | `notif-linux` | `#[cfg(target_os = "linux")]` backend (libnotify / D-Bus). |
 
+## Install
+
+- **macOS** — [docs/install-macos.md](docs/install-macos.md) (cross-compile
+  from the devcontainer, first-run Gatekeeper bypass, permission dialog,
+  housekeeping).
+- **Windows** — landing in v0.3 (session 9).
+- **Linux** — landing in v0.4 (session 10).
+
 ## Where the full design lives
 
 See [../../plans/notif-cli/ROLLOUT.md](../../plans/notif-cli/ROLLOUT.md)
