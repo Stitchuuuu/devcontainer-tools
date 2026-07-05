@@ -1,6 +1,6 @@
 ---
-description: Grant a temporary batch of permissions in settings.local.json (session-scoped, optional TTL). Auto-triggered by Claude after the PreToolUse hook detects a spike of permission prompts, or invoked manually by the user. Auto-revoked at SessionEnd or TTL expiry. Audit log at .devcontainer/notify/floating-perms-audit.jsonl. MANDATORY workflow: ANALYZE → ASK via AskUserQuestion → EXECUTE → RETRY. Never call apply.js batch without an explicit AskUserQuestion confirmation right before it.
-argument-hint: "batch <pat1> <pat2>... [ttl=15m] sid=<id>  |  list [sid=<id>]  |  revoke <pat>  |  gc sid=<id>"
+description: Grant a temporary batch of permissions in settings.local.json (session-scoped, TTL-bounded). Auto-triggered by Claude after the PreToolUse hook detects a spike of permission prompts, or invoked manually by the user. Grants expire after TTL (default 30 min) — SessionEnd cleanup is a best-effort second layer since it doesn't reliably fire on VS Code shutdown. Audit log at .devcontainer/notify/floating-perms-audit.jsonl. MANDATORY workflow: ANALYZE → ASK via AskUserQuestion → EXECUTE → RETRY. Never call apply.js batch without an explicit AskUserQuestion confirmation right before it.
+argument-hint: "batch <pat1> <pat2>... [ttl=30m] sid=<id>  |  list [sid=<id>]  |  revoke <pat>  |  gc sid=<id>"
 ---
 
 # /floating-perms — batched session-scoped permissions
@@ -84,11 +84,11 @@ question: "<short context of what you're trying to do, e.g. 'upstream upgrade fe
            Permissions needed: <pat1>, <pat2>, <pat3>. Which grant?"
 header:   "floating-perms"
 options:
-  - label: "Allow all until SessionEnd  (Recommended)"
+  - label: "Allow all (default TTL 30m)  (Recommended)"
     description: "Grants Bash(curl:*), Bash(npm view:*), Edit(/home/node/.config/**).
-                  Auto-revoked at /exit."
-  - label: "Allow all, TTL 15m"
-    description: "Same patterns, expires in 15 minutes"
+                  Auto-revoked after 30 minutes."
+  - label: "Allow all, longer TTL (e.g. ttl=2h)"
+    description: "Same patterns, custom expiry — use for tasks longer than the default"
   - label: "Subset (specify which)"
     description: "You'll tell me which ones to keep"
   - label: "Refuse — I'll change approach"
@@ -108,8 +108,11 @@ Based on the user's answer, run:
 
 ```bash
 node /workspace/.devcontainer/skills/floating-perms/apply.js \
-     batch <pattern1> <pattern2> ... sid=<session_id> [ttl=15m]
+     batch <pattern1> <pattern2> ... sid=<session_id> [ttl=<duration>]
 ```
+
+Omitting `ttl=` applies the default (30 minutes). Pass `ttl=2h` (or
+similar) only when the user asked for a longer-lived grant.
 
 **CRITICAL**: the `triggerPattern` from the deny reason (the one named
 in "RETRY — re-run the tool call that was just denied (`<pattern>`)")
@@ -145,13 +148,13 @@ Subcommands:
 
 | Subcommand | Use |
 |------------|-----|
-| `batch <pat1> [pat2 …] [ttl=<duration>] sid=<id>` | Grant N patterns for the session. TTL optional. |
+| `batch <pat1> [pat2 …] [ttl=<duration>] sid=<id>` | Grant N patterns for the session. Default TTL 30 min. |
 | `list [sid=<id>]` | Show active grants. |
 | `revoke <pattern>` | Remove a single pattern across all sessions. |
-| `gc sid=<current_sid>` | Revoke state-side grants whose sid != current (orphans from sessions whose SessionEnd never fired). |
+| `gc sid=<current_sid>` | Revoke state-side grants whose sid != current (orphans from previous sessions that didn't run SessionEnd cleanup). |
 | `reconcile sid=<current_sid> [--auto]` | Detect entries in settings.local.json that look floating but have no matching state.json grant. Interactive by default; pass `--auto` to revoke without confirmation. |
 
-Duration syntax for `ttl=`: `15m`, `2h`, `1d`, or bare integer = seconds.
+Duration syntax for `ttl=`: `15m`, `30m` (default), `2h`, `1d`, or bare integer = seconds.
 
 Read stdout — that's the report (granted / skipped / blocked / invalid).
 Re-emit a clean summary to the user.
@@ -182,18 +185,18 @@ claude:     [Step 1 — ANALYZE]
               "Upstream upgrade fetch. Permissions needed: Bash(curl:*),
                Bash(jq:*), Edit(/home/node/.config/**), Read(/tmp/scratch/**).
                Which grant?"
-              · Allow all until SessionEnd  (Recommended)
-              · Allow all, TTL 15m
+              · Allow all (default TTL 30m)  (Recommended)
+              · Allow all, longer TTL (e.g. ttl=2h)
               · Subset (specify which)
               · Refuse — I'll change approach
 
-user:       picks "Allow all until SessionEnd"
+user:       picks "Allow all (default TTL 30m)"
 
 claude:     [Step 3 — EXECUTE]
             [Bash] node apply.js batch \
               Bash(curl:*) Bash(jq:*) Edit(/home/node/.config/**) \
               Read(/tmp/scratch/**) sid=abc12345
-            ✓ 4 pattern(s) granted [sid abc12345 · until SessionEnd]
+            ✓ 4 pattern(s) granted [sid abc12345 · expires 2026-06-12T20:00:00Z (TTL 1800s)]
 
             [Step 4 — RETRY]
             [re-runs the originally denied curl call; passes now]
@@ -215,7 +218,7 @@ claude:     [Step 1 — ANALYZE]
             → AskUserQuestion:
               "Inspecting files under /tmp. Permissions needed:
                Read(/tmp/**), Write(/tmp/**). Which grant?"
-              · Allow both until SessionEnd  (Recommended)
+              · Allow both (default TTL 30m)  (Recommended)
               · Allow Read(/tmp/**) only
               · Refuse — I'll work from in-memory data
 ```
@@ -234,7 +237,7 @@ claude:     [runs apply.js]
 user:       /floating-perms list
 claude:     [runs] node apply.js list
             Active grants (2):
-              - Bash(curl:*)  [sid abc12345 · expires: until SessionEnd]
+              - Bash(curl:*)  [sid abc12345 · expires: 2026-06-12T20:00:00Z]
               - Bash(gh:*)    [sid abc12345 · expires: 2026-06-12T19:30:00Z]
 
 user:       /floating-perms revoke Bash(gh:*)
@@ -273,10 +276,14 @@ Starting V1.2, `apply.js` and `cleanup.js` insert two marker strings into
 `permissions.allow` to bracket the floating-perms managed section:
 
 ```
-"// ──────── floating-perms managed below — auto-revoked at SessionEnd ────────"
+"// ──────── floating-perms managed below — auto-revoked on TTL expiry ────────"
 …floating entries…
 "// ──────── end floating-perms ────────"
 ```
+
+The pre-V1.2 form of the start sentinel (`… auto-revoked at SessionEnd …`)
+is still recognized on read for backward compat, and rewritten to the new
+form on the next mutation.
 
 These are string array entries (not JSON comments — Claude Code doesn't
 support JSONC), but they don't begin with any tool prefix (`Bash`, `Read`,
@@ -292,9 +299,14 @@ re-emitted from scratch.
 
 Two failure modes leave stale entries in `permissions.allow`:
 
-1. **SessionEnd never fired** (process crash, kill -9, container yanked).
-   `state.json` still has the grants but no `SessionEnd` event will revoke
-   them. Detected by `gc` (state-side, grants whose `sid !== current`).
+1. **SessionEnd never fired** (process crash, kill -9, container yanked,
+   VS Code window closed with the ✕ — the CLI runs in an integrated
+   terminal and the extension's deactivate is a no-op, so SessionEnd is
+   not reliably invoked on shutdown). The default 30 min TTL caps the
+   damage, but grants still active at the moment of a hard shutdown
+   remain in `state.json` until either they expire (removed on next
+   `revokeExpired` tick) or `gc` finds them (state-side, grants whose
+   `sid !== current`).
 2. **`state.json` was lost** (rm, container rebuild, corruption). The
    `permissions.allow` entries remain but the state has no record of them.
    `cleanup.js` is state-driven so it will never see them. Detected by
@@ -335,9 +347,11 @@ and the user is pointed at the right subcommand (`gc` for state-side,
   duplicate-write — apply.js skips already-allowed patterns so the dup is
   harmless; state.grants may have two entries for one pattern but cleanup
   tolerates that.
-- **SessionEnd didn't fire** (process crash, kill -9) → next SessionStart
-  surfaces the orphans via additionalContext, user decides via
-  `/floating-perms gc sid=<current>`.
+- **SessionEnd didn't fire** (process crash, kill -9, VS Code force-close)
+  → the 30 min default TTL will still expire the grant on the next hook
+  tick; any still-active grants at the moment of the next session are
+  surfaced as orphans via SessionStart additionalContext, user decides
+  via `/floating-perms gc sid=<current>`.
 
 ## Files in scope
 

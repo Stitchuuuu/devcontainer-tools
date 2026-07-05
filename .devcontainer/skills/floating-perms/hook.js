@@ -17,7 +17,7 @@
 
 const fs = require('fs')
 const { canonicalize } = require('./lib/pattern')
-const { withState, readAllow, audit, findFloatingSection } = require('./lib/state')
+const { withState, readAllow, SETTINGS_LOCAL, audit, findFloatingSection } = require('./lib/state')
 const { revokeForSession, revokeExpired } = require('./cleanup')
 
 const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
@@ -25,15 +25,68 @@ const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
 const CANONICAL_BASH_RE      = /^Bash\([^:]+:\*\)$/
 const CANONICAL_FILE_TOOL_RE = /^(Edit|Write|Read|NotebookEdit)\(\/[^)]+\/\*\*\)$/
 
-function readBaselineAllow() {
+// Additional allowlist sources checked when deciding whether a
+// PermissionRequest is a "real" prompt or a phantom (Claude Code
+// occasionally fires PermissionRequest for tool calls that are already
+// covered by an allow-list entry, notably when the same command is
+// present under a slightly different pattern form like `Bash(grep *)`
+// vs `Bash(grep:*)`). Missing files are silently ignored.
+//
+// Skipped entirely when FP_SETTINGS_LOCAL is set (test harness): tests
+// isolate all state under a tmp dir and must not read the real machine's
+// allowlist files, which would otherwise cross-contaminate the phantom
+// guard and hide legitimate spike detections.
+const ALLOWLIST_LAYERS = process.env.FP_SETTINGS_LOCAL ? [] : [
+	BASELINE_PATH,
+	'/workspace/.claude/settings.json',
+	'/home/node/.claude/settings.json',
+	'/home/node/.claude/settings.local.json'
+]
+
+function readAllowFile(p) {
 	try {
-		const buf = fs.readFileSync(BASELINE_PATH, 'utf8')
+		const buf = fs.readFileSync(p, 'utf8')
 		const parsed = JSON.parse(buf)
 		return parsed && parsed.permissions && Array.isArray(parsed.permissions.allow)
 			? parsed.permissions.allow : []
 	} catch {
 		return []
 	}
+}
+
+function readBaselineAllow() {
+	return readAllowFile(BASELINE_PATH)
+}
+
+// Union of every allowlist layer we can read. SETTINGS_LOCAL first so
+// live grants (including this session's floating-perms) win; then the
+// tracked baseline, project settings, user settings. Env-overridden
+// SETTINGS_LOCAL is honored (used by the test harness).
+function readCombinedAllow() {
+	const out = new Set()
+	for (const p of [SETTINGS_LOCAL, ...ALLOWLIST_LAYERS]) {
+		for (const entry of readAllowFile(p)) out.add(entry)
+	}
+	return out
+}
+
+// Decide whether a canonical pattern is already covered by any allowlist
+// entry. Exact match wins; for Bash, also match Claude Code's alternate
+// forms (`Bash(cmd)`, `Bash(cmd:...)`, `Bash(cmd ...)`) since those grant
+// the same command with different argument shapes.
+function isPatternCovered(canonical, allowSet) {
+	if (allowSet.has(canonical)) return true
+	const m = /^Bash\(([^:]+):\*\)$/.exec(canonical)
+	if (!m) return false
+	const cmd = m[1]
+	const bare = `Bash(${cmd})`
+	if (allowSet.has(bare)) return true
+	const spacePrefix = `Bash(${cmd} `
+	const colonPrefix = `Bash(${cmd}:`
+	for (const entry of allowSet) {
+		if (entry.startsWith(spacePrefix) || entry.startsWith(colonPrefix)) return true
+	}
+	return false
 }
 
 // Spike = N PermissionRequest events (any pattern) within WINDOW_MS.
@@ -91,8 +144,8 @@ function denyReason(recentEntries, sid) {
 		``,
 		`Mandatory workflow before any further tool call:`,
 		`1. ANALYZE — re-read the current task, enumerate EVERY Bash command and file path you expect to need to finish it (the patterns above PLUS everything you anticipate for the rest of the task).`,
-		`2. ASK — call the \`AskUserQuestion\` tool with a SPECIFIC question that lists the exact patterns you want granted. Example option labels: "Allow all of <pat1>, <pat2>, <pat3> until SessionEnd", "Allow all, TTL 15m", "Subset (specify which)", "Refuse — I'll change approach". Never call apply.js without this explicit confirmation step.`,
-		`3. EXECUTE — based on the user's answer, run: \`node /workspace/.devcontainer/skills/floating-perms/apply.js batch <pat1> <pat2> ... sid=${sid} [ttl=15m]\` (script handles blocklist, idempotence, audit, auto-cleanup).`,
+		`2. ASK — call the \`AskUserQuestion\` tool with a SPECIFIC question that lists the exact patterns you want granted. Example option labels: "Allow all of <pat1>, <pat2>, <pat3> (default TTL 30m)", "Allow all, longer TTL (e.g. ttl=2h)", "Subset (specify which)", "Refuse — I'll change approach". Never call apply.js without this explicit confirmation step.`,
+		`3. EXECUTE — based on the user's answer, run: \`node /workspace/.devcontainer/skills/floating-perms/apply.js batch <pat1> <pat2> ... sid=${sid} [ttl=<duration>]\` (default TTL 30m; script handles blocklist, idempotence, audit, auto-cleanup).`,
 		`4. RETRY — once the grant lands, re-run the tool call that was just denied.`,
 		``,
 		`Do NOT try an alternative tool (wget instead of curl, etc.) before the ASK step — plan first.`,
@@ -112,6 +165,19 @@ function handlePermissionRequest(payload) {
 	// Task, MCP, future tools) all canonicalize to null. They aren't
 	// work-flow prompts — skip without counting or auditing.
 	if (!pattern) return null
+
+	// Phantom prompt guard: Claude Code sometimes fires PermissionRequest
+	// for tool calls that ARE covered by an existing allow-list entry
+	// (mismatched pattern form, cache miss, etc.). Counting these produces
+	// spurious spike detections that ask the user to grant something
+	// already granted. Skip them here — the counter should only grow on
+	// prompts the user actually paid attention to.
+	if (isPatternCovered(pattern, readCombinedAllow())) {
+		audit('permission_request_covered', {
+			sid, pattern, tool_use_id: payload.tool_use_id
+		})
+		return null
+	}
 
 	const now = Date.now()
 	withState((state) => {
@@ -216,7 +282,7 @@ function handleSessionStart(payload) {
 
 	const lines = [`floating-perms — SessionStart reconciliation report:`, ``]
 	if (stateOrphans.length > 0) {
-		lines.push(`State-side orphans (${stateOrphans.length}) — grants from previous session(s) whose SessionEnd never fired:`)
+		lines.push(`State-side orphans (${stateOrphans.length}) — unexpired grants tied to a previous session that never ran SessionEnd cleanup:`)
 		for (const g of stateOrphans) {
 			lines.push(`  - \`${g.pattern}\` (sid ${g.sid.slice(0, 8)}, granted ${g.granted_at})`)
 		}

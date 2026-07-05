@@ -128,8 +128,13 @@ const SETTINGS_LOCAL = process.env.FP_SETTINGS_LOCAL
 // (they're array entries, not whitespace), giving the user a visible
 // "this section is auto-managed" marker inside the file. Detection is
 // strict equality on the constants below — do not vary the strings.
-const SENTINEL_START = '// ──────── floating-perms managed below — auto-revoked at SessionEnd ────────'
+const SENTINEL_START = '// ──────── floating-perms managed below — auto-revoked on TTL expiry ────────'
 const SENTINEL_END   = '// ──────── end floating-perms ────────'
+
+// Legacy sentinel from the pre-default-TTL era. Kept in the accept-list so
+// existing settings.local.json files continue to be recognized during the
+// transition — writes will rebuild with SENTINEL_START above.
+const SENTINEL_START_LEGACY = '// ──────── floating-perms managed below — auto-revoked at SessionEnd ────────'
 
 function readAllow() {
 	try {
@@ -148,7 +153,8 @@ function readAllow() {
 // in order. Used by reconcile + SessionStart orphan detection.
 function findFloatingSection(allow) {
 	if (!Array.isArray(allow)) return null
-	const startIdx = allow.indexOf(SENTINEL_START)
+	let startIdx = allow.indexOf(SENTINEL_START)
+	if (startIdx < 0) startIdx = allow.indexOf(SENTINEL_START_LEGACY)
 	const endIdx   = allow.indexOf(SENTINEL_END)
 	if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) return null
 	return {
@@ -162,7 +168,8 @@ function findFloatingSection(allow) {
 // When floating is empty, sentinels disappear so the file stays clean.
 function mergeAllowSections(allow, floatingPatterns) {
 	const floatingSet = new Set(floatingPatterns || [])
-	const cleaned = allow.filter(p => p !== SENTINEL_START && p !== SENTINEL_END)
+	const cleaned = allow.filter(p =>
+		p !== SENTINEL_START && p !== SENTINEL_END && p !== SENTINEL_START_LEGACY)
 	const human    = cleaned.filter(p => !floatingSet.has(p))
 	const floating = cleaned.filter(p =>  floatingSet.has(p))
 	if (floating.length === 0) return human

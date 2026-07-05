@@ -239,6 +239,70 @@ test('uniquePatterns preserves insertion order, dedups by pattern', () => {
 	assert.deepEqual(out, ['A', 'B', 'C'])
 })
 
+test('phantom guard: PermissionRequest ignored when pattern is already in allowlist', () => {
+	// Seed the tmp settings.local.json with a matching allow entry.
+	// The canonical form is Bash(head:*); Claude Code's alternate form
+	// Bash(head *) must also count as covered.
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: { allow: ['Bash(head *)', 'Bash(curl:*)'] }
+	}))
+
+	const sid = uniqueSid()
+	const base = 1_700_000_500_000
+
+	withFixedNow(base + 10, () => {
+		hook.handlePermissionRequest({
+			session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'head -5 /etc/hosts' },
+			tool_use_id: 'p1'
+		})
+	})
+	withFixedNow(base + 20, () => {
+		hook.handlePermissionRequest({
+			session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'curl https://example.com' },
+			tool_use_id: 'p2'
+		})
+	})
+
+	// Both PermissionRequests should have been filtered as covered
+	// (head matches via the `Bash(head *)` alternate form, curl exact).
+	const st = readState()
+	assert.deepEqual(st.counters[sid] || [], [],
+		'covered patterns must not grow the counter')
+
+	// Reset settings so subsequent tests aren't polluted.
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: { allow: [] }
+	}))
+})
+
+test('phantom guard: uncovered pattern still counted', () => {
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: { allow: ['Bash(cat:*)'] }
+	}))
+
+	const sid = uniqueSid()
+	const base = 1_700_000_600_000
+
+	withFixedNow(base + 10, () => {
+		hook.handlePermissionRequest({
+			session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'rsync -av /a /b' },
+			tool_use_id: 'q1'
+		})
+	})
+
+	const st = readState()
+	assert.equal((st.counters[sid] || []).length, 1,
+		'uncovered pattern must grow the counter normally')
+	assert.equal(st.counters[sid][0].pattern, 'Bash(rsync:*)')
+
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: { allow: [] }
+	}))
+})
+
 test('denyReason lists every unique pattern + the sid for apply.js batch', () => {
 	const reason = hook.denyReason([
 		{ ts: 1, pattern: 'Bash(curl:*)' },

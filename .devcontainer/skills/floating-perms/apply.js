@@ -4,7 +4,7 @@
 // Subcommands:
 //   batch <pat1> [pat2 ...] [ttl=<duration>] [sid=<sid>]
 //        grant N patterns for the current session. ttl optional (default:
-//        until SessionEnd). sid required.
+//        30 minutes). sid required.
 //   list [sid=<sid>]
 //        show active grants (default: all sessions).
 //   revoke <pattern>
@@ -57,6 +57,13 @@ function readBaselineAllow() {
 	}
 }
 
+// Default TTL when no ttl= flag is passed. Chosen because SessionEnd is
+// not reliably fired when VS Code shuts down (the CLI runs in an integrated
+// terminal, and the deactivate handler is a no-op) — grants without an
+// explicit expiry became orphans across restarts. 30 min covers a typical
+// focused task while capping the blast radius of an abandoned session.
+const DEFAULT_TTL_SECONDS = 30 * 60
+
 const DURATION_RE = /^(\d+)([smhd])?$/
 
 function parseDuration(raw) {
@@ -92,7 +99,7 @@ function normalizePattern(raw) {
 }
 
 function batch({ positional, opts }) {
-	const ttlSeconds = opts.ttl ? parseDuration(opts.ttl) : null
+	const ttlSeconds = opts.ttl ? parseDuration(opts.ttl) : DEFAULT_TTL_SECONDS
 	if (opts.ttl && ttlSeconds === null) {
 		fail(`invalid ttl: "${opts.ttl}" (expected format: 15m, 2h, 1d, or seconds)`)
 	}
@@ -117,7 +124,7 @@ function batch({ positional, opts }) {
 	const granted   = []
 	const skipped   = []
 	const now = Date.now()
-	const expiresAt = ttlSeconds ? now + ttlSeconds * 1000 : null
+	const expiresAt = now + ttlSeconds * 1000
 	let floatingPatterns = []
 
 	withState((state) => {
@@ -164,9 +171,12 @@ function list({ opts }) {
 	}
 	print(`Active grants (${filter.length}):`)
 	for (const g of filter) {
+		// Legacy grants (pre-default-TTL era) may have expires_at: null.
+		// Display them as "no expiry" for visibility; new grants always
+		// carry a concrete expires_at.
 		const expiry = g.expires_at
 			? new Date(g.expires_at).toISOString()
-			: 'until SessionEnd'
+			: 'no expiry (legacy)'
 		print(`  - ${g.pattern}  [sid ${g.sid.slice(0, 8)} · expires: ${expiry}]`)
 	}
 }
@@ -280,9 +290,7 @@ function reconcile({ positional, opts }) {
 
 function report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid }) {
 	if (granted.length > 0) {
-		const expiry = expiresAt
-			? `expires ${new Date(expiresAt).toISOString()} (TTL ${ttlSeconds}s)`
-			: 'until SessionEnd'
+		const expiry = `expires ${new Date(expiresAt).toISOString()} (TTL ${ttlSeconds}s)`
 		print(`✓ ${granted.length} pattern(s) granted [sid ${sid.slice(0, 8)} · ${expiry}]:`)
 		for (const g of granted) print(`    ${g.pattern}`)
 	}
