@@ -22,3 +22,12 @@ rustflags = [
     "-C", "link-arg=-F./vendor/macos-sdk/System/Library/Frameworks",
     "-C", "link-arg=-L./vendor/macos-sdk/usr/lib",
 ]
+
+# NOTE : the `warning: invoking "xcrun" "--sdk" "macosx" "--show-sdk-path"
+# failed` line rustc prints on every cross-compile is expected and benign.
+# Setting SDKROOT to point at `vendor/macos-sdk` was tried and rejected —
+# zig then searches that path for a complete SDK (libcharset / libiconv /
+# libSystem tbds) which our minimal stub tree doesn't ship. Vendoring a
+# fuller SDK subset would silence the warning but adds ~50 MB of tbd
+# files for cosmetic gain. Ship the warning ; document in
+# `docs/install-macos.md`.

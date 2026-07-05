@@ -38,6 +38,26 @@ workaround is transparent — cargo picks the stubs up via
 [../vendor/fetch-sdk.sh](../vendor/fetch-sdk.sh) if a symbol added post
 14.5 is ever needed.
 
+**Expected build warning.** Every cross-compile prints :
+
+```
+warning: invoking "xcrun" "--sdk" "macosx" "--show-sdk-path" failed:
+No such file or directory (os error 2)
+  = note: the SDK is needed by the linker to know where to find symbols
+          in system libraries and for embedding the SDK version in the
+          final object file
+```
+
+This is **benign**. `rustc` tries to shell out to `xcrun` for the SDK
+path (used to embed the SDK version metadata in the Mach-O), and since
+we're inside a Linux devcontainer with no Xcode, the probe fails. The
+linker falls back to the vendored stubs referenced via `-F` / `-L`
+`rustflags`, produces a valid Mach-O, and the SDK-version field in the
+binary just carries an unspecified value. Setting `SDKROOT` to point at
+`vendor/macos-sdk/` was tried and rejected — zig then searches that
+path for a complete SDK (libcharset / libiconv) which the minimal stub
+tree doesn't ship.
+
 ## 2. First run — Gatekeeper bypass
 
 The current build carries only an **ad-hoc signature**
