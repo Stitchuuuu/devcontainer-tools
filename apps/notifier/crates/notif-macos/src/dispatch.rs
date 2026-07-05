@@ -454,10 +454,10 @@ mod inner {
         // daemon — this branch is the placeholder until the delegate is
         // wired against the daemon's socket.
         if !callbacks.is_empty() {
-            eprintln!(
+            notif_core::warn::stderr(&format!(
                 "callback stub: {} target(s) registered — dispatch lands via `notif listen` daemon",
                 callbacks.len(),
-            );
+            ));
         }
 
         let identifier = match &notif.id {

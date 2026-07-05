@@ -221,8 +221,20 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let env_quiet = std::env::var("NOTIF_QUIET").ok().as_deref() == Some("1");
+    // NOTIF_LOG=<absolute-path> duplicates every stderr line into an
+    // append-only audit file, timestamped ISO-8601 UTC. Empty / unset =
+    // disabled. Relative paths are refused (silently — we can't be sure
+    // what the caller's cwd is when e.g. the notify-queue daemon spawns
+    // us).
+    let log_file = std::env::var("NOTIF_LOG")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute());
+
     notif_core::warn::init(notif_core::warn::WarnConfig {
         quiet: cli.quiet || env_quiet,
+        log_file,
     });
 
     #[cfg(target_os = "macos")]
@@ -334,7 +346,7 @@ fn run_macos(cmd: Command) -> Result<()> {
                 let existing = notif_macos::sender::find_bundle_by_key(&notif.sender.key)?;
                 let is_first_run = existing.is_none();
                 if is_first_run {
-                    eprintln!("first run: initializing bundle + requesting permission…");
+                    notif_core::warn::stderr("first run: initializing bundle + requesting permission…");
 
                     // Tag with ` · Notify` only when the display name is
                     // *borrowed* from an installed app (`--app` resolved a
@@ -387,7 +399,7 @@ fn run_macos(cmd: Command) -> Result<()> {
                 // identifiers with UNErrorCode 1). Subsequent sends use
                 // the fast direct-spawn path via `setup_outer`.
                 if is_first_run {
-                    eprintln!("waiting for permission dialog (click 'Allow' within 60s)…");
+                    notif_core::warn::stderr("waiting for permission dialog (click 'Allow' within 60s)…");
                 }
                 let display_hint = existing
                     .as_ref()
@@ -403,7 +415,7 @@ fn run_macos(cmd: Command) -> Result<()> {
                 match setup_result {
                     Ok(()) => {
                         if is_first_run {
-                            eprintln!("permission granted.");
+                            notif_core::warn::stderr("permission granted.");
                         }
                     }
                     Err(notif_macos::MacosError::AuthorizationDenied) => {
@@ -414,13 +426,15 @@ fn run_macos(cmd: Command) -> Result<()> {
                     Err(e) => return Err(e).context("authorization check"),
                 }
 
-                eprintln!("sending notification via '{}'…", notif.sender.key);
+                notif_core::warn::stderr(&format!(
+                    "sending notification via '{}'…", notif.sender.key,
+                ));
                 // Bypass the `Backend` trait to pass Tier 3 overrides +
                 // callback config. `MacosBackend.dispatch(&notif)` still
                 // works from callers that don't have either.
                 notif_macos::dispatch::dispatch_outer(&notif, &overrides, &callbacks)
                     .context("dispatch")?;
-                eprintln!("sent.");
+                notif_core::warn::stderr("sent.");
                 Ok(())
             }
         }
