@@ -4,12 +4,19 @@
 //   1. removes matching grants from state.grants
 //   2. removes their patterns from settings.local.json `permissions.allow`
 //      (only if no other still-active grant uses the same pattern)
-//   3. appends one audit line listing what was revoked.
+//   3. removes their `additional_dir` entry from settings.local.json
+//      `permissions.additionalDirectories` under the same "no still-active
+//      grant uses it" rule
+//   4. appends one audit line listing what was revoked.
 
 const { withState, readAllow, writeAllow, audit } = require('./lib/state')
 
 function patternsStillReferenced(remainingGrants, pattern) {
 	return remainingGrants.some(g => g.pattern === pattern)
+}
+
+function dirStillReferenced(remainingGrants, dir) {
+	return remainingGrants.some(g => g.additional_dir === dir)
 }
 
 function revokeBy(predicate, reason) {
@@ -20,15 +27,28 @@ function revokeBy(predicate, reason) {
 		const remaining = state.grants.filter(g => !predicate(g))
 		state.grants = remaining
 
-		const { settings, allow } = readAllow()
+		const { settings, allow, additionalDirectories } = readAllow()
 		const toDrop = new Set()
 		for (const g of matched) {
 			if (!patternsStillReferenced(remaining, g.pattern)) toDrop.add(g.pattern)
 		}
+		const dirsToDrop = new Set()
+		for (const g of matched) {
+			if (g.additional_dir && !dirStillReferenced(remaining, g.additional_dir)) {
+				dirsToDrop.add(g.additional_dir)
+			}
+		}
 		const newAllow = allow.filter(p => !toDrop.has(p))
+		const newAdditionalDirs = additionalDirectories.filter(d => !dirsToDrop.has(d))
 		const remainingFloating = remaining.map(g => g.pattern)
-		if (newAllow.length !== allow.length || remainingFloating.length === 0) {
-			writeAllow(settings, newAllow, remainingFloating)
+		const allowChanged = newAllow.length !== allow.length || remainingFloating.length === 0
+		const dirsChanged = newAdditionalDirs.length !== additionalDirectories.length
+		if (allowChanged || dirsChanged) {
+			// Pass the dirs param only if we touched it, so we don't
+			// churn additionalDirectories when nothing floating-side
+			// changed there.
+			writeAllow(settings, newAllow, remainingFloating,
+				dirsChanged ? newAdditionalDirs : undefined)
 		}
 
 		audit('revoke', {
@@ -38,7 +58,8 @@ function revokeBy(predicate, reason) {
 				pattern: g.pattern,
 				sid: g.sid,
 				granted_at: g.granted_at,
-				expires_at: g.expires_at
+				expires_at: g.expires_at,
+				additional_dir: g.additional_dir || null
 			}))
 		})
 

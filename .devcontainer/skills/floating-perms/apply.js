@@ -22,13 +22,25 @@
 // land in /workspace/.devcontainer/notify/floating-perms-audit.jsonl.
 
 const fs = require('fs')
-const { canonicalize } = require('./lib/pattern')
+const { canonicalize, extractDirFromFileToolPattern } = require('./lib/pattern')
 const { isBlocked, reasonForPattern } = require('./lib/blocklist')
 const {
 	withState, readAllow, writeAllow, audit,
 	findFloatingSection
 } = require('./lib/state')
 const { revokeManual, revokeOrphans, revokeExpired } = require('./cleanup')
+
+// Claude Code refuses file writes/reads outside the cwd + the paths
+// listed in permissions.additionalDirectories, regardless of what's in
+// permissions.allow. So a file-tool grant like Write(/tmp/foo/**) is only
+// effective if /tmp/foo is also present in additionalDirectories (or is
+// a subpath of the cwd). We treat anything under CWD_PREFIX as already
+// covered and skip injecting it.
+const CWD_PREFIX = '/workspace'
+
+function isUnderCwd(dir) {
+	return dir === CWD_PREFIX || dir.startsWith(CWD_PREFIX + '/')
+}
 
 // Tracked baseline shipped with the devcontainer. Used by reconcile to
 // avoid flagging canonical-form patterns that are part of the project's
@@ -118,44 +130,66 @@ function batch({ positional, opts }) {
 
 	revokeExpired()
 
-	const { settings, allow } = readAllow()
+	const { settings, allow, additionalDirectories } = readAllow()
 	const allowSet = new Set(allow)
+	const dirSet   = new Set(additionalDirectories)
 
 	const granted   = []
 	const skipped   = []
+	// For file-tool patterns, the effective grant may require adding the
+	// bucketed dir to additionalDirectories on top of the allow entry.
+	// grantedDirs tracks the dirs we injected this call (for the report).
+	const grantedDirs = []
 	const now = Date.now()
 	const expiresAt = now + ttlSeconds * 1000
 	let floatingPatterns = []
+	let finalAdditionalDirs
 
 	withState((state) => {
 		for (const p of ok) {
-			if (allowSet.has(p.pattern)) {
+			const alreadyInAllow = allowSet.has(p.pattern)
+			const dir = extractDirFromFileToolPattern(p.pattern)
+			const needsDir = dir && !isUnderCwd(dir) && !dirSet.has(dir)
+
+			if (alreadyInAllow && !needsDir) {
 				skipped.push({ raw: p.raw, pattern: p.pattern, reason: 'already allowed' })
 				continue
 			}
-			allowSet.add(p.pattern)
+
+			if (!alreadyInAllow) allowSet.add(p.pattern)
+			if (needsDir) {
+				dirSet.add(dir)
+				grantedDirs.push(dir)
+			}
+
 			state.grants.push({
 				pattern: p.pattern, sid,
 				granted_at: now, expires_at: expiresAt,
-				ttl_seconds: ttlSeconds
+				ttl_seconds: ttlSeconds,
+				additional_dir: needsDir ? dir : null
 			})
-			granted.push({ raw: p.raw, pattern: p.pattern })
+			granted.push({ raw: p.raw, pattern: p.pattern, dir: needsDir ? dir : null })
 		}
 		state.counters[sid] = []
 		state.warned[sid] = 0
 		floatingPatterns = state.grants.map(g => g.pattern)
+		// Rebuild additionalDirectories: keep everything already there
+		// (user entries + carried-over floating dirs) since we only add,
+		// never remove here. Cleanup handles removal.
+		finalAdditionalDirs = Array.from(dirSet)
 		return { state }
 	})
 
 	if (granted.length > 0) {
-		writeAllow(settings, Array.from(allowSet), floatingPatterns)
+		writeAllow(settings, Array.from(allowSet), floatingPatterns, finalAdditionalDirs)
 		audit('grant', {
 			sid, ttl_seconds: ttlSeconds, expires_at: expiresAt,
-			patterns: granted.map(g => g.pattern)
+			patterns: granted.map(g => g.pattern),
+			additional_dirs: grantedDirs
 		})
 	}
 
-	report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid })
+	report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid, grantedDirs })
 }
 
 function list({ opts }) {
@@ -288,11 +322,18 @@ function reconcile({ positional, opts }) {
 	for (const p of orphans) print(`    ${p}`)
 }
 
-function report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid }) {
+function report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid, grantedDirs }) {
 	if (granted.length > 0) {
 		const expiry = `expires ${new Date(expiresAt).toISOString()} (TTL ${ttlSeconds}s)`
 		print(`✓ ${granted.length} pattern(s) granted [sid ${sid.slice(0, 8)} · ${expiry}]:`)
-		for (const g of granted) print(`    ${g.pattern}`)
+		for (const g of granted) {
+			const suffix = g.dir ? `  (+ additionalDirectories: ${g.dir})` : ''
+			print(`    ${g.pattern}${suffix}`)
+		}
+	}
+	if (grantedDirs && grantedDirs.length > 0) {
+		print(`  additionalDirectories added (${grantedDirs.length}):`)
+		for (const d of grantedDirs) print(`    ${d}`)
 	}
 	if (skipped.length > 0) {
 		print(`↷ ${skipped.length} already allowed (no-op):`)

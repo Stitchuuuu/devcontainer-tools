@@ -112,4 +112,19 @@ function canonicalize(toolName, toolInput) {
 	return null
 }
 
-module.exports = { canonicalize, canonicalizeBash, canonicalizeDir }
+// Reverse of canonicalizeDir for file-tool canonicals: pull the bucketed
+// directory back out of e.g. `Edit(/foo/bar/**)` → `/foo/bar`. Returns null
+// for Bash canonicals or malformed input. Used when granting a file-tool
+// pattern to also inject the directory into `permissions.additionalDirectories`
+// (Claude Code refuses file writes outside cwd + additionalDirectories, so
+// the allow-list entry alone is not enough).
+function extractDirFromFileToolPattern(canonical) {
+	if (typeof canonical !== 'string') return null
+	const m = /^(?:Edit|Write|Read|NotebookEdit)\((\/[^)]+)\/\*\*\)$/.exec(canonical)
+	return m ? m[1] : null
+}
+
+module.exports = {
+	canonicalize, canonicalizeBash, canonicalizeDir,
+	extractDirFromFileToolPattern
+}

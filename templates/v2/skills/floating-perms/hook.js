@@ -16,9 +16,15 @@
 //                     and /floating-perms reconcile.
 
 const fs = require('fs')
-const { canonicalize } = require('./lib/pattern')
+const { canonicalize, extractDirFromFileToolPattern } = require('./lib/pattern')
 const { withState, readAllow, SETTINGS_LOCAL, audit, findFloatingSection } = require('./lib/state')
 const { revokeForSession, revokeExpired } = require('./cleanup')
+
+const CWD_PREFIX = '/workspace'
+
+function isUnderCwd(dir) {
+	return dir === CWD_PREFIX || dir.startsWith(CWD_PREFIX + '/')
+}
 
 const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
 
@@ -31,22 +37,34 @@ const CANONICAL_FILE_TOOL_RE = /^(Edit|Write|Read|NotebookEdit)\(\/[^)]+\/\*\*\)
 // covered by an allow-list entry, notably when the same command is
 // present under a slightly different pattern form like `Bash(grep *)`
 // vs `Bash(grep:*)`). Missing files are silently ignored.
-const ALLOWLIST_LAYERS = [
+//
+// Skipped entirely when FP_SETTINGS_LOCAL is set (test harness): tests
+// isolate all state under a tmp dir and must not read the real machine's
+// allowlist files, which would otherwise cross-contaminate the phantom
+// guard and hide legitimate spike detections.
+const ALLOWLIST_LAYERS = process.env.FP_SETTINGS_LOCAL ? [] : [
 	BASELINE_PATH,
 	'/workspace/.claude/settings.json',
 	'/home/node/.claude/settings.json',
 	'/home/node/.claude/settings.local.json'
 ]
 
-function readAllowFile(p) {
+function readSettingsFile(p) {
 	try {
 		const buf = fs.readFileSync(p, 'utf8')
 		const parsed = JSON.parse(buf)
-		return parsed && parsed.permissions && Array.isArray(parsed.permissions.allow)
-			? parsed.permissions.allow : []
+		const perms = parsed && parsed.permissions
+		const allow = perms && Array.isArray(perms.allow) ? perms.allow : []
+		const dirs  = perms && Array.isArray(perms.additionalDirectories)
+			? perms.additionalDirectories : []
+		return { allow, dirs }
 	} catch {
-		return []
+		return { allow: [], dirs: [] }
 	}
+}
+
+function readAllowFile(p) {
+	return readSettingsFile(p).allow
 }
 
 function readBaselineAllow() {
@@ -58,19 +76,33 @@ function readBaselineAllow() {
 // tracked baseline, project settings, user settings. Env-overridden
 // SETTINGS_LOCAL is honored (used by the test harness).
 function readCombinedAllow() {
-	const out = new Set()
+	const allowSet = new Set()
+	const dirSet   = new Set()
 	for (const p of [SETTINGS_LOCAL, ...ALLOWLIST_LAYERS]) {
-		for (const entry of readAllowFile(p)) out.add(entry)
+		const { allow, dirs } = readSettingsFile(p)
+		for (const entry of allow) allowSet.add(entry)
+		for (const d of dirs)      dirSet.add(d)
 	}
-	return out
+	return { allowSet, dirSet }
 }
 
-// Decide whether a canonical pattern is already covered by any allowlist
-// entry. Exact match wins; for Bash, also match Claude Code's alternate
-// forms (`Bash(cmd)`, `Bash(cmd:...)`, `Bash(cmd ...)`) since those grant
-// the same command with different argument shapes.
-function isPatternCovered(canonical, allowSet) {
+// Decide whether a canonical pattern is already covered — either by an
+// allowlist entry (any layer) or, for file tools, by cwd / additionalDirectories.
+// Exact allow-list match wins; for Bash we also match Claude Code's alternate
+// forms (`Bash(cmd)`, `Bash(cmd:...)`, `Bash(cmd ...)`) since those grant the
+// same command with different argument shapes.
+function isPatternCovered(canonical, { allowSet, dirSet }) {
 	if (allowSet.has(canonical)) return true
+
+	const dir = extractDirFromFileToolPattern(canonical)
+	if (dir) {
+		if (isUnderCwd(dir)) return true
+		for (const d of dirSet) {
+			if (dir === d || dir.startsWith(d + '/')) return true
+		}
+		return false
+	}
+
 	const m = /^Bash\(([^:]+):\*\)$/.exec(canonical)
 	if (!m) return false
 	const cmd = m[1]

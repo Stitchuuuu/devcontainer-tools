@@ -277,6 +277,56 @@ test('phantom guard: PermissionRequest ignored when pattern is already in allowl
 	}))
 })
 
+test('phantom guard: file-tool prompt skipped when dir is in additionalDirectories', () => {
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: {
+			allow: [],
+			additionalDirectories: ['/tmp/scratch']
+		}
+	}))
+
+	const sid = uniqueSid()
+	const base = 1_700_000_520_000
+
+	// Write into a subpath of /tmp/scratch — covered by additionalDirectories.
+	withFixedNow(base + 10, () => {
+		hook.handlePermissionRequest({
+			session_id: sid, tool_name: 'Write',
+			tool_input: { file_path: '/tmp/scratch/inner/foo.txt' },
+			tool_use_id: 'd1'
+		})
+	})
+
+	const st = readState()
+	assert.deepEqual(st.counters[sid] || [], [],
+		'file-tool prompt on additionalDirectories subpath must not grow the counter')
+
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: { allow: [] }
+	}))
+})
+
+test('phantom guard: file-tool prompt under cwd (/workspace) is always covered', () => {
+	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
+		permissions: { allow: [] }
+	}))
+
+	const sid = uniqueSid()
+	const base = 1_700_000_540_000
+
+	withFixedNow(base + 10, () => {
+		hook.handlePermissionRequest({
+			session_id: sid, tool_name: 'Edit',
+			tool_input: { file_path: '/workspace/src/foo.ts' },
+			tool_use_id: 'd2'
+		})
+	})
+
+	const st = readState()
+	assert.deepEqual(st.counters[sid] || [], [],
+		'file-tool prompt on cwd path must not grow the counter')
+})
+
 test('phantom guard: uncovered pattern still counted', () => {
 	fs.writeFileSync(process.env.FP_SETTINGS_LOCAL, JSON.stringify({
 		permissions: { allow: ['Bash(cat:*)'] }

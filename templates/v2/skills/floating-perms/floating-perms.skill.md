@@ -1,5 +1,5 @@
 ---
-description: Grant a temporary batch of permissions in settings.local.json (session-scoped, TTL-bounded). Auto-triggered by Claude after the PreToolUse hook detects a spike of permission prompts, or invoked manually by the user. Grants expire after TTL (default 30 min) — SessionEnd cleanup is a best-effort second layer since it doesn't reliably fire on VS Code shutdown. Audit log at .devcontainer/notify/floating-perms-audit.jsonl. MANDATORY workflow: ANALYZE → ASK via AskUserQuestion → EXECUTE → RETRY. Never call apply.js batch without an explicit AskUserQuestion confirmation right before it.
+description: Grant a temporary batch of permissions in settings.local.json (session-scoped, TTL-bounded). Auto-triggered by Claude after the PreToolUse hook detects a spike of permission prompts, or invoked manually by the user. For Bash grants, writes `permissions.allow` (canonical `Bash(cmd:*)`). For Edit/Write/Read/NotebookEdit grants on paths outside cwd, ALSO writes `permissions.additionalDirectories` — Claude Code refuses file operations outside cwd + additionalDirectories regardless of what's in `allow`. Grants expire after TTL (default 30 min) — SessionEnd cleanup is a best-effort second layer since it doesn't reliably fire on VS Code shutdown. Audit log at .devcontainer/notify/floating-perms-audit.jsonl. MANDATORY workflow: ANALYZE → ASK via AskUserQuestion → EXECUTE → RETRY. Never call apply.js batch without an explicit AskUserQuestion confirmation right before it.
 argument-hint: "batch <pat1> <pat2>... [ttl=30m] sid=<id>  |  list [sid=<id>]  |  revoke <pat>  |  gc sid=<id>"
 ---
 
@@ -57,6 +57,13 @@ Canonical pattern shapes:
 - `Write(<dir>/**)`            — e.g. `Write(/var/tmp/**)`
 - `Read(<dir>/**)`             — e.g. `Read(/tmp/scratch/**)`
 - `NotebookEdit(<dir>/**)`     — same shape
+
+**File-tool dirs outside cwd get injected into `additionalDirectories`
+automatically.** When you grant `Write(/tmp/foo/**)`, `apply.js` also adds
+`/tmp/foo` to `permissions.additionalDirectories` because Claude Code refuses
+file writes/reads outside cwd + additionalDirectories regardless of what's in
+`allow`. Dirs already under `/workspace/**` (cwd) or already present in
+`additionalDirectories` are skipped — no churn. Bash grants only touch `allow`.
 
 The deny reason already tells you which patterns triggered the spike (and
 gives you the canonical forms copy-paste-ready); include them + everything
@@ -294,6 +301,15 @@ scan the file and immediately tell which entries are managed.
 If you ever see one sentinel without its pair, the writer auto-heals on
 the next mutation — both sentinels are filtered on every write and
 re-emitted from scratch.
+
+**`permissions.additionalDirectories` has NO sentinel** — it's a plain
+array of absolute paths, no entries the permission engine ignores. Tracking
+is state-driven instead: each grant stores its `additional_dir` in
+`state.json`, and cleanup removes the dir from `additionalDirectories` only
+if no remaining grant still needs it. If `state.json` is lost, injected
+dirs stay in the file until the user removes them manually — same failure
+mode class as pre-V1.2 allow-list orphans, currently not covered by
+`reconcile`.
 
 ## Orphan reconciliation
 

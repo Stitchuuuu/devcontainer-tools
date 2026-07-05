@@ -16,18 +16,62 @@
 
 const path = require('path')
 
-const BASH_STRIP_PREFIX = /^\s*(?:env\s+[A-Z_][A-Z0-9_]*=\S+\s+)+/i
-const BASH_LEADING_CD   = /^\s*cd\s+\S+\s*&&\s*/
-
 const FILE_TOOLS = new Set(['Edit', 'Write', 'Read', 'NotebookEdit'])
+
+// Tokenize the first command of a bash string. Respects single/double
+// quotes and backslash escapes. Stops at |, &, ;, <, > (hard operators
+// or redirection starts). Surfaces && as its own token so callers can
+// step past `cd X && cmd` chains. Parens deliberately stay inside
+// tokens — treating them as boundaries would break command-substitution
+// shapes like `TOK=$(jq .foo file)` whose best-effort label depends on
+// the assign-skip filter finding a non-assign token after `TOK=$(jq`.
+function tokenizeFirstCommand(s) {
+	const tokens = []
+	let cur = ''
+	let inSingle = false, inDouble = false
+	const push = () => { if (cur !== '') { tokens.push(cur); cur = '' } }
+
+	for (let i = 0; i < s.length; i++) {
+		const c = s[i]
+		if (inSingle) {
+			if (c === "'") inSingle = false
+			else cur += c
+			continue
+		}
+		if (inDouble) {
+			if (c === '\\' && i + 1 < s.length && '"\\$`'.includes(s[i + 1])) {
+				cur += s[++i]
+			} else if (c === '"') inDouble = false
+			else cur += c
+			continue
+		}
+		if (c === "'")  { inSingle = true; continue }
+		if (c === '"')  { inDouble = true; continue }
+		if (c === '\\' && i + 1 < s.length) { cur += s[++i]; continue }
+		if (/\s/.test(c)) { push(); continue }
+		if (c === '&' && s[i + 1] === '&') { push(); tokens.push('&&'); i++; continue }
+		if ('|&;<>'.includes(c)) { push(); return tokens }
+		cur += c
+	}
+	push()
+	return tokens
+}
+
+// Well-known command wrappers that must be skipped to reach the real
+// command root. Kept small on purpose — only shapes that actually
+// appear in Claude Code Bash inputs.
+const PREFIX_CMDS = new Set(['sudo', 'env', 'nice', 'nohup', 'exec', 'command', 'time'])
+const ASSIGN_RE   = /^[A-Za-z_][A-Za-z0-9_]*=/
 
 function canonicalizeBash(command) {
 	if (typeof command !== 'string') return null
-	let s = command.trim()
-	while (BASH_STRIP_PREFIX.test(s)) s = s.replace(BASH_STRIP_PREFIX, '')
-	while (BASH_LEADING_CD.test(s)) s = s.replace(BASH_LEADING_CD, '')
-	if (/^sudo\s+/.test(s)) s = s.replace(/^sudo\s+/, '')
-	const first = s.split(/\s+/)[0]
+	const tokens = tokenizeFirstCommand(command.trim())
+	let i = 0
+	// Step past `cd X && …` chains (may repeat).
+	while (tokens[i] === 'cd' && tokens[i + 2] === '&&') i += 3
+	// Skip wrappers (sudo/env/…) and bare VAR=value assignments.
+	while (i < tokens.length && (PREFIX_CMDS.has(tokens[i]) || ASSIGN_RE.test(tokens[i]))) i++
+	const first = tokens[i]
 	if (!first) return null
 	const cmd = path.basename(first)
 	if (!cmd) return null
@@ -68,4 +112,19 @@ function canonicalize(toolName, toolInput) {
 	return null
 }
 
-module.exports = { canonicalize, canonicalizeBash, canonicalizeDir }
+// Reverse of canonicalizeDir for file-tool canonicals: pull the bucketed
+// directory back out of e.g. `Edit(/foo/bar/**)` → `/foo/bar`. Returns null
+// for Bash canonicals or malformed input. Used when granting a file-tool
+// pattern to also inject the directory into `permissions.additionalDirectories`
+// (Claude Code refuses file writes outside cwd + additionalDirectories, so
+// the allow-list entry alone is not enough).
+function extractDirFromFileToolPattern(canonical) {
+	if (typeof canonical !== 'string') return null
+	const m = /^(?:Edit|Write|Read|NotebookEdit)\((\/[^)]+)\/\*\*\)$/.exec(canonical)
+	return m ? m[1] : null
+}
+
+module.exports = {
+	canonicalize, canonicalizeBash, canonicalizeDir,
+	extractDirFromFileToolPattern
+}

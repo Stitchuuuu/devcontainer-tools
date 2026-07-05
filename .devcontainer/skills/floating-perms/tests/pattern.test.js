@@ -4,8 +4,8 @@
 const { test } = require('node:test')
 const assert   = require('node:assert/strict')
 
-const { canonicalize, canonicalizeBash, canonicalizeDir } =
-	require('../lib/pattern')
+const { canonicalize, canonicalizeBash, canonicalizeDir,
+	extractDirFromFileToolPattern } = require('../lib/pattern')
 
 test('canonicalize returns a string for Bash without an allow-list arg', () => {
 	assert.equal(canonicalize('Bash', { command: 'foo --bar' }), 'Bash(foo:*)')
@@ -164,4 +164,31 @@ test('canonicalize wraps file tools with the tool name', () => {
 		canonicalize('NotebookEdit', { notebook_path: '/tmp/scratch/nb.ipynb' }),
 		'NotebookEdit(/tmp/scratch/**)'
 	)
+})
+
+test('extractDirFromFileToolPattern pulls the dir back out', () => {
+	assert.equal(
+		extractDirFromFileToolPattern('Edit(/tmp/scratch/**)'),
+		'/tmp/scratch'
+	)
+	assert.equal(
+		extractDirFromFileToolPattern('Write(/home/node/.config/**)'),
+		'/home/node/.config'
+	)
+	assert.equal(
+		extractDirFromFileToolPattern('Read(/foo/bar/baz/**)'),
+		'/foo/bar/baz'
+	)
+	assert.equal(
+		extractDirFromFileToolPattern('NotebookEdit(/tmp/**)'),
+		'/tmp'
+	)
+})
+
+test('extractDirFromFileToolPattern returns null on non-file-tool input', () => {
+	assert.equal(extractDirFromFileToolPattern('Bash(curl:*)'), null)
+	assert.equal(extractDirFromFileToolPattern('Bash(head *)'), null)
+	assert.equal(extractDirFromFileToolPattern(null),            null)
+	assert.equal(extractDirFromFileToolPattern(''),              null)
+	assert.equal(extractDirFromFileToolPattern('not a canonical'), null)
 })

@@ -142,9 +142,15 @@ function readAllow() {
 		const parsed = JSON.parse(buf)
 		const allow = parsed && parsed.permissions && Array.isArray(parsed.permissions.allow)
 			? parsed.permissions.allow : []
-		return { settings: parsed && typeof parsed === 'object' ? parsed : {}, allow }
+		const additionalDirectories = parsed && parsed.permissions
+			&& Array.isArray(parsed.permissions.additionalDirectories)
+			? parsed.permissions.additionalDirectories : []
+		return {
+			settings: parsed && typeof parsed === 'object' ? parsed : {},
+			allow, additionalDirectories
+		}
 	} catch {
-		return { settings: {}, allow: [] }
+		return { settings: {}, allow: [], additionalDirectories: [] }
 	}
 }
 
@@ -176,12 +182,25 @@ function mergeAllowSections(allow, floatingPatterns) {
 	return [...human, SENTINEL_START, ...floating, SENTINEL_END]
 }
 
-function writeAllow(settings, allow, floatingPatterns) {
+// additionalDirectories has no sentinel scheme (it's a plain array of
+// absolute paths — no entries the permission engine will simply ignore).
+// The caller therefore passes the final desired union (user-authored dirs
+// PLUS the currently-active floating dirs). If undefined, the existing
+// value is preserved; if the resulting array is empty, the key is dropped
+// so files that never had it don't grow it on us.
+function writeAllow(settings, allow, floatingPatterns, additionalDirectories) {
 	if (!settings || typeof settings !== 'object') settings = {}
 	if (!settings.permissions || typeof settings.permissions !== 'object') {
 		settings.permissions = {}
 	}
 	settings.permissions.allow = mergeAllowSections(allow, floatingPatterns || [])
+	if (additionalDirectories !== undefined) {
+		if (Array.isArray(additionalDirectories) && additionalDirectories.length > 0) {
+			settings.permissions.additionalDirectories = additionalDirectories
+		} else {
+			delete settings.permissions.additionalDirectories
+		}
+	}
 	fs.mkdirSync(path.dirname(SETTINGS_LOCAL), { recursive: true })
 	const tmp = SETTINGS_LOCAL + '.tmp.' + process.pid
 	fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n')
