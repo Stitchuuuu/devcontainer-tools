@@ -84,6 +84,16 @@ If the deny lists `Read(/tmp/**)`, the question must propose
 `Read(/tmp/**)` — not `Bash(cat:*)`, not a narrower
 `Read(/tmp/extensions.js)`.
 
+**DISCLOSE additionalDirectories side-effect.** For every file-tool
+pattern (Edit/Write/Read/NotebookEdit(<dir>/**)) whose `<dir>` is NOT
+under the cwd (currently `/workspace`), the grant will ALSO inject
+`<dir>` into `permissions.additionalDirectories`. This is not optional
+— Claude Code refuses file operations outside cwd + additionalDirectories
+regardless of the `allow` entry. Users MUST see this side-effect in the
+`AskUserQuestion` description so they consent knowingly. Explicitly list
+the injected dirs in the option description, e.g.
+`"...and adds /home/node/.config to additionalDirectories"`.
+
 Recommended shape:
 
 ```
@@ -93,14 +103,20 @@ header:   "floating-perms"
 options:
   - label: "Allow all (default TTL 30m)  (Recommended)"
     description: "Grants Bash(curl:*), Bash(npm view:*), Edit(/home/node/.config/**).
-                  Auto-revoked after 30 minutes."
+                  Also adds /home/node/.config to additionalDirectories
+                  (required — outside cwd). Auto-revoked after 30 minutes."
   - label: "Allow all, longer TTL (e.g. ttl=2h)"
-    description: "Same patterns, custom expiry — use for tasks longer than the default"
+    description: "Same patterns + additionalDirectories injection,
+                  custom expiry — use for tasks longer than the default"
   - label: "Subset (specify which)"
     description: "You'll tell me which ones to keep"
   - label: "Refuse — I'll change approach"
     description: "No grant; I'll find another way without these perms"
 ```
+
+If none of the file-tool patterns need additionalDirectories injection
+(all under cwd, or all Bash-only), drop that sentence from the
+description — don't add ceremony where none is needed.
 
 You may split into 2-3 questions if the batch is heterogeneous (e.g. one
 question per tool family). Stay under 4 questions per AskUserQuestion call
