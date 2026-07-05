@@ -5,6 +5,7 @@
 //! the [`Notification`] payload and the [`Backend`] contract.
 
 use std::fmt;
+use std::path::PathBuf;
 
 /// A user-visible notification payload, backend-agnostic.
 ///
@@ -19,12 +20,27 @@ pub struct Notification {
     pub body: String,
     /// Optional third line rendered between title and body on macOS.
     pub subtitle: Option<String>,
-    /// Interruption level. Mapping to platform priority is per-backend and
-    /// lands in session 4 (currently unread by [`notif-macos`]).
+    /// Interruption level. Maps to `UNNotificationInterruptionLevel` on macOS
+    /// (wired session 4), `ToastScenario` on Windows, `urgency` on Linux.
     pub priority: Priority,
     /// Sender identity: which `.app` bundle / AUMID / app_id the notification
     /// appears under.
     pub sender: Sender,
+    /// Per-notification identifier. Backends use it as
+    /// `UNNotificationRequest.identifier` (macOS) or an equivalent on other
+    /// platforms. Absent → backend mints a random one.
+    pub id: Option<String>,
+    /// Sound to play on delivery. Backend maps to the platform primitive
+    /// (macOS: `UNNotificationSound`; Windows: `<audio src="…"/>`; Linux:
+    /// `sound-name` hint).
+    pub sound: Option<Sound>,
+    /// Path to an inline image / attachment. Validated at CLI parse (file
+    /// exists, extension in `.png` / `.jpg` / `.gif`).
+    pub image: Option<PathBuf>,
+    /// Behavior when the banner is auto-dismissed by the OS. macOS has no
+    /// native equivalent in v0.1 (backend emits an `info:` line and drops
+    /// the flag); Windows / Linux honor it in later versions.
+    pub on_timeout: Option<TimeoutBehavior>,
 }
 
 /// Portable interruption level. Maps to
@@ -37,6 +53,81 @@ pub enum Priority {
     Normal,
     High,
     Critical,
+}
+
+impl Priority {
+    /// Numeric level matching Apple's `UNNotificationInterruptionLevel`
+    /// (`Passive=0`, `Active=1`, `TimeSensitive=2`, `Critical=3`). The macOS
+    /// backend uses this ordering directly; Windows / Linux remap.
+    #[must_use]
+    pub const fn level(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Normal => 1,
+            Self::High => 2,
+            Self::Critical => 3,
+        }
+    }
+
+    /// Wire-format string used to serialize `--priority` on the outer→inner
+    /// CLI hop (macOS re-executes into the bundled `notif`).
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// Portable sound selector. Maps to `UNNotificationSound` on macOS —
+/// `Default` → `defaultSound()`, `Alert` → `defaultCriticalSound()`,
+/// `Custom(s)` → bundled sound name if `s` looks like a bare name,
+/// or a `soundURL` if `s` looks like a filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sound {
+    Default,
+    Alert,
+    Custom(String),
+}
+
+impl Sound {
+    /// Wire-format string used to serialize `--sound` on the outer→inner
+    /// CLI hop. `Default` / `Alert` round-trip through the keyword; `Custom`
+    /// round-trips through the raw value.
+    #[must_use]
+    pub fn wire_str(&self) -> &str {
+        match self {
+            Self::Default => "default",
+            Self::Alert => "alert",
+            Self::Custom(v) => v.as_str(),
+        }
+    }
+}
+
+/// What to do with a notification when the OS auto-dismisses it. macOS in
+/// v0.1 has no native equivalent (the OS decides for us); Windows /
+/// Linux backends honor it in v0.3+.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutBehavior {
+    LogOnly,
+    Dismiss,
+    Persist,
+}
+
+impl TimeoutBehavior {
+    /// Wire-format string used to serialize `--on-timeout` on the outer→inner
+    /// CLI hop.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::LogOnly => "log-only",
+            Self::Dismiss => "dismiss",
+            Self::Persist => "persist",
+        }
+    }
 }
 
 /// Sender identity — the `.app` bundle (macOS), AUMID (Windows), or app_id
@@ -199,5 +290,41 @@ mod tests {
         assert!(Sender::new("valid_key-1").is_ok());
         assert!(Sender::new("").is_err());
         assert!(Sender::new("Bad").is_err());
+    }
+
+    #[test]
+    fn priority_level_table() {
+        // Contract with `UNNotificationInterruptionLevel` — Apple docs pin
+        // Passive=0, Active=1, TimeSensitive=2, Critical=3.
+        assert_eq!(Priority::Low.level(), 0);
+        assert_eq!(Priority::Normal.level(), 1);
+        assert_eq!(Priority::High.level(), 2);
+        assert_eq!(Priority::Critical.level(), 3);
+    }
+
+    #[test]
+    fn priority_wire_str_table() {
+        assert_eq!(Priority::Low.wire_str(), "low");
+        assert_eq!(Priority::Normal.wire_str(), "normal");
+        assert_eq!(Priority::High.wire_str(), "high");
+        assert_eq!(Priority::Critical.wire_str(), "critical");
+    }
+
+    #[test]
+    fn sound_wire_str() {
+        assert_eq!(Sound::Default.wire_str(), "default");
+        assert_eq!(Sound::Alert.wire_str(), "alert");
+        assert_eq!(Sound::Custom("Ping".into()).wire_str(), "Ping");
+        assert_eq!(
+            Sound::Custom("/System/Library/Sounds/Glass.aiff".into()).wire_str(),
+            "/System/Library/Sounds/Glass.aiff",
+        );
+    }
+
+    #[test]
+    fn timeout_wire_str() {
+        assert_eq!(TimeoutBehavior::LogOnly.wire_str(), "log-only");
+        assert_eq!(TimeoutBehavior::Dismiss.wire_str(), "dismiss");
+        assert_eq!(TimeoutBehavior::Persist.wire_str(), "persist");
     }
 }

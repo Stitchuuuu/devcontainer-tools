@@ -9,8 +9,8 @@ notif-core = { path = "../notif-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSError", "NSUUID", "NSDictionary", "NSArray", "NSDate", "NSValue"] }
-objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSError", "NSUUID", "NSDictionary", "NSArray", "NSDate", "NSValue", "NSURL"] }
+objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationAttachment", "block2"] }
 block2 = "0.6"
 plist = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
