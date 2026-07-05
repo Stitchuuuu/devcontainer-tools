@@ -577,7 +577,39 @@ mod inner {
         center.addNotificationRequest_withCompletionHandler(&request, Some(&block));
 
         let result = wait_for_slot(&slot, DISPATCH_TIMEOUT);
-        match &result {
+        let final_result = match result {
+            Err(MacosError::AttachmentRefused(msg)) => {
+                notif_core::warn::emit(
+                    "attachment_move_failed",
+                    &format!(
+                        "UN center refused attachment ({msg}); retrying without attachment",
+                    ),
+                );
+                // Rebuild the request without the attachment. UN retains
+                // a snapshot of `content` at request creation, so we
+                // clear on the content object AND re-issue the request
+                // to be safe against any lingering reference.
+                content.setAttachments(&NSArray::from_slice(&[]));
+                let retry_request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+                    &identifier,
+                    &content,
+                    None,
+                );
+                let retry_slot: Arc<Mutex<Option<Result<(), MacosError>>>> =
+                    Arc::new(Mutex::new(None));
+                let retry_slot_cb = retry_slot.clone();
+                let retry_block = RcBlock::new(move |err: *mut NSError| {
+                    *retry_slot_cb.lock().unwrap() = Some(classify_ns_error(err));
+                });
+                center.addNotificationRequest_withCompletionHandler(
+                    &retry_request,
+                    Some(&retry_block),
+                );
+                wait_for_slot(&retry_slot, DISPATCH_TIMEOUT)
+            }
+            other => other,
+        };
+        match &final_result {
             Ok(()) => notif_core::warn::stderr(&format!(
                 "delivered notif id='{dispatched_id}' via UN center",
             )),
@@ -585,7 +617,7 @@ mod inner {
                 "delivery failed notif id='{dispatched_id}': {e}",
             )),
         }
-        result
+        final_result
     }
 
     /// Inner-mode setup. Fires `requestAuthorizationWithOptions:` and blocks
@@ -627,6 +659,12 @@ mod inner {
         let lower = msg.to_lowercase();
         if lower.contains("not signed") || lower.contains("code signature") {
             Err(MacosError::NotSigned)
+        } else if lower.contains("attachment") {
+            // Covers "Failed to move attachment file into data store"
+            // and every other UN-side attachment refusal (bad extension,
+            // sandbox path, etc.). Caller decides whether to retry
+            // without the attachment or fail.
+            Err(MacosError::AttachmentRefused(msg))
         } else {
             Err(MacosError::Objc(msg))
         }

@@ -51,6 +51,13 @@ pub enum MacosError {
     #[error("objc: {0}")]
     Objc(String),
 
+    /// UN center accepted the attachment at creation but refused to move
+    /// it into its data store at `add(request)` time. Caught by
+    /// `dispatch_inner` to retry the send without the attachment so the
+    /// banner still delivers (graceful degradation).
+    #[error("attachment refused by UN center: {0}")]
+    AttachmentRefused(String),
+
     /// `open -W -a <.app>` exited non-zero. Payload is the launched exit code.
     #[error("open(1) exited {0}")]
     OpenFailed(i32),
