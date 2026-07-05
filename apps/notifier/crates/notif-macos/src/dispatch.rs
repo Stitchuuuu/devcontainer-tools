@@ -18,10 +18,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use notif_core::callback::CallbackConfig;
 use notif_core::Notification;
 
 use crate::bundle::{ad_hoc_codesign, ensure_bundle};
 use crate::error::MacosError;
+use crate::overrides::MacosOverrides;
 
 /// True iff `current_exe()` lives at `.../<x>.app/Contents/MacOS/notif`.
 ///
@@ -59,24 +61,30 @@ pub fn is_inner_mode() -> bool {
     }
 }
 
-/// Outer-mode entry point. Called by [`crate::backend::MacosBackend::dispatch`].
+/// Outer-mode entry point. Called by [`crate::backend::MacosBackend::dispatch`]
+/// (empty overrides + callbacks) and by the CLI directly (populated forms).
 ///
-/// Ensures the bundle exists, spawns `open -W -a <.app> --args send ...`, and
-/// retries once with an ad-hoc codesign if the inner exit reports
-/// [`MacosError::NotSigned`].
+/// Ensures the bundle exists, spawns the bundled `notif` directly, retries
+/// once with an ad-hoc codesign if the inner exit reports
+/// [`MacosError::NotSigned`], and propagates the Tier 3 `--macos-*` overrides
+/// + `--on-*` callback config through the outer→inner CLI hop.
 ///
 /// # Errors
 /// Bubbles anything from [`ensure_bundle`] plus [`MacosError::OpenFailed`] or
 /// [`MacosError::NotSigned`] on second failure.
-pub fn dispatch_outer(notif: &Notification) -> Result<(), MacosError> {
+pub fn dispatch_outer(
+    notif: &Notification,
+    overrides: &MacosOverrides,
+    callbacks: &CallbackConfig,
+) -> Result<(), MacosError> {
     let display = notif.sender.key.clone();
     let bundle = ensure_bundle(&notif.sender.key, &display, None, None)?;
 
-    match invoke_inner_send(&bundle, notif) {
+    match invoke_inner_send(&bundle, notif, overrides, callbacks) {
         Ok(()) => Ok(()),
         Err(MacosError::NotSigned) => {
             ad_hoc_codesign(&bundle)?;
-            invoke_inner_send(&bundle, notif)
+            invoke_inner_send(&bundle, notif, overrides, callbacks)
         }
         Err(e) => Err(e),
     }
@@ -145,7 +153,12 @@ fn inner_exe_path(bundle: &Path) -> PathBuf {
     bundle.join("Contents/MacOS/notif")
 }
 
-fn invoke_inner_send(bundle: &Path, notif: &Notification) -> Result<(), MacosError> {
+fn invoke_inner_send(
+    bundle: &Path,
+    notif: &Notification,
+    overrides: &MacosOverrides,
+    callbacks: &CallbackConfig,
+) -> Result<(), MacosError> {
     let mut cmd = Command::new(inner_exe_path(bundle));
     cmd.arg("send")
         .arg("--title").arg(&notif.title)
@@ -167,8 +180,46 @@ fn invoke_inner_send(bundle: &Path, notif: &Notification) -> Result<(), MacosErr
     if let Some(id) = &notif.id {
         cmd.arg("--id").arg(id);
     }
-    if let Some(t) = &notif.on_timeout {
-        cmd.arg("--on-timeout").arg(t.wire_str());
+    // `notif.on_timeout: Option<TimeoutBehavior>` (portable auto-dismiss
+    // behavior enum) is deliberately NOT serialized here — the macOS CLI
+    // routes `--on-timeout` through [`CallbackConfig`] instead (target
+    // string, not enum). The field stays on the portable `Notification`
+    // struct for Windows/Linux backends that may still honor it, and any
+    // caller that sets it explicitly through the library API can serialize
+    // it here later without breaking wire compatibility.
+
+    // ---- Tier 3 `--macos-*` overrides ------------------------------------
+    if let Some(name) = &overrides.sound_name {
+        cmd.arg("--macos-sound-name").arg(name);
+    }
+    if let Some(path) = &overrides.attachment {
+        cmd.arg("--macos-attachment").arg(path);
+    }
+    if let Some(il) = overrides.interruption_level {
+        cmd.arg("--macos-interruption-level").arg(il.wire_str());
+    }
+    if let Some(tid) = &overrides.thread_identifier {
+        cmd.arg("--macos-thread-identifier").arg(tid);
+    }
+    if let Some(cid) = &overrides.category_identifier {
+        cmd.arg("--macos-category-identifier").arg(cid);
+    }
+
+    // ---- Callback flag surface -------------------------------------------
+    // Each target round-trips through `CallbackTarget::to_wire()` — auto-
+    // detect payloads get canonicalized (e.g. `/tmp/x` → `file:/tmp/x`) so
+    // the inner reparses to the same shape as the outer built.
+    if let Some(t) = &callbacks.on_click {
+        cmd.arg("--on-click").arg(t.to_wire());
+    }
+    for (label, t) in &callbacks.on_actions {
+        cmd.arg("--on-action").arg(format!("{label}:{}", t.to_wire()));
+    }
+    if let Some(t) = &callbacks.on_dismiss {
+        cmd.arg("--on-dismiss").arg(t.to_wire());
+    }
+    if let Some(t) = &callbacks.on_timeout {
+        cmd.arg("--on-timeout").arg(t.to_wire());
     }
     run_inner(cmd)
 }
@@ -210,9 +261,11 @@ mod inner {
         UNUserNotificationCenter,
     };
 
+    use notif_core::callback::CallbackConfig;
     use notif_core::{Notification, Priority, Sound};
 
     use crate::error::MacosError;
+    use crate::overrides::{InterruptionLevel, MacosOverrides};
 
     /// Map portable `Priority` to Apple's `UNNotificationInterruptionLevel`.
     ///
@@ -224,6 +277,20 @@ mod inner {
             Priority::Normal => UNNotificationInterruptionLevel::Active,
             Priority::High => UNNotificationInterruptionLevel::TimeSensitive,
             Priority::Critical => UNNotificationInterruptionLevel::Critical,
+        }
+    }
+
+    /// Tier 3 override — map [`InterruptionLevel`] (native camelCase from
+    /// `--macos-interruption-level`) to the Apple raw type. Distinct from
+    /// [`priority_to_interruption_level`] because Tier 3 uses the raw
+    /// four-value macOS vocabulary; portable [`Priority`] carries the
+    /// three-tier abstraction the CLI's `--priority` presents.
+    fn macos_interruption_to_apple(v: InterruptionLevel) -> UNNotificationInterruptionLevel {
+        match v {
+            InterruptionLevel::Passive => UNNotificationInterruptionLevel::Passive,
+            InterruptionLevel::Active => UNNotificationInterruptionLevel::Active,
+            InterruptionLevel::TimeSensitive => UNNotificationInterruptionLevel::TimeSensitive,
+            InterruptionLevel::Critical => UNNotificationInterruptionLevel::Critical,
         }
     }
 
@@ -271,7 +338,24 @@ mod inner {
 
     /// Inner-mode send. Called from `main.rs` when `is_inner_mode()` returns
     /// true and the subcommand is `Send`.
-    pub fn dispatch_inner(notif: &Notification) -> Result<(), MacosError> {
+    ///
+    /// Applies the portable `Notification` fields first, then layers the
+    /// Tier 3 `--macos-*` overrides on top per the "native wins" rule.
+    /// Each override emits a per-category `info:` line via
+    /// [`notif_core::warn::info`] when it shadows a portable equivalent —
+    /// silent when no portable counterpart is set.
+    ///
+    /// [`CallbackConfig`] is accepted here for surface completeness (the
+    /// outer→inner CLI hop propagates every `--on-*` flag so the inner
+    /// contract stays stable regardless of dispatcher implementation).
+    /// Actual delegate dispatch is owned by the `notif listen` daemon —
+    /// the delegate wired on the UN center here just logs the stub when
+    /// callbacks were registered.
+    pub fn dispatch_inner(
+        notif: &Notification,
+        overrides: &MacosOverrides,
+        callbacks: &CallbackConfig,
+    ) -> Result<(), MacosError> {
         let center = UNUserNotificationCenter::currentNotificationCenter();
 
         let content = UNMutableNotificationContent::new();
@@ -281,18 +365,56 @@ mod inner {
             content.setSubtitle(&NSString::from_str(sub));
         }
 
+        // ---- Priority / interruption level ------------------------------
+        // Portable `--priority` first, then Tier 3 override wins with an
+        // `info:` line when both are set.
         content.setInterruptionLevel(priority_to_interruption_level(notif.priority));
+        if let Some(il) = overrides.interruption_level {
+            if notif.priority != Priority::Normal {
+                // Only log when the user explicitly passed a portable
+                // `--priority` (Normal is the parser default). Otherwise
+                // Tier 3 is refining the OS default, not shadowing a user
+                // choice.
+                notif_core::warn::info(
+                    "macos_interruption_overrides_priority",
+                    "--priority overridden by --macos-interruption-level",
+                );
+            }
+            content.setInterruptionLevel(macos_interruption_to_apple(il));
+        }
 
+        // ---- Sound ------------------------------------------------------
         if let Some(s) = &notif.sound {
             let sound = build_sound(s);
             content.setSound(Some(&sound));
         }
+        if let Some(name) = &overrides.sound_name {
+            if notif.sound.is_some() {
+                notif_core::warn::info(
+                    "macos_sound_name_overrides_sound",
+                    "--sound overridden by --macos-sound-name",
+                );
+            }
+            let ns_name = NSString::from_str(name);
+            let sound = UNNotificationSound::soundNamed(&ns_name);
+            content.setSound(Some(&sound));
+        }
 
-        if let Some(path) = &notif.image {
-            // UN center reads the file lazily off disk after the request is
-            // accepted — the path must stay valid until delivery. In v0.1 we
-            // pass the caller's path through; v0.2 will copy into an
-            // attachments cache to survive short-lived source files.
+        // ---- Image / attachment -----------------------------------------
+        // Portable `--image` first, Tier 3 `--macos-attachment` overrides.
+        // Both funnel through the same `attachmentWithIdentifier:URL:` call
+        // — same failure handling.
+        let attachment_path = overrides
+            .attachment
+            .as_ref()
+            .or(notif.image.as_ref());
+        if let Some(path) = attachment_path {
+            if notif.image.is_some() && overrides.attachment.is_some() {
+                notif_core::warn::info(
+                    "macos_attachment_overrides_image",
+                    "--image overridden by --macos-attachment",
+                );
+            }
             let ns_path = NSString::from_str(&path.to_string_lossy());
             let url = NSURL::fileURLWithPath(&ns_path);
             let att_id = NSString::from_str("image");
@@ -311,19 +433,30 @@ mod inner {
                     notif_core::warn::emit(
                         "image_attachment_refused",
                         &format!(
-                            "--image refused by UN center ({msg}); notification will be delivered without attachment"
+                            "attachment refused by UN center ({msg}); notification will be delivered without attachment"
                         ),
                     );
                 }
             }
         }
 
-        // `on_timeout` has no native macOS counterpart in v0.1 — accept the
-        // flag, emit a suppressible `warning:` line, drop it.
-        if notif.on_timeout.is_some() {
-            notif_core::warn::emit(
-                "on_timeout_macos",
-                "--on-timeout ignored on macOS in v0.1",
+        // ---- Tier 3 grouping identifiers (no portable counterpart) -------
+        if let Some(tid) = &overrides.thread_identifier {
+            content.setThreadIdentifier(&NSString::from_str(tid));
+        }
+        if let Some(cid) = &overrides.category_identifier {
+            content.setCategoryIdentifier(&NSString::from_str(cid));
+        }
+
+        // Surface the registered-target count so scripts + tests can
+        // round-trip the flag surface end-to-end. The real dispatchers
+        // (hook exec / HTTP POST / file append) live in the `notif listen`
+        // daemon — this branch is the placeholder until the delegate is
+        // wired against the daemon's socket.
+        if !callbacks.is_empty() {
+            eprintln!(
+                "callback stub: {} target(s) registered — dispatch lands via `notif listen` daemon",
+                callbacks.len(),
             );
         }
 
@@ -448,7 +581,11 @@ pub use inner::{dispatch_inner, setup_inner};
 
 // Non-macOS stubs so the workspace builds on the dev host (linux).
 #[cfg(not(target_os = "macos"))]
-pub fn dispatch_inner(_notif: &Notification) -> Result<(), MacosError> {
+pub fn dispatch_inner(
+    _notif: &Notification,
+    _overrides: &MacosOverrides,
+    _callbacks: &CallbackConfig,
+) -> Result<(), MacosError> {
     unreachable!("inner mode is macOS-only")
 }
 #[cfg(not(target_os = "macos"))]

@@ -9,9 +9,13 @@ name = "notif"
 path = "src/main.rs"
 
 [dependencies]
+# `notif-macos` is a normal (unconditional) dep starting session 7a:
+# `MacosOverrides` + `InterruptionLevel` types are referenced by the CLI's
+# `--macos-*` value parsers, which need to compile on every platform for
+# CLI-shape tests. The platform-gated objc2 tree stays inside notif-macos
+# behind `#[cfg(target_os = "macos")]` so Linux builds only pull the
+# type-only `overrides` module.
 clap = { version = "4.6", features = ["derive"] }
 notif-core = { path = "../notif-core" }
-anyhow = "1"
-
-[target.'cfg(target_os = "macos")'.dependencies]
 notif-macos = { path = "../notif-macos" }
+anyhow = "1"

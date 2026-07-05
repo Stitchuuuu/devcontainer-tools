@@ -36,6 +36,7 @@ pub mod clean;
 pub mod dispatch;
 #[cfg(target_os = "macos")]
 pub mod error;
+pub mod overrides;
 #[cfg(target_os = "macos")]
 pub mod sender;
 

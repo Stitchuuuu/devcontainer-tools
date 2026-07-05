@@ -40,27 +40,17 @@ impl PriorityArg {
     }
 }
 
-/// Portable timeout behavior. Kebab-case (`log-only`) is the CLI form.
-#[derive(Copy, Clone, ValueEnum)]
-enum OnTimeoutArg {
-    LogOnly,
-    Dismiss,
-    Persist,
-}
-
-#[cfg(target_os = "macos")]
-impl OnTimeoutArg {
-    fn to_core(self) -> notif_core::TimeoutBehavior {
-        use notif_core::TimeoutBehavior as T;
-        match self {
-            Self::LogOnly => T::LogOnly,
-            Self::Dismiss => T::Dismiss,
-            Self::Persist => T::Persist,
-        }
-    }
-}
+// `--on-timeout` accepts a callback target string, parsed through
+// `notif_core::callback::parse_target`. `notif_core::TimeoutBehavior`
+// stays in the portable crate for Windows/Linux backends that may still
+// honor an enum-shaped auto-dismiss behavior spec.
 
 #[derive(Subcommand)]
+// The `Send` variant is 5× bigger than the others thanks to the 20+ optional
+// flags. Boxing would just add pointer indirection on every access without
+// any perf benefit — the CLI parses the enum once per invocation and drops
+// it. Suppress the pedantic lint.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Dispatch a notification. All register-time metadata (`--name`,
     /// `--icon`, `--identifier`) is accepted inline — if the sender bundle
@@ -113,11 +103,48 @@ enum Command {
         /// UUID.
         #[arg(long)]
         id: Option<String>,
-        /// What to do when the OS auto-dismisses the banner. macOS in v0.1
-        /// has no native equivalent — the flag is accepted and a
-        /// suppressible `warning:` line is emitted (see `--quiet`).
-        #[arg(long, value_enum)]
-        on_timeout: Option<OnTimeoutArg>,
+        // ---- Tier 3 raw macOS overrides ----------------------------------
+        /// `UNNotificationSound::soundNamed(<name>)`. Overrides `--sound`.
+        /// Native beats portable with an `info:` log line when both are set.
+        #[arg(long)]
+        macos_sound_name: Option<String>,
+        /// Adds a `UNNotificationAttachment` at this path. Overrides
+        /// `--image` with an `info:` log line when both are set.
+        #[arg(long)]
+        macos_attachment: Option<std::path::PathBuf>,
+        /// Raw `UNNotificationInterruptionLevel` value: `passive`, `active`,
+        /// `timeSensitive`, `critical`. Overrides `--priority`.
+        #[arg(long, value_parser = parse_macos_interruption_level)]
+        macos_interruption_level: Option<notif_macos::overrides::InterruptionLevel>,
+        /// Grouping key on the banner (`content.setThreadIdentifier`).
+        /// No portable counterpart.
+        #[arg(long)]
+        macos_thread_identifier: Option<String>,
+        /// Registered `UNNotificationCategory` identifier
+        /// (`content.setCategoryIdentifier`). No portable counterpart.
+        #[arg(long)]
+        macos_category_identifier: Option<String>,
+        // ---- Callback targets --------------------------------------------
+        /// Fire on notification body-click. Accepts `hook:<argv>`,
+        /// `url:<https?://…>`, `file:<abs-path>`, or a bare target with
+        /// auto-detect (URL scheme → url, absolute path → file, else hook).
+        #[arg(long, value_parser = parse_callback_target)]
+        on_click: Option<notif_core::callback::CallbackTarget>,
+        /// Fire on a custom action click. Format `<label>:<target>`.
+        /// Repeatable — multiple `--on-action` flags accumulate in the
+        /// order the user typed them (macOS renders actions in
+        /// registration order).
+        #[arg(long, value_parser = parse_callback_action)]
+        on_action: Vec<(String, notif_core::callback::CallbackTarget)>,
+        /// Fire when the user dismisses the banner. Same target shape as
+        /// `--on-click`.
+        #[arg(long, value_parser = parse_callback_target)]
+        on_dismiss: Option<notif_core::callback::CallbackTarget>,
+        /// Fire when the OS auto-dismisses the banner. Callback target
+        /// with the same shape as `--on-click`. (The daemon owns the
+        /// timer that decides when a banner counts as "timed out".)
+        #[arg(long, value_parser = parse_callback_target)]
+        on_timeout: Option<notif_core::callback::CallbackTarget>,
         /// Parse and print the resolved notification as human-readable
         /// key: value pairs on stdout, then exit 0. Does not materialize the
         /// sender bundle and does not call the notification center. `--app`
@@ -210,12 +237,12 @@ fn main() -> Result<()> {
 #[cfg(target_os = "macos")]
 fn run_macos(cmd: Command) -> Result<()> {
     use anyhow::{bail, Context};
-    use notif_core::{Backend, Notification, Priority, Sender};
+    use notif_core::{Notification, Priority, Sender};
+    use notif_macos::bundle;
     use notif_macos::dispatch::{
         dispatch_inner, is_inner_mode, setup_inner, setup_outer, setup_outer_bootstrap,
     };
     use notif_macos::sender::DEFAULT_KEY;
-    use notif_macos::{bundle, MacosBackend};
 
     match cmd {
         Command::Send {
@@ -231,6 +258,14 @@ fn run_macos(cmd: Command) -> Result<()> {
             sound,
             image,
             id,
+            macos_sound_name,
+            macos_attachment,
+            macos_interruption_level,
+            macos_thread_identifier,
+            macos_category_identifier,
+            on_click,
+            on_action,
+            on_dismiss,
             on_timeout,
             dry_run,
         } => {
@@ -256,7 +291,26 @@ fn run_macos(cmd: Command) -> Result<()> {
                 id,
                 sound: sound.as_deref().map(parse_sound),
                 image,
-                on_timeout: on_timeout.map(OnTimeoutArg::to_core),
+                // The CLI routes `--on-timeout` through `CallbackConfig`
+                // (target string) so the enum-shaped `Notification.on_timeout`
+                // stays `None`. The field is kept on the portable struct for
+                // Windows/Linux backends that may still consume an
+                // enum-shaped auto-dismiss behavior spec.
+                on_timeout: None,
+            };
+
+            let overrides = notif_macos::overrides::MacosOverrides {
+                sound_name: macos_sound_name,
+                attachment: macos_attachment,
+                interruption_level: macos_interruption_level,
+                thread_identifier: macos_thread_identifier,
+                category_identifier: macos_category_identifier,
+            };
+            let callbacks = notif_core::callback::CallbackConfig {
+                on_click,
+                on_actions: on_action,
+                on_dismiss,
+                on_timeout,
             };
 
             if dry_run {
@@ -269,7 +323,7 @@ fn run_macos(cmd: Command) -> Result<()> {
             }
 
             if is_inner_mode() {
-                match dispatch_inner(&notif) {
+                match dispatch_inner(&notif, &overrides, &callbacks) {
                     Ok(()) => Ok(()),
                     Err(notif_macos::MacosError::NotSigned) => {
                         std::process::exit(42);
@@ -361,7 +415,11 @@ fn run_macos(cmd: Command) -> Result<()> {
                 }
 
                 eprintln!("sending notification via '{}'…", notif.sender.key);
-                MacosBackend.dispatch(&notif).context("dispatch")?;
+                // Bypass the `Backend` trait to pass Tier 3 overrides +
+                // callback config. `MacosBackend.dispatch(&notif)` still
+                // works from callers that don't have either.
+                notif_macos::dispatch::dispatch_outer(&notif, &overrides, &callbacks)
+                    .context("dispatch")?;
                 eprintln!("sent.");
                 Ok(())
             }
@@ -535,6 +593,59 @@ fn refuse_apple_identifier(id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Value parser for `--macos-interruption-level`. Case-sensitive per
+/// [`notif_macos::overrides::InterruptionLevel::parse`] to prevent drift
+/// against Apple's documented spelling.
+fn parse_macos_interruption_level(
+    s: &str,
+) -> Result<notif_macos::overrides::InterruptionLevel, String> {
+    notif_macos::overrides::InterruptionLevel::parse(s)
+        .ok_or_else(|| {
+            format!(
+                "expected one of passive / active / timeSensitive / critical (got {s:?})",
+            )
+        })
+}
+
+/// Value parser for the single-target `--on-*` flags. Delegates to
+/// [`notif_core::callback::parse_target`] and stringifies the error.
+///
+/// Also rejects the historical `--on-timeout` enum keywords
+/// (`log-only`, `dismiss`, `persist`) with a migration message. Without
+/// this guard they would silently auto-detect as [`Hook`][notif_core::callback::CallbackKind::Hook]
+/// targets (bare argv → exec `log-only` / `dismiss` / `persist` as a
+/// program), producing a "command not found" at fire time — much worse
+/// than a clean parse error at CLI time.
+fn parse_callback_target(
+    s: &str,
+) -> Result<notif_core::callback::CallbackTarget, String> {
+    if matches!(s.trim(), "log-only" | "dismiss" | "persist") {
+        return Err(format!(
+            "{s:?} was an earlier `--on-timeout` keyword; v0.2 expects a callback target string \
+             (`hook:<argv>` / `url:<https?://…>` / `file:<abs-path>` / auto-detect)",
+        ));
+    }
+    notif_core::callback::parse_target(s).map_err(|e| e.to_string())
+}
+
+/// Value parser for `--on-action <label>:<target>`. Splits on the FIRST
+/// colon to preserve `hook:` / `url:` / `file:` prefixes in the target.
+///
+/// Label must be non-empty and contain no colon. Target parses through
+/// [`notif_core::callback::parse_target`].
+fn parse_callback_action(
+    s: &str,
+) -> Result<(String, notif_core::callback::CallbackTarget), String> {
+    let (label, target) = s
+        .split_once(':')
+        .ok_or_else(|| "expected <label>:<target> (missing colon)".to_string())?;
+    if label.is_empty() {
+        return Err("--on-action label must be non-empty".into());
+    }
+    let target = notif_core::callback::parse_target(target).map_err(|e| e.to_string())?;
+    Ok((label.to_string(), target))
+}
+
 /// Value parser for `--image`. Rejects at parse time to keep the failure
 /// path deterministic (no half-materialized bundle, no half-built UN
 /// request). Extensions checked case-insensitively.
@@ -667,6 +778,14 @@ fn run_stub(cmd: Command) -> Result<()> {
             sound,
             image,
             id,
+            macos_sound_name,
+            macos_attachment,
+            macos_interruption_level,
+            macos_thread_identifier,
+            macos_category_identifier,
+            on_click,
+            on_action,
+            on_dismiss,
             on_timeout,
             dry_run,
         } => {
@@ -685,14 +804,22 @@ fn run_stub(cmd: Command) -> Result<()> {
             let snd = sound.unwrap_or_default();
             let img = image.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
             let nid = id.unwrap_or_default();
-            let ot = on_timeout.map_or("<none>", |t| match t {
-                OnTimeoutArg::LogOnly => "log-only",
-                OnTimeoutArg::Dismiss => "dismiss",
-                OnTimeoutArg::Persist => "persist",
-            });
+            let msn = macos_sound_name.unwrap_or_default();
+            let mat = macos_attachment.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+            let mil = macos_interruption_level.map(|v| v.wire_str()).unwrap_or_default();
+            let mti = macos_thread_identifier.unwrap_or_default();
+            let mci = macos_category_identifier.unwrap_or_default();
+            let oc = on_click.as_ref().map(|t| t.to_wire()).unwrap_or_default();
+            let oa = on_action
+                .iter()
+                .map(|(l, t)| format!("{l}:{}", t.to_wire()))
+                .collect::<Vec<_>>()
+                .join(";");
+            let od = on_dismiss.as_ref().map(|t| t.to_wire()).unwrap_or_default();
+            let ot = on_timeout.as_ref().map(|t| t.to_wire()).unwrap_or_default();
             let dr = if dry_run { "true" } else { "false" };
             println!(
-                "[stub] would dispatch: title={title}, body={body}, subtitle={sub}, sender={sender}, name={n}, icon={i}, identifier={bid}, app={a}, priority={prio}, sound={snd}, image={img}, id={nid}, on_timeout={ot}, dry_run={dr}, host={HOST}",
+                "[stub] would dispatch: title={title}, body={body}, subtitle={sub}, sender={sender}, name={n}, icon={i}, identifier={bid}, app={a}, priority={prio}, sound={snd}, image={img}, id={nid}, macos_sound_name={msn}, macos_attachment={mat}, macos_interruption_level={mil}, macos_thread_identifier={mti}, macos_category_identifier={mci}, on_click={oc}, on_action={oa}, on_dismiss={od}, on_timeout={ot}, dry_run={dr}, host={HOST}",
             );
         }
         Command::Register { sender, name, icon, identifier } => {
@@ -876,12 +1003,179 @@ mod cli_tests {
     }
 
     #[test]
-    fn send_on_timeout_variants() {
+    fn send_on_timeout_legacy_keywords_rejected() {
+        // `log-only` / `dismiss` / `persist` used to be the enum values —
+        // without the guard, auto-detect would silently classify them as
+        // Hook targets (exec `dismiss` as a program) and fail at fire
+        // time instead of parse time.
         for v in ["log-only", "dismiss", "persist"] {
-            let cli =
-                parse(&["send", "--title", "T", "--body", "B", "--on-timeout", v]).unwrap();
-            assert!(matches!(cli.command, Command::Send { on_timeout: Some(_), .. }));
+            let err = parse(&["send", "--title", "T", "--body", "B", "--on-timeout", v])
+                .err()
+                .unwrap_or_else(|| panic!("--on-timeout {v} should be rejected"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("earlier `--on-timeout` keyword"),
+                "expected migration message for {v}, got: {msg}",
+            );
         }
+    }
+
+    #[test]
+    fn send_on_timeout_target_accepted() {
+        // `--on-timeout` accepts a callback target string, same shape as
+        // the other `--on-*` flags.
+        for v in [
+            "hook:/bin/echo timeout",
+            "url:https://example.com/timeout",
+            "file:/tmp/timeouts.jsonl",
+            "/tmp/timeouts.jsonl",
+        ] {
+            let cli = parse(&["send", "--title", "T", "--body", "B", "--on-timeout", v]).unwrap();
+            assert!(matches!(cli.command, Command::Send { on_timeout: Some(_), .. }), "for {v:?}");
+        }
+    }
+
+    // ---- Tier 3 --macos-* flags -----------------------------------------
+
+    #[test]
+    fn send_macos_sound_name_accepted() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B", "--macos-sound-name", "Ping",
+        ]).unwrap();
+        match cli.command {
+            Command::Send { macos_sound_name, .. } => assert_eq!(macos_sound_name.as_deref(), Some("Ping")),
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn send_macos_attachment_accepted() {
+        // No filesystem existence check on this flag — Tier 3 is a raw
+        // override, the CLI trusts the caller.
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B", "--macos-attachment", "/tmp/x.png",
+        ]).unwrap();
+        match cli.command {
+            Command::Send { macos_attachment: Some(p), .. } => {
+                assert_eq!(p.to_str(), Some("/tmp/x.png"));
+            }
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn send_macos_interruption_level_accepts_documented_values() {
+        for v in ["passive", "active", "timeSensitive", "critical"] {
+            let cli = parse(&[
+                "send", "--title", "T", "--body", "B", "--macos-interruption-level", v,
+            ])
+            .unwrap_or_else(|e| panic!("--macos-interruption-level {v} rejected: {e}"));
+            assert!(matches!(
+                cli.command,
+                Command::Send { macos_interruption_level: Some(_), .. },
+            ));
+        }
+    }
+
+    #[test]
+    fn send_macos_interruption_level_case_sensitive() {
+        // Documented spelling is camelCase — no snake_case tolerance to
+        // prevent silent drift against Apple's docs.
+        for v in ["Critical", "time_sensitive", "urgent", "TIME_SENSITIVE"] {
+            assert!(
+                parse(&[
+                    "send", "--title", "T", "--body", "B", "--macos-interruption-level", v,
+                ])
+                .is_err(),
+                "expected reject for {v}",
+            );
+        }
+    }
+
+    #[test]
+    fn send_macos_thread_and_category_identifiers_accepted() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B",
+            "--macos-thread-identifier", "deploys",
+            "--macos-category-identifier", "REPLY",
+        ]).unwrap();
+        match cli.command {
+            Command::Send {
+                macos_thread_identifier: Some(tid),
+                macos_category_identifier: Some(cid),
+                ..
+            } => {
+                assert_eq!(tid, "deploys");
+                assert_eq!(cid, "REPLY");
+            }
+            _ => panic!("expected both identifiers set"),
+        }
+    }
+
+    // ---- Callback target flags ------------------------------------------
+
+    #[test]
+    fn send_on_click_all_prefix_forms_accepted() {
+        for v in [
+            "hook:/bin/echo hi",
+            "url:https://example.com/click",
+            "file:/tmp/clicks.jsonl",
+            "/tmp/clicks.jsonl",      // auto-detect → File
+            "https://example.com/x",  // auto-detect → Url
+            "myscript arg",           // auto-detect → Hook
+        ] {
+            let cli = parse(&["send", "--title", "T", "--body", "B", "--on-click", v]).unwrap();
+            assert!(matches!(cli.command, Command::Send { on_click: Some(_), .. }), "for {v:?}");
+        }
+    }
+
+    #[test]
+    fn send_on_click_bad_prefix_rejected() {
+        assert!(parse(&[
+            "send", "--title", "T", "--body", "B", "--on-click", "url:ftp://x",
+        ]).is_err());
+        assert!(parse(&[
+            "send", "--title", "T", "--body", "B", "--on-click", "file:relative/path",
+        ]).is_err());
+    }
+
+    #[test]
+    fn send_on_action_multi_flag_accumulates_in_order() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B",
+            "--on-action", "reply:hook:/bin/reply",
+            "--on-action", "ignore:file:/tmp/ignored",
+        ]).unwrap();
+        match cli.command {
+            Command::Send { on_action, .. } => {
+                assert_eq!(on_action.len(), 2);
+                assert_eq!(on_action[0].0, "reply");
+                assert_eq!(on_action[0].1.kind, notif_core::callback::CallbackKind::Hook);
+                assert_eq!(on_action[1].0, "ignore");
+                assert_eq!(on_action[1].1.kind, notif_core::callback::CallbackKind::File);
+            }
+            _ => panic!("expected Send"),
+        }
+    }
+
+    #[test]
+    fn send_on_action_bad_shapes_rejected() {
+        // Missing colon.
+        assert!(parse(&[
+            "send", "--title", "T", "--body", "B", "--on-action", "no-colon-here",
+        ]).is_err());
+        // Empty label.
+        assert!(parse(&[
+            "send", "--title", "T", "--body", "B", "--on-action", ":hook:/x",
+        ]).is_err());
+    }
+
+    #[test]
+    fn send_on_dismiss_accepted() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B", "--on-dismiss", "hook:/bin/echo",
+        ]).unwrap();
+        assert!(matches!(cli.command, Command::Send { on_dismiss: Some(_), .. }));
     }
 
     #[test]

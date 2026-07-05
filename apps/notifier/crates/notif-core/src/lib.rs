@@ -7,6 +7,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+pub mod callback;
 pub mod warn;
 
 /// A user-visible notification payload, backend-agnostic.
@@ -22,8 +23,8 @@ pub struct Notification {
     pub body: String,
     /// Optional third line rendered between title and body on macOS.
     pub subtitle: Option<String>,
-    /// Interruption level. Maps to `UNNotificationInterruptionLevel` on macOS
-    /// (wired session 4), `ToastScenario` on Windows, `urgency` on Linux.
+    /// Interruption level. Maps to `UNNotificationInterruptionLevel` on macOS,
+    /// `ToastScenario` on Windows, `urgency` on Linux.
     pub priority: Priority,
     /// Sender identity: which `.app` bundle / AUMID / app_id the notification
     /// appears under.
