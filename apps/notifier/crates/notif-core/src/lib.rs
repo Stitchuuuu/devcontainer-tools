@@ -7,6 +7,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+pub mod warn;
+
 /// A user-visible notification payload, backend-agnostic.
 ///
 /// Backends translate this into their platform primitive

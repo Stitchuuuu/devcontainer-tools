@@ -308,18 +308,23 @@ mod inner {
                 }
                 Err(err) => {
                     let msg = err.localizedDescription().to_string();
-                    eprintln!(
-                        "info: --image refused by UN center ({msg}); notification will be delivered without attachment"
+                    notif_core::warn::emit(
+                        "image_attachment_refused",
+                        &format!(
+                            "--image refused by UN center ({msg}); notification will be delivered without attachment"
+                        ),
                     );
                 }
             }
         }
 
         // `on_timeout` has no native macOS counterpart in v0.1 — accept the
-        // flag, log an info line, drop it. Session 5 wires this into the
-        // suppressible warning path (`--quiet` / `NOTIF_QUIET=1`).
+        // flag, emit a suppressible `warning:` line, drop it.
         if notif.on_timeout.is_some() {
-            eprintln!("info: --on-timeout ignored on macOS in v0.1");
+            notif_core::warn::emit(
+                "on_timeout_macos",
+                "--on-timeout ignored on macOS in v0.1",
+            );
         }
 
         let identifier = match &notif.id {

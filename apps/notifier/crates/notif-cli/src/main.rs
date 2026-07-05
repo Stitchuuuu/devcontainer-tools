@@ -11,6 +11,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Suppress `warning:` lines on stderr. Errors still print. Equivalent to
+    /// setting `NOTIF_QUIET=1` — either wins.
+    #[arg(long, global = true)]
+    quiet: bool,
 }
 
 /// Portable priority. Round-trips through `Priority::wire_str` on the
@@ -110,10 +114,17 @@ enum Command {
         #[arg(long)]
         id: Option<String>,
         /// What to do when the OS auto-dismisses the banner. macOS in v0.1
-        /// has no native equivalent — the flag is accepted and an `info:`
-        /// line is emitted.
+        /// has no native equivalent — the flag is accepted and a
+        /// suppressible `warning:` line is emitted (see `--quiet`).
         #[arg(long, value_enum)]
         on_timeout: Option<OnTimeoutArg>,
+        /// Parse and print the resolved notification as human-readable
+        /// key: value pairs on stdout, then exit 0. Does not materialize the
+        /// sender bundle and does not call the notification center. `--app`
+        /// is still resolved via Spotlight so the printed metadata reflects
+        /// what a real send would use.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Register a Tier 2 custom sender. Idempotent unless the display name
     /// differs from a pre-existing registration.
@@ -169,6 +180,11 @@ const HOST: &str = if cfg!(target_os = "windows") {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let env_quiet = std::env::var("NOTIF_QUIET").ok().as_deref() == Some("1");
+    notif_core::warn::init(notif_core::warn::WarnConfig {
+        quiet: cli.quiet || env_quiet,
+    });
+
     #[cfg(target_os = "macos")]
     return run_macos(cli.command);
 
@@ -203,6 +219,7 @@ fn run_macos(cmd: Command) -> Result<()> {
             image,
             id,
             on_timeout,
+            dry_run,
         } => {
             // Resolve --app once so the resolved metadata can seed sender,
             // name, and icon defaults if the caller omitted the explicit
@@ -228,6 +245,15 @@ fn run_macos(cmd: Command) -> Result<()> {
                 image,
                 on_timeout: on_timeout.map(OnTimeoutArg::to_core),
             };
+
+            if dry_run {
+                // Print the resolved notification and exit before any bundle
+                // materialization or UN center call. `resolve_app_metadata`
+                // has already run (Spotlight-only, read-only) so the app
+                // hint round-trips into the output.
+                print!("{}", format_dry_run(&notif, app.as_deref(), auto_name.as_deref()));
+                return Ok(());
+            }
 
             if is_inner_mode() {
                 match dispatch_inner(&notif) {
@@ -542,6 +568,61 @@ fn sanitize_sender_key(name: &str) -> String {
     out.chars().take(32).collect()
 }
 
+/// Format the resolved notification as human-readable `key: value` lines for
+/// `--dry-run`. Portable — reuses `wire_str()` on `Priority`, `Sound`, and
+/// `TimeoutBehavior` so the output matches the outer→inner CLI wire format
+/// exactly. Ends with a trailing newline.
+///
+/// Kept as a pure `String`-returning fn so `cli_tests` can snapshot the
+/// output without capturing stdout.
+///
+/// `cfg(any(target_os = "macos", test))` — the outer entry point at
+/// `Command::Send` in `run_macos` is the only production caller ; the test
+/// suite exercises the pure form directly. Non-macOS release builds don't
+/// need it (the stub prints its own line).
+#[cfg(any(target_os = "macos", test))]
+fn format_dry_run(
+    notif: &notif_core::Notification,
+    app_hint: Option<&str>,
+    app_resolved_name: Option<&str>,
+) -> String {
+    fn opt(v: Option<&str>) -> String {
+        v.map_or_else(|| "<none>".to_string(), str::to_string)
+    }
+    let subtitle = opt(notif.subtitle.as_deref());
+    let sound = notif
+        .sound
+        .as_ref()
+        .map_or_else(|| "<none>".to_string(), |s| s.wire_str().to_string());
+    let image = notif
+        .image
+        .as_ref()
+        .map_or_else(|| "<none>".to_string(), |p| p.display().to_string());
+    let id = opt(notif.id.as_deref());
+    let on_timeout = notif
+        .on_timeout
+        .map_or_else(|| "<none>".to_string(), |t| t.wire_str().to_string());
+    let app = opt(app_hint);
+    let app_resolved_name = opt(app_resolved_name);
+    format!(
+        "title: {title}\n\
+         body: {body}\n\
+         subtitle: {subtitle}\n\
+         priority: {priority}\n\
+         sender: {sender}\n\
+         sound: {sound}\n\
+         image: {image}\n\
+         id: {id}\n\
+         on_timeout: {on_timeout}\n\
+         app: {app}\n\
+         app_resolved_name: {app_resolved_name}\n",
+        title = notif.title,
+        body = notif.body,
+        priority = notif.priority.wire_str(),
+        sender = notif.sender.key,
+    )
+}
+
 // ---- Non-mac dev stub ------------------------------------------------------
 
 #[cfg(not(target_os = "macos"))]
@@ -561,6 +642,7 @@ fn run_stub(cmd: Command) -> Result<()> {
             image,
             id,
             on_timeout,
+            dry_run,
         } => {
             let sender = sender.unwrap_or_else(|| "default".to_string());
             let sub = subtitle.unwrap_or_default();
@@ -582,8 +664,9 @@ fn run_stub(cmd: Command) -> Result<()> {
                 OnTimeoutArg::Dismiss => "dismiss",
                 OnTimeoutArg::Persist => "persist",
             });
+            let dr = if dry_run { "true" } else { "false" };
             println!(
-                "[stub] would dispatch: title={title}, body={body}, subtitle={sub}, sender={sender}, name={n}, icon={i}, identifier={bid}, app={a}, priority={prio}, sound={snd}, image={img}, id={nid}, on_timeout={ot}, host={HOST}",
+                "[stub] would dispatch: title={title}, body={body}, subtitle={sub}, sender={sender}, name={n}, icon={i}, identifier={bid}, app={a}, priority={prio}, sound={snd}, image={img}, id={nid}, on_timeout={ot}, dry_run={dr}, host={HOST}",
             );
         }
         Command::Register { sender, name, icon, identifier } => {
@@ -782,6 +865,99 @@ mod cli_tests {
         .unwrap();
         let _ = std::fs::remove_file(&tmp);
         assert!(matches!(cli.command, Command::Send { image: Some(_), .. }));
+    }
+
+    #[test]
+    fn quiet_global_before_subcommand() {
+        let cli = parse(&["--quiet", "send", "--title", "T", "--body", "B"]).unwrap();
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn quiet_global_after_subcommand() {
+        // `global = true` allows the flag on either side of the subcommand.
+        let cli = parse(&["send", "--title", "T", "--body", "B", "--quiet"]).unwrap();
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn quiet_default_false() {
+        let cli = parse(&["send", "--title", "T", "--body", "B"]).unwrap();
+        assert!(!cli.quiet);
+    }
+
+    #[test]
+    fn dry_run_accepted() {
+        let cli = parse(&["send", "--title", "T", "--body", "B", "--dry-run"]).unwrap();
+        assert!(matches!(cli.command, Command::Send { dry_run: true, .. }));
+    }
+
+    #[test]
+    fn dry_run_default_false() {
+        let cli = parse(&["send", "--title", "T", "--body", "B"]).unwrap();
+        assert!(matches!(cli.command, Command::Send { dry_run: false, .. }));
+    }
+
+    #[test]
+    fn dry_run_format_minimal() {
+        // Only title + body set; everything else defaults / stays None.
+        let notif = notif_core::Notification {
+            title: "Deploy done".to_string(),
+            body: "staging \u{2192} prod".to_string(),
+            subtitle: None,
+            priority: notif_core::Priority::Normal,
+            sender: notif_core::Sender::default(),
+            id: None,
+            sound: None,
+            image: None,
+            on_timeout: None,
+        };
+        let expected = "\
+title: Deploy done
+body: staging \u{2192} prod
+subtitle: <none>
+priority: normal
+sender: default
+sound: <none>
+image: <none>
+id: <none>
+on_timeout: <none>
+app: <none>
+app_resolved_name: <none>
+";
+        assert_eq!(format_dry_run(&notif, None, None), expected);
+    }
+
+    #[test]
+    fn dry_run_format_full() {
+        let notif = notif_core::Notification {
+            title: "Deploy done".to_string(),
+            body: "staging -> prod".to_string(),
+            subtitle: Some("CI".to_string()),
+            priority: notif_core::Priority::Critical,
+            sender: notif_core::Sender::new("vscode").unwrap(),
+            id: Some("abc-123".to_string()),
+            sound: Some(notif_core::Sound::Alert),
+            image: Some(std::path::PathBuf::from("/tmp/x.png")),
+            on_timeout: Some(notif_core::TimeoutBehavior::Dismiss),
+        };
+        let expected = "\
+title: Deploy done
+body: staging -> prod
+subtitle: CI
+priority: critical
+sender: vscode
+sound: alert
+image: /tmp/x.png
+id: abc-123
+on_timeout: dismiss
+app: Visual Studio Code
+app_resolved_name: Visual Studio Code
+";
+        assert_eq!(
+            format_dry_run(&notif, Some("Visual Studio Code"), Some("Visual Studio Code")),
+            expected,
+        );
     }
 }
 
