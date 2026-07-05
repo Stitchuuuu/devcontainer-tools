@@ -149,14 +149,29 @@ function batch({ positional, opts }) {
 		for (const p of ok) {
 			const alreadyInAllow = allowSet.has(p.pattern)
 			const dir = extractDirFromFileToolPattern(p.pattern)
-			const needsDir = dir && !isUnderCwd(dir) && !dirSet.has(dir)
+			const isFileToolOutsideCwd = dir && !isUnderCwd(dir)
+			const needsDir = isFileToolOutsideCwd && !dirSet.has(dir)
+
+			// For file tools whose dir is outside cwd, the effective gate
+			// is `additionalDirectories`, not the `Read/Write/Edit(/dir/**)`
+			// entry in `allow` — that entry is redundant. Skip the allow
+			// write entirely for these patterns; only track the dir. The
+			// grant record still carries the canonical pattern for
+			// list/revoke/orphan-detection.
+			const skipAllow = isFileToolOutsideCwd
 
 			if (alreadyInAllow && !needsDir) {
 				skipped.push({ raw: p.raw, pattern: p.pattern, reason: 'already allowed' })
 				continue
 			}
+			if (skipAllow && dirSet.has(dir) && !alreadyInAllow) {
+				// dir already covered by additionalDirectories from a
+				// prior grant or user entry — nothing new to do.
+				skipped.push({ raw: p.raw, pattern: p.pattern, reason: 'dir already in additionalDirectories' })
+				continue
+			}
 
-			if (!alreadyInAllow) allowSet.add(p.pattern)
+			if (!alreadyInAllow && !skipAllow) allowSet.add(p.pattern)
 			if (needsDir) {
 				dirSet.add(dir)
 				grantedDirs.push(dir)
@@ -166,16 +181,17 @@ function batch({ positional, opts }) {
 				pattern: p.pattern, sid,
 				granted_at: now, expires_at: expiresAt,
 				ttl_seconds: ttlSeconds,
-				additional_dir: needsDir ? dir : null
+				additional_dir: needsDir ? dir : null,
+				skipped_allow: skipAllow
 			})
-			granted.push({ raw: p.raw, pattern: p.pattern, dir: needsDir ? dir : null })
+			granted.push({ raw: p.raw, pattern: p.pattern, dir: needsDir ? dir : null, skipAllow })
 		}
 		state.counters[sid] = []
 		state.warned[sid] = 0
-		floatingPatterns = state.grants.map(g => g.pattern)
-		// Rebuild additionalDirectories: keep everything already there
-		// (user entries + carried-over floating dirs) since we only add,
-		// never remove here. Cleanup handles removal.
+		// Only patterns actually written to allow feed the sentinel section.
+		floatingPatterns = state.grants
+			.filter(g => !g.skipped_allow)
+			.map(g => g.pattern)
 		finalAdditionalDirs = Array.from(dirSet)
 		return { state }
 	})
@@ -325,10 +341,15 @@ function reconcile({ positional, opts }) {
 function report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid, grantedDirs }) {
 	if (granted.length > 0) {
 		const expiry = `expires ${new Date(expiresAt).toISOString()} (TTL ${ttlSeconds}s)`
-		print(`✓ ${granted.length} pattern(s) granted [sid ${sid.slice(0, 8)} · ${expiry}]:`)
+		print(`✓ ${granted.length} grant(s) [sid ${sid.slice(0, 8)} · ${expiry}]:`)
 		for (const g of granted) {
-			const suffix = g.dir ? `  (+ additionalDirectories: ${g.dir})` : ''
-			print(`    ${g.pattern}${suffix}`)
+			if (g.skipAllow && g.dir) {
+				print(`    dir → ${g.dir}  (additionalDirectories only; allow entry skipped as redundant)`)
+			} else if (g.dir) {
+				print(`    ${g.pattern}  (+ additionalDirectories: ${g.dir})`)
+			} else {
+				print(`    ${g.pattern}`)
+			}
 		}
 	}
 	if (grantedDirs && grantedDirs.length > 0) {

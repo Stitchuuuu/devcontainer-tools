@@ -1,6 +1,7 @@
 ---
 description: Grant a temporary batch of permissions in settings.local.json (session-scoped, TTL-bounded). Auto-triggered by Claude after the PreToolUse hook detects a spike of permission prompts, or invoked manually by the user. For Bash grants, writes `permissions.allow` (canonical `Bash(cmd:*)`). For Edit/Write/Read/NotebookEdit grants on paths outside cwd, ALSO writes `permissions.additionalDirectories` — Claude Code refuses file operations outside cwd + additionalDirectories regardless of what's in `allow`. Grants expire after TTL (default 30 min) — SessionEnd cleanup is a best-effort second layer since it doesn't reliably fire on VS Code shutdown. Audit log at .devcontainer/notify/floating-perms-audit.jsonl. MANDATORY workflow: ANALYZE → ASK via AskUserQuestion → EXECUTE → RETRY. Never call apply.js batch without an explicit AskUserQuestion confirmation right before it.
 argument-hint: "batch <pat1> <pat2>... [ttl=30m] sid=<id>  |  list [sid=<id>]  |  revoke <pat>  |  gc sid=<id>"
+allowed-tools: Bash(node /workspace/.devcontainer/skills/floating-perms/apply.js:*), Bash(node --test /workspace/.devcontainer/skills/floating-perms/tests/:*)
 ---
 
 # /floating-perms — batched session-scoped permissions
@@ -29,14 +30,18 @@ batch. You will see something like:
 
 When you receive that, **stop** the tool retry. Plan first.
 
-Because the counter is fed only by `PermissionRequest`, patterns
-already covered by `permissions.allow` are by construction never
-counted — Claude Code doesn't fire the hook for them. Meta tools
-that don't represent work (`ExitPlanMode`, `AskUserQuestion`,
-`TodoWrite`, `Task`, MCP) also never count: they canonicalize to
-`null` and the observer skips them silently. The deny message lists
-the unique work patterns from the recent window so you can copy
-them into the `apply.js batch` call verbatim.
+Claude Code fires `PermissionRequest` for **every** tool call, whether it
+about to display a prompt or auto-resolve silently against an existing
+rule. The distinguishing signal is `payload.permission_suggestions`:
+present (non-empty array) when a popup is about to show, absent/empty
+when the call was auto-allowed. The hook only grows the counter for
+prompts the user actually paid attention to (auto-allow guard on the
+`permission_suggestions` field). Meta tools that don't represent work
+(`ExitPlanMode`, `AskUserQuestion`, `TodoWrite`, `Task`, MCP) also
+never count: they canonicalize to `null` and the observer skips them
+silently. The deny message lists the unique work patterns from the
+recent window so you can copy them into the `apply.js batch` call
+verbatim.
 
 **Manual trigger.** The user typed `/floating-perms <subcmd>` directly, or
 asked things like "allow curl + npm for this session" / "session-scope
@@ -84,39 +89,36 @@ If the deny lists `Read(/tmp/**)`, the question must propose
 `Read(/tmp/**)` — not `Bash(cat:*)`, not a narrower
 `Read(/tmp/extensions.js)`.
 
-**DISCLOSE additionalDirectories side-effect.** For every file-tool
-pattern (Edit/Write/Read/NotebookEdit(<dir>/**)) whose `<dir>` is NOT
-under the cwd (currently `/workspace`), the grant will ALSO inject
-`<dir>` into `permissions.additionalDirectories`. This is not optional
-— Claude Code refuses file operations outside cwd + additionalDirectories
-regardless of the `allow` entry. Users MUST see this side-effect in the
-`AskUserQuestion` description so they consent knowingly. Explicitly list
-the injected dirs in the option description, e.g.
-`"...and adds /home/node/.config to additionalDirectories"`.
+**Group by resource, not by tool.** Under acceptEdits mode, `Read` is
+already bare-allowlisted and `Write` is auto-allowed within cwd +
+`additionalDirectories`. So a file-tool grant for `<dir>` outside cwd
+is effectively a single decision: **"authorize this directory"**. Don't
+list `Read(/dir/**)` + `Write(/dir/**)` + `Edit(/dir/**)` as separate
+items in the AskUserQuestion — that's noise. Ask for the dir once.
 
-Recommended shape:
+Recommended shape — condensed:
 
 ```
-question: "<short context of what you're trying to do, e.g. 'upstream upgrade fetch'>.
-           Permissions needed: <pat1>, <pat2>, <pat3>. Which grant?"
+question: "<short context, e.g. 'fetch upstream release notes'>. Authorize?"
 header:   "floating-perms"
 options:
-  - label: "Allow all (default TTL 30m)  (Recommended)"
-    description: "Grants Bash(curl:*), Bash(npm view:*), Edit(/home/node/.config/**).
-                  Also adds /home/node/.config to additionalDirectories
-                  (required — outside cwd). Auto-revoked after 30 minutes."
-  - label: "Allow all, longer TTL (e.g. ttl=2h)"
-    description: "Same patterns + additionalDirectories injection,
-                  custom expiry — use for tasks longer than the default"
-  - label: "Subset (specify which)"
-    description: "You'll tell me which ones to keep"
+  - label: "Authorize (session, 30m)  (Recommended)"
+    description: "Commands: curl, jq
+                  Directories: /home/node/.config, /var/tmp/probe-42
+                  Auto-revoked after 30 minutes."
   - label: "Refuse — I'll change approach"
-    description: "No grant; I'll find another way without these perms"
+    description: "No grant; I'll work around."
 ```
 
-If none of the file-tool patterns need additionalDirectories injection
-(all under cwd, or all Bash-only), drop that sentence from the
-description — don't add ceremony where none is needed.
+- **Commands line** — comma-separated bare Bash commands (curl, npm view,
+  gh) from Bash-family patterns.
+- **Directories line** — comma-separated absolute paths (no `/**`) from
+  file-tool patterns whose dir is outside cwd. Omit the line entirely
+  if no file tool needs a dir grant.
+- Add a 3rd option "Longer TTL (e.g. 2h)" only if the user explicitly
+  asked for a longer horizon.
+- Add "Subset" only for heterogeneous batches (>4 items). For a common
+  1-2-item batch, the 2-option shape above is the right default.
 
 You may split into 2-3 questions if the batch is heterogeneous (e.g. one
 question per tool family). Stay under 4 questions per AskUserQuestion call
@@ -131,8 +133,16 @@ Based on the user's answer, run:
 
 ```bash
 node /workspace/.devcontainer/skills/floating-perms/apply.js \
-     batch <pattern1> <pattern2> ... sid=<session_id> [ttl=<duration>]
+     batch '<pattern1>' '<pattern2>' ... sid=<session_id> [ttl=<duration>]
 ```
+
+**CRITICAL: SINGLE-QUOTE each pattern.** Patterns contain `**`, `*`, `(`,
+`)` — all glob and shell-active characters. Without single quotes, bash
+expands them BEFORE `apply.js` sees them, producing garbage patterns
+like `Bash(cfg-**):*)` (real audit-log capture from a failed grant).
+Symptom: the grant silently produces malformed patterns and the retry
+still prompts. Always wrap each pattern in single quotes — never double
+quotes, never bare.
 
 Omitting `ttl=` applies the default (30 minutes). Pass `ttl=2h` (or
 similar) only when the user asked for a longer-lived grant.
@@ -364,8 +374,10 @@ and the user is pointed at the right subcommand (`gc` for state-side,
 - **One-shot deny per spike** — the hook clears the counter after emitting
   the deny so you're not paralyzed. If you ignore the reason and trigger
   a new spike (3 more prompts after the 60s cooldown), a new deny fires.
-- **Cwd paths skipped** — Edit/Write/Read on `/workspace/**` never count
-  toward the spike (auto-allowed by Claude Code's default sandbox).
+- **Auto-allowed calls skipped** — any tool call Claude Code auto-resolves
+  (no popup, `payload.permission_suggestions` absent) is dropped by the
+  hook before touching the counter. Covers cwd file operations, allowlist
+  hits, and everything else the runtime settles silently.
 - **No automatic cleanup of `.allow` entries not in `_state`.** If the
   user has hand-edited `permissions.allow`, those entries are not touched
   by SessionEnd cleanup. Only patterns this skill granted are revoked.
