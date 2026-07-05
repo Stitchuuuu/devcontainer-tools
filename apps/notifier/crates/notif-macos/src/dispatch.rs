@@ -254,11 +254,12 @@ mod inner {
     use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2::runtime::Bool;
-    use objc2_foundation::{NSArray, NSError, NSString, NSURL, NSUUID};
+    use objc2_foundation::{NSArray, NSError, NSSet, NSString, NSURL, NSUUID};
     use objc2_user_notifications::{
-        UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationAttachment,
-        UNNotificationInterruptionLevel, UNNotificationRequest, UNNotificationSound,
-        UNUserNotificationCenter,
+        UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationAction,
+        UNNotificationActionOptions, UNNotificationAttachment, UNNotificationCategory,
+        UNNotificationCategoryOptions, UNNotificationInterruptionLevel, UNNotificationRequest,
+        UNNotificationSound, UNUserNotificationCenter,
     };
 
     use notif_core::callback::CallbackConfig;
@@ -444,19 +445,109 @@ mod inner {
         if let Some(tid) = &overrides.thread_identifier {
             content.setThreadIdentifier(&NSString::from_str(tid));
         }
-        if let Some(cid) = &overrides.category_identifier {
+
+        // ---- Action button registration ----------------------------------
+        // `UNNotificationCategory` is the macOS primitive that maps a set
+        // of tappable buttons ([`UNNotificationAction`]) onto a
+        // notification. Without registering the category and setting
+        // `content.setCategoryIdentifier(...)`, the banner delivers with
+        // no visible buttons even when `--on-action` is passed. The
+        // click dispatch itself (target invocation) is the daemon's job
+        // — this branch just makes the buttons appear.
+        //
+        // Priority for the category identifier :
+        //   1. `--macos-category-identifier <id>` (Tier 3 raw override).
+        //   2. Auto-generated `notif-<hex>` when actions are declared but
+        //      no raw override.
+        //   3. None (no actions → no category, banner is body-only).
+        let effective_category_id = overrides
+            .category_identifier
+            .clone()
+            .or_else(|| {
+                if callbacks.on_actions.is_empty() {
+                    None
+                } else {
+                    Some(format!(
+                        "notif-cat-{}",
+                        notif.id.as_deref().unwrap_or("auto"),
+                    ))
+                }
+            });
+
+        if !callbacks.on_actions.is_empty() {
+            let cat_id_str = effective_category_id
+                .as_deref()
+                .expect("non-empty on_actions implies effective_category_id set");
+            let cat_id = NSString::from_str(cat_id_str);
+
+            // Build UNNotificationAction items in the exact order the
+            // user typed `--on-action label:target` flags. macOS renders
+            // them in registration order, so preserving the CLI order
+            // matches the user's mental model.
+            let mut action_ptrs: Vec<Retained<UNNotificationAction>> =
+                Vec::with_capacity(callbacks.on_actions.len());
+            for (label, _target) in &callbacks.on_actions {
+                let id_s = NSString::from_str(label);
+                // Label doubles as button title until a `title:<foo>`
+                // convention lands. Users who want a distinct button
+                // title today set the label to what they want displayed.
+                let title_s = NSString::from_str(label);
+                let opts = UNNotificationActionOptions::empty();
+                let action = unsafe {
+                    UNNotificationAction::actionWithIdentifier_title_options(
+                        &id_s, &title_s, opts,
+                    )
+                };
+                action_ptrs.push(action);
+            }
+            let refs: Vec<&UNNotificationAction> =
+                action_ptrs.iter().map(std::convert::AsRef::as_ref).collect();
+            let actions_arr = NSArray::from_slice(&refs);
+            let intents_arr: Retained<NSArray<NSString>> = NSArray::new();
+            let cat_opts = UNNotificationCategoryOptions::empty();
+            let category = unsafe {
+                UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+                    &cat_id,
+                    &actions_arr,
+                    &intents_arr,
+                    cat_opts,
+                )
+            };
+            let cat_ref: &UNNotificationCategory = category.as_ref();
+            let categories: Retained<NSSet<UNNotificationCategory>> =
+                NSSet::from_slice(&[cat_ref]);
+            // `setNotificationCategories` REPLACES the registered set on
+            // the UN center. Fire-and-forget CLI invocations are fine
+            // with that — the daemon (`notif listen`) will merge sets
+            // when it lands.
+            center.setNotificationCategories(&categories);
+
+            let action_labels: Vec<&str> = callbacks
+                .on_actions
+                .iter()
+                .map(|(l, _)| l.as_str())
+                .collect();
+            notif_core::warn::stderr(&format!(
+                "registered UN category '{}' with {} action(s): {}",
+                cat_id_str,
+                callbacks.on_actions.len(),
+                action_labels.join(", "),
+            ));
+        }
+
+        if let Some(cid) = &effective_category_id {
             content.setCategoryIdentifier(&NSString::from_str(cid));
         }
 
-        // Surface the registered-target count so scripts + tests can
-        // round-trip the flag surface end-to-end. The real dispatchers
-        // (hook exec / HTTP POST / file append) live in the `notif listen`
-        // daemon — this branch is the placeholder until the delegate is
-        // wired against the daemon's socket.
-        if !callbacks.is_empty() {
+        // Surface the click / dismiss / timeout callbacks that aren't
+        // covered by the action buttons — those still need the daemon.
+        let non_action_callback_count = usize::from(callbacks.on_click.is_some())
+            + usize::from(callbacks.on_dismiss.is_some())
+            + usize::from(callbacks.on_timeout.is_some());
+        if non_action_callback_count > 0 {
             notif_core::warn::stderr(&format!(
-                "callback stub: {} target(s) registered — dispatch lands via `notif listen` daemon",
-                callbacks.len(),
+                "callback stub: {} click/dismiss/timeout target(s) registered — dispatch lands via `notif listen` daemon",
+                non_action_callback_count,
             ));
         }
 
@@ -470,6 +561,15 @@ mod inner {
             None,
         );
 
+        // Snapshot the resolved identifier for the audit trail — `notif.id`
+        // was optional (backend minted a UUID here), so log the value that
+        // was actually sent so callers can correlate `remove` calls.
+        let dispatched_id = identifier.to_string();
+        notif_core::warn::stderr(&format!(
+            "dispatching notif id='{}' sender='{}' title={:?}",
+            dispatched_id, notif.sender.key, notif.title,
+        ));
+
         let slot: Arc<Mutex<Option<Result<(), MacosError>>>> = Arc::new(Mutex::new(None));
         let slot_cb = slot.clone();
         let block = RcBlock::new(move |err: *mut NSError| {
@@ -479,7 +579,16 @@ mod inner {
 
         center.addNotificationRequest_withCompletionHandler(&request, Some(&block));
 
-        wait_for_slot(&slot, DISPATCH_TIMEOUT)
+        let result = wait_for_slot(&slot, DISPATCH_TIMEOUT);
+        match &result {
+            Ok(()) => notif_core::warn::stderr(&format!(
+                "delivered notif id='{dispatched_id}' via UN center",
+            )),
+            Err(e) => notif_core::warn::stderr(&format!(
+                "delivery failed notif id='{dispatched_id}': {e}",
+            )),
+        }
+        result
     }
 
     /// Inner-mode setup. Fires `requestAuthorizationWithOptions:` and blocks
