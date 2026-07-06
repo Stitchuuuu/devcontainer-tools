@@ -152,6 +152,77 @@ deleting the folder, so a subsequent `notif register` for the same
 key gets a fresh permission prompt instead of silently inheriting a
 stale grant.
 
+## 6.5 Tier 1 identity spoof — no local bundle
+
+`notif send --identifier <bundle-id>` dispatches the banner **under
+another app's identity** — the notification appears in Notification
+Center with the target app's display name + icon, without
+`notif` materializing its own `.app` bundle. Useful when the desired
+identity is an app that is already installed and permission-granted.
+
+```bash
+notif send --title "Ready" --body "Build complete" --identifier com.microsoft.VSCode
+notif send --title "Ping"  --body "Attach here"   --identifier com.googlecode.iterm2
+```
+
+**Gate — activates on `--identifier` alone.** Tier 1 fires only when
+`--identifier` is set AND neither `--sender <key>` nor `--app <hint>` is
+present. Either of those falls through to the local-bundle path
+(§4 Registering additional senders), where `--identifier` is written
+into the materialized bundle's Info.plist instead.
+
+**How it works.** The CLI swizzles `-[NSBundle bundleIdentifier]` at
+runtime (via `objc2::runtime::method_setImplementation`) so that when the
+deprecated `NSUserNotificationCenter.deliverNotification:` API asks
+`[NSBundle mainBundle].bundleIdentifier`, it receives the spoofed value.
+LaunchServices then resolves the display name + icon from the target
+app's installed `Info.plist`. The swizzle is process-scoped and not
+restored — Tier 1 is fire-and-forget within a single short-lived CLI
+invocation.
+
+**macOS version gate — Tier 1 is Sonoma-and-older territory.** The
+`NSUserNotification` API was deprecated in macOS 10.14 (Mojave) and
+progressively neutered in later releases. Empirically, from macOS 15
+(Sequoia) onward it **silently drops delivery** for bare CLI processes
+that don't have a LaunchServices `.app` registration (which our `notif`
+binary does not have when Tier 1 fires). The CLI therefore gates on the
+host macOS version :
+
+| macOS version | Tier 1 behavior |
+|---|---|
+| 15+ (Sequoia, Tahoe, …) | **Hard refused** with an actionable error : `Tier 1 (NSUserNotification) does not deliver on macOS <N> … Add --sender <key> to switch to Tier 2 …`. No warning, no attempt — the API is known-broken here. |
+| 10.14 – 14 (Mojave through Sonoma) | Warned : `NSUserNotification was deprecated in macOS 10.14 and may silently drop delivery for non-bundled CLI processes. If no banner appears, add --sender <key> …`. Delivery attempted best-effort. Suppress the warn with `--quiet` (or `NOTIF_QUIET=1`) if you're comfortable that it works on your host. |
+| < 10.14 (High Sierra and older) | No gate — the API was primary back then. Best-effort delivery. |
+
+On modern hosts the practical outcome is: **use Tier 2** (add
+`--sender <key>`). Tier 2 materializes a local `.app`, gets a proper
+LaunchServices registration, and delivers reliably under the identifier
+you pass via `--identifier` (written into the bundle's Info.plist).
+
+**What Tier 1 does NOT support.** The `NSUserNotification` API predates
+several modern features. Combining Tier 1 with any of the flags below
+is refused up-front with an actionable error:
+
+- `--image` — no attachment support in the NS API.
+- `--priority` (non-Normal) — no interruption-level support.
+- `--macos-attachment`, `--macos-interruption-level`,
+  `--macos-thread-identifier`, `--macos-category-identifier`,
+  `--macos-sound-name` — Tier 3 overrides target the UN center, not NS.
+- `--on-click`, `--on-action`, `--on-dismiss`, `--on-timeout` — the NS
+  delegate protocol (`NSUserNotificationCenterDelegate`) is distinct from
+  the UN delegate and out of scope for v0.2.
+
+For any of the above, switch to Tier 2 by adding `--sender <key>`. Tier 2
+materializes a local bundle with the identifier written into its Info.plist,
+and the UN center path supports all the flags above.
+
+**Guards.** Tier 1 refuses two identifier classes before dispatch :
+
+- `com.apple.*` — SIP-tier, macOS blocks impersonation of Apple-owned
+  identifiers (`kLSNoLaunchPermissionErr`).
+- Identifiers that do not resolve to an installed app via Spotlight —
+  NC would silently render a blank name for a typo'd identifier.
+
 ## 7. Callbacks — react to click / action / dismiss
 
 `notif send` accepts four callback flags — `--on-click`, `--on-action`,

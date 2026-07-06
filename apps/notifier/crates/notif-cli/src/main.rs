@@ -300,6 +300,15 @@ fn run_macos(cmd: Command) -> Result<()> {
             on_timeout,
             dry_run,
         } => {
+            // Strict Tier 1 gate — captured up front because `sender` and
+            // `app` get consumed further down (sender.or(...) at the
+            // effective-key step, app moves into resolve_app_metadata).
+            let tier1 = tier1_activates(
+                identifier.as_deref(),
+                sender.as_deref(),
+                app.as_deref(),
+            );
+
             // Resolve --app once so the resolved metadata can seed sender,
             // name, and icon defaults if the caller omitted the explicit
             // flags.
@@ -351,6 +360,56 @@ fn run_macos(cmd: Command) -> Result<()> {
                 // hint round-trips into the output.
                 print!("{}", format_dry_run(&notif, app.as_deref(), auto_name.as_deref()));
                 return Ok(());
+            }
+
+            if tier1 {
+                // Strict-gate path: --identifier alone, no --sender, no --app.
+                // Skip the outer / inner two-mode flow entirely — no bundle
+                // to materialize, no UNUserNotificationCenter to configure.
+                // The gate captured the tier1 boolean before `identifier`
+                // could be moved, so the unwrap is safe.
+                let id_ref = identifier
+                    .as_deref()
+                    .expect("tier1 gate guarantees identifier.is_some()");
+
+                // Guard 0 — macOS version. NSUserNotification was deprecated
+                // in 10.14 and, from macOS 15 (Sequoia) onward, silently
+                // drops delivery for bare CLI processes that have no LSDB
+                // `.app` registration. Refuse-early so users see the reason
+                // instead of a mystery no-op ; point them at Tier 2.
+                if let Some(major) = macos_major_version() {
+                    if major >= 15 {
+                        bail!(
+                            "Tier 1 (NSUserNotification) does not deliver on macOS {major} — the deprecated NS API silently drops delivery for non-bundled CLI processes on macOS 15+ (Sequoia+). Add --sender <key> to switch to Tier 2 (materialized bundle, delivers reliably)."
+                        );
+                    }
+                    if major >= 14 {
+                        notif_core::warn::emit(
+                            "tier1_ns_may_not_deliver",
+                            "NSUserNotification was deprecated in macOS 10.14 and may silently drop delivery for non-bundled CLI processes. If no banner appears, add --sender <key> to switch to Tier 2.",
+                        );
+                    }
+                }
+
+                // Guard 1 — SIP-tier: refuse `com.apple.*` (same reason as
+                // the Tier 2 bundle-materialization path).
+                refuse_apple_identifier(Some(id_ref))?;
+
+                // Guard 2 — verify the identifier resolves to a real
+                // installed app via Spotlight ; without this NC would silently
+                // render a blank name for a typo'd identifier.
+                notif_macos::sender::resolve_app_hint(id_ref)
+                    .with_context(|| {
+                        format!(
+                            "--identifier {id_ref:?} does not resolve to an installed app via Spotlight"
+                        )
+                    })?;
+
+                // Guard 3 — refuse flags NSUserNotification can't honor.
+                refuse_tier1_incompatible_flags(&notif, &overrides, &callbacks)?;
+
+                return notif_macos::nsun::dispatch_via_nsun(&notif, id_ref)
+                    .context("Tier 1 NS spoof dispatch");
             }
 
             if is_inner_mode() {
@@ -716,6 +775,26 @@ fn resolve_app_metadata(
 /// returns `kLSNoLaunchPermissionErr` (LSError -10664) when we later try to
 /// launch the bundle. Failing here avoids the wasted materialization +
 /// orphaned bundle folder that would otherwise sit around confusing LSDB.
+/// Best-effort read of `kern.osproductversion` returning the major version
+/// (e.g. `Some(26)` on Tahoe, `Some(15)` on Sequoia, `Some(14)` on Sonoma).
+/// `None` if the sysctl call fails or the value doesn't parse — callers
+/// must treat that as "unknown, proceed as if the API might work".
+///
+/// Used to gate Tier 1 : from macOS 15 (Sequoia) onward the deprecated
+/// NSUserNotification API silently drops delivery for bare CLI processes
+/// (no LSDB `.app` registration), so we refuse-early there and point users
+/// at Tier 2. On 10.14–14 we warn but still attempt (the API historically
+/// worked best-effort on those releases).
+#[cfg(target_os = "macos")]
+fn macos_major_version() -> Option<u32> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "kern.osproductversion"])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.trim().split('.').next()?.parse::<u32>().ok()
+}
+
 #[cfg(target_os = "macos")]
 fn refuse_apple_identifier(id: Option<&str>) -> Result<()> {
     use anyhow::bail;
@@ -727,6 +806,93 @@ fn refuse_apple_identifier(id: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Strict Tier 1 gate — activates only when `--identifier` is set alone
+/// (no `--sender`, no `--app`). Any local-bundle intent falls through to
+/// the existing Tier 0 / Tier 2 flow: `--sender` picks a materialized
+/// bundle explicitly ; `--app` materializes a bundle whose display name +
+/// icon are borrowed from the resolved app.
+///
+/// Compiled on macOS (called from `run_macos`) and under `cfg(test)` (called
+/// from the CLI-shape unit tests on Linux). Never referenced from the Linux
+/// bin build, so it stays out of that compilation to avoid a dead_code
+/// warning.
+#[cfg(any(target_os = "macos", test))]
+fn tier1_activates(
+    identifier: Option<&str>,
+    sender: Option<&str>,
+    app: Option<&str>,
+) -> bool {
+    identifier.is_some() && sender.is_none() && app.is_none()
+}
+
+/// Refuse Tier 1 activation when the caller passed flags that the
+/// deprecated `NSUserNotification` API can't honor.
+///
+/// The API predates attachments, interruption levels, and delegate
+/// callbacks. Rather than silently drop those semantics we surface a
+/// single error listing every offending flag, with a suggested
+/// remediation (drop the flags OR add `--sender <key>` to switch to
+/// Tier 2). `--priority` is counted only when it differs from `Normal`
+/// (the parser default), so a bare `--identifier X` invocation doesn't
+/// trip the guard.
+///
+/// Same cfg strategy as [`tier1_activates`] — compiled on macOS + under
+/// `cfg(test)` so the CLI-shape tests can reach it from Linux, but not
+/// compiled into the plain Linux bin build (would emit dead_code otherwise).
+#[cfg(any(target_os = "macos", test))]
+fn refuse_tier1_incompatible_flags(
+    notif: &notif_core::Notification,
+    overrides: &notif_macos::overrides::MacosOverrides,
+    callbacks: &notif_core::callback::CallbackConfig,
+) -> Result<()> {
+    use anyhow::bail;
+    use notif_core::Priority;
+
+    let mut offenders: Vec<&'static str> = Vec::new();
+    if notif.priority != Priority::Normal {
+        offenders.push("--priority");
+    }
+    if notif.image.is_some() {
+        offenders.push("--image");
+    }
+    if overrides.sound_name.is_some() {
+        offenders.push("--macos-sound-name");
+    }
+    if overrides.attachment.is_some() {
+        offenders.push("--macos-attachment");
+    }
+    if overrides.interruption_level.is_some() {
+        offenders.push("--macos-interruption-level");
+    }
+    if overrides.thread_identifier.is_some() {
+        offenders.push("--macos-thread-identifier");
+    }
+    if overrides.category_identifier.is_some() {
+        offenders.push("--macos-category-identifier");
+    }
+    if callbacks.on_click.is_some() {
+        offenders.push("--on-click");
+    }
+    if !callbacks.on_actions.is_empty() {
+        offenders.push("--on-action");
+    }
+    if callbacks.on_dismiss.is_some() {
+        offenders.push("--on-dismiss");
+    }
+    if callbacks.on_timeout.is_some() {
+        offenders.push("--on-timeout");
+    }
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "--identifier activates Tier 1 (NSUserNotification) which does not support: {}. Either drop those flags, or add --sender <key> to switch to Tier 2 (materialized bundle, supports all of the above).",
+        offenders.join(", "),
+    );
 }
 
 /// Value parser for `--macos-interruption-level`. Case-sensitive per
@@ -1523,6 +1689,177 @@ app_resolved_name: Visual Studio Code
             cli.command,
             Command::Listen { exit: true, .. },
         ));
+    }
+
+    // ---- Tier 1 identity spoof gate + refuse-loudly guard --------------------
+
+    /// Build a bare `Notification` with default Priority and no image/sound —
+    /// used by the refuse-loudly tests so we can flip one offender at a time
+    /// without touching the rest of the struct.
+    fn bare_notif() -> notif_core::Notification {
+        notif_core::Notification {
+            title: "T".into(),
+            body: "B".into(),
+            subtitle: None,
+            priority: notif_core::Priority::Normal,
+            sender: notif_core::Sender::default(),
+            id: None,
+            sound: None,
+            image: None,
+            on_timeout: None,
+        }
+    }
+
+    fn bare_overrides() -> notif_macos::overrides::MacosOverrides {
+        notif_macos::overrides::MacosOverrides {
+            sound_name: None,
+            attachment: None,
+            interruption_level: None,
+            thread_identifier: None,
+            category_identifier: None,
+        }
+    }
+
+    fn bare_callbacks() -> notif_core::callback::CallbackConfig {
+        notif_core::callback::CallbackConfig {
+            on_click: None,
+            on_actions: Vec::new(),
+            on_dismiss: None,
+            on_timeout: None,
+        }
+    }
+
+    #[test]
+    fn tier1_gate_fires_on_identifier_alone() {
+        // Parser round-trip — the flag surface accepts the invocation shape.
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B",
+            "--identifier", "com.microsoft.VSCode",
+        ])
+        .unwrap();
+        let (id, sender, app) = match &cli.command {
+            Command::Send { identifier, sender, app, .. } => {
+                (identifier.as_deref(), sender.as_deref(), app.as_deref())
+            }
+            _ => unreachable!("parsed as Send"),
+        };
+        assert!(tier1_activates(id, sender, app));
+    }
+
+    #[test]
+    fn tier1_gate_disqualified_by_sender() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B",
+            "--identifier", "com.microsoft.VSCode",
+            "--sender", "vscode",
+        ])
+        .unwrap();
+        let (id, sender, app) = match &cli.command {
+            Command::Send { identifier, sender, app, .. } => {
+                (identifier.as_deref(), sender.as_deref(), app.as_deref())
+            }
+            _ => unreachable!("parsed as Send"),
+        };
+        assert!(!tier1_activates(id, sender, app));
+    }
+
+    #[test]
+    fn tier1_gate_disqualified_by_app() {
+        let cli = parse(&[
+            "send", "--title", "T", "--body", "B",
+            "--identifier", "com.microsoft.VSCode",
+            "--app", "Visual Studio Code",
+        ])
+        .unwrap();
+        let (id, sender, app) = match &cli.command {
+            Command::Send { identifier, sender, app, .. } => {
+                (identifier.as_deref(), sender.as_deref(), app.as_deref())
+            }
+            _ => unreachable!("parsed as Send"),
+        };
+        assert!(!tier1_activates(id, sender, app));
+    }
+
+    #[test]
+    fn tier1_gate_bare_send_does_not_activate() {
+        // Sanity check — no --identifier means no Tier 1 regardless of the
+        // rest of the flags.
+        assert!(!tier1_activates(None, None, None));
+    }
+
+    #[test]
+    fn tier1_refuse_accepts_bare_send() {
+        // No offenders — refuse returns Ok.
+        refuse_tier1_incompatible_flags(&bare_notif(), &bare_overrides(), &bare_callbacks())
+            .expect("bare send must not trip the refuse-loudly guard");
+    }
+
+    #[test]
+    fn tier1_refuse_priority_normal_is_ok() {
+        // Explicit --priority normal is indistinguishable from the parser
+        // default, so it must NOT count as an offender.
+        let mut n = bare_notif();
+        n.priority = notif_core::Priority::Normal;
+        refuse_tier1_incompatible_flags(&n, &bare_overrides(), &bare_callbacks())
+            .expect("--priority normal must not be refused");
+    }
+
+    #[test]
+    fn tier1_refuse_priority_high_bails() {
+        let mut n = bare_notif();
+        n.priority = notif_core::Priority::High;
+        let err = refuse_tier1_incompatible_flags(&n, &bare_overrides(), &bare_callbacks())
+            .expect_err("--priority high must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--priority"), "err missing --priority: {msg}");
+    }
+
+    #[test]
+    fn tier1_refuse_image_bails() {
+        let mut n = bare_notif();
+        n.image = Some(std::path::PathBuf::from("/tmp/x.png"));
+        let err = refuse_tier1_incompatible_flags(&n, &bare_overrides(), &bare_callbacks())
+            .expect_err("--image must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--image"), "err missing --image: {msg}");
+    }
+
+    #[test]
+    fn tier1_refuse_macos_attachment_bails() {
+        let mut o = bare_overrides();
+        o.attachment = Some(std::path::PathBuf::from("/tmp/x.png"));
+        let err = refuse_tier1_incompatible_flags(&bare_notif(), &o, &bare_callbacks())
+            .expect_err("--macos-attachment must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--macos-attachment"), "err missing --macos-attachment: {msg}");
+    }
+
+    #[test]
+    fn tier1_refuse_on_click_bails() {
+        let mut c = bare_callbacks();
+        c.on_click = Some(notif_core::callback::CallbackTarget {
+            kind: notif_core::callback::CallbackKind::Hook,
+            payload: "/tmp/x.sh".into(),
+        });
+        let err = refuse_tier1_incompatible_flags(&bare_notif(), &bare_overrides(), &c)
+            .expect_err("--on-click must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--on-click"), "err missing --on-click: {msg}");
+    }
+
+    #[test]
+    fn tier1_refuse_error_names_tier2_escape_hatch() {
+        // The message must point users at `--sender <key>` as the remediation
+        // path so the error is actionable, not just a wall of "you can't".
+        let mut c = bare_callbacks();
+        c.on_click = Some(notif_core::callback::CallbackTarget {
+            kind: notif_core::callback::CallbackKind::Hook,
+            payload: "/tmp/x.sh".into(),
+        });
+        let err = refuse_tier1_incompatible_flags(&bare_notif(), &bare_overrides(), &c)
+            .expect_err("must bail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--sender"), "err missing --sender remediation hint: {msg}");
     }
 }
 
