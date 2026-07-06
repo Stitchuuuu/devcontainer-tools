@@ -584,7 +584,14 @@ fn run_macos(cmd: Command) -> Result<()> {
             // Fire the macOS permission dialog under the newly-registered
             // bundle identity so subsequent `send` calls have a granted auth
             // state — otherwise UN center silently drops.
-            setup_outer(&s.key).context("register: request authorization")?;
+            //
+            // Use `setup_outer_bootstrap` (not `setup_outer`) so `lsregister -f`
+            // seeds the bundle into LSDB BEFORE `requestAuthorization` fires.
+            // On macOS 14+ UN center refuses auth (`UNErrorCode 1 =
+            // "Notifications are not allowed for this application"`) for
+            // bundles it doesn't know about — see session 3.5 LOG. Register
+            // always hits a brand-new bundle by definition.
+            setup_outer_bootstrap(&s.key).context("register: request authorization")?;
             println!("registered {} at {}", s.key, path.display());
             Ok(())
         }
