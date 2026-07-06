@@ -169,6 +169,16 @@ function buildLine(eventName, payload) {
 		event: eventName
 	}
 
+	// Sender + notif_id — v0.2 additions consumed by the notifier
+	// (via `notif send --sender X --id Y`) so the daemon can later
+	// dismiss the exact banner on cancel events via `notif remove`.
+	// Sender is always `default` in v0.2 ; per-event routing (claude
+	// vs npm-script vs …) is a future extension. notif_id is unique
+	// per hook invocation — millisecond-resolution Date.now() crossed
+	// with the 8-char sid and the event class.
+	line.sender = 'default'
+	line.notif_id = `${eventName}-${sid.slice(0, 8)}-${Date.now()}`
+
 	// Attach Claude Code's session name (aiTitle from the transcript,
 	// falls back to the auto-generated slug). Absent when no transcript.
 	const name = readSessionName(payload.transcript_path)
@@ -239,4 +249,4 @@ function main() {
 
 if (require.main === module) main()
 
-module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes }
+module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine }

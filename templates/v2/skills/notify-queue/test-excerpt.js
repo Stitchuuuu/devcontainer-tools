@@ -5,7 +5,7 @@
 // Exits 0 on success, throws + non-zero on failure.
 
 const assert = require('assert')
-const { excerptV1, excerptV2, decodeUnicodeEscapes } = require('./hook')
+const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine } = require('./hook')
 
 // 1. The reported mojibake : `\uXXXX` literals in a Recap line.
 const reported =
@@ -35,5 +35,54 @@ assert.strictEqual(decodeUnicodeEscapes('a\\\\b'),        'a\\\\b')
 
 // 6. Surrogate pair (emoji) decodes to the right codepoint.
 assert.strictEqual(decodeUnicodeEscapes('\\uD83D\\uDE00'), '😀')
+
+// --- buildLine — session 8 sender + notif_id fields ---
+//
+// The daemon reads `line.sender` and `line.notif_id` from every queue
+// line and threads them into `notif send --sender X --id Y`. Missing
+// either would silently make `notif remove` unable to dismiss the
+// banner later, so both must land on every event class.
+
+const SID = '11111111-2222-3333-4444-555555555555'
+
+const stop = buildLine('stop', {
+	session_id:            SID,
+	last_assistant_message: '**Recap** — Ok',
+})
+assert.strictEqual(stop.sender, 'default', 'stop.sender defaults to "default"')
+assert.match(stop.notif_id, /^stop-11111111-\d+$/,
+	`stop.notif_id shape: ${stop.notif_id}`)
+
+const notif = buildLine('notification', {
+	session_id:        SID,
+	notification_type: 'permission_prompt',
+	message:           'hi',
+})
+assert.strictEqual(notif.sender, 'default')
+assert.match(notif.notif_id, /^notification-11111111-\d+$/)
+
+const perm = buildLine('permission_request', {
+	session_id: SID,
+	tool_name:  'Bash',
+	tool_input: { command: 'ls' },
+})
+assert.strictEqual(perm.sender, 'default')
+assert.match(perm.notif_id, /^permission_request-11111111-\d+$/)
+assert.deepStrictEqual(perm.tool_input, { command: 'ls' }, 'tool_input passes through')
+
+const replied = buildLine('user_replied', { session_id: SID })
+assert.strictEqual(replied.sender, 'default')
+assert.match(replied.notif_id, /^user_replied-11111111-\d+$/)
+
+// notif_id changes across invocations even for the same session/event —
+// Date.now() ticks at millisecond resolution and the two calls straddle
+// at least one tick under any realistic test scheduler.
+const a = buildLine('stop', { session_id: SID, last_assistant_message: 'x' })
+// Busy-wait until the clock ticks so uniqueness holds even on machines
+// with a coarse Date.now (some CI runners round to 4 ms).
+const t0 = Date.now()
+while (Date.now() === t0) { /* spin briefly */ }
+const b = buildLine('stop', { session_id: SID, last_assistant_message: 'x' })
+assert.notStrictEqual(a.notif_id, b.notif_id, 'notif_id must be unique per invocation')
 
 console.log('test-excerpt.js — all assertions passed')

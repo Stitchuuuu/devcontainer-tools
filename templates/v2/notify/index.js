@@ -44,7 +44,8 @@
 // CLI
 //   node index.js              # auto-locate via cwd (see lib/locate.js)
 //   node index.js <queueDir>   # explicit queue dir override
-//   env: NOTIFY_CHANNELS=all|csv-of(toast,sound,discord,flash)  (default=all)
+//   env: NOTIFY_CHANNELS=all|csv-of(basic-notif,notify,sound,discord,flash)
+//        (default=all — expands to every channel EXCEPT the opt-in `notify`)
 //        NOTIFY_SOUND=default|<abs path>|off                    (default=default)
 //        NOTIFY_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 //        NOTIFY_CLEANUP_MAX_AGE_HOURS=24                        (queue file TTL)
@@ -81,6 +82,7 @@ const watcher        = require('./lib/watcher')
 const state          = require('./lib/state')
 const { writeAtomic } = require('./lib/atomic-write')
 const notifier       = require('./lib/consumers/notifier')
+const notifyApp      = require('./lib/consumers/notify-app')
 const discordWebhook = require('./lib/consumers/discord-webhook')
 const sound          = require('./lib/consumers/sound')
 const flashWin       = require('./lib/consumers/flash-win')
@@ -97,21 +99,48 @@ const { EVENT_DELAYS_MS } = require('./lib/constants')
 // CHANNEL REGISTRY — maps NOTIFY_CHANNELS names to consumer modules.
 // Object insertion order = expansion order for `NOTIFY_CHANNELS=all`, so the
 // status file lines come out in this same order.
+//
+// Two macOS-native dispatchers live here and are mutually exclusive :
+//   - `basic-notif`  osascript / WinRT toast / linux-stub — the historical
+//                    fallback, zero external dependency. Always in `all`.
+//   - `notify`       standalone `notif` binary (apps/notifier/) — session 8+
+//                    unlocks sender identity + dismiss API + callbacks.
+//                    OPT-IN : excluded from `all`, activate by naming it
+//                    explicitly (e.g. NOTIFY_CHANNELS=notify,sound,discord).
+// When both appear in NOTIFY_CHANNELS, `notify` wins with a warning — they'd
+// otherwise fire twice per event on macOS.
 // -----------------------------------------------------------------------------
 const CHANNEL_REGISTRY = {
-	toast:   notifier,
-	sound:   sound,
-	discord: discordWebhook,
-	flash:   flashWin
+	'basic-notif': notifier,
+	notify:        notifyApp,
+	sound:         sound,
+	discord:       discordWebhook,
+	flash:         flashWin
 }
 
-// NOTIFY_CHANNELS parser. `all` (or empty) expands to every registered name.
-// CSV is trimmed + deduped — pathological `toast,toast,sound` won't double-
-// subscribe (every consumer's bus.on() would fire twice per event otherwise).
+// Channels NOT included when the user asks for `all`. Opt-in only.
+const ALL_EXCLUDES = new Set(['notify'])
+
+// NOTIFY_CHANNELS parser. `all` (or empty) expands to every registered name
+// EXCEPT the opt-in ones (see ALL_EXCLUDES). Explicit CSV opts them in.
+// CSV is trimmed + deduped — pathological `basic-notif,basic-notif,sound`
+// won't double-subscribe (every consumer's bus.on() would fire twice per
+// event otherwise).
+//
+// Mutual exclusion : when `basic-notif` AND `notify` both appear, drop
+// `basic-notif` with a warning — they'd otherwise both dispatch on macOS.
 const parseChannels = (raw) => {
-	if (!raw || raw === 'all') return Object.keys(CHANNEL_REGISTRY)
-	const list = raw.split(',').map(s => s.trim()).filter(Boolean)
-	return [...new Set(list)]
+	let list
+	if (!raw || raw === 'all') {
+		list = Object.keys(CHANNEL_REGISTRY).filter(k => !ALL_EXCLUDES.has(k))
+	} else {
+		list = [...new Set(raw.split(',').map(s => s.trim()).filter(Boolean))]
+	}
+	if (list.includes('basic-notif') && list.includes('notify')) {
+		log.warn('[boot] NOTIFY_CHANNELS lists both "basic-notif" and "notify" — dropping "basic-notif" to avoid double-dispatch')
+		list = list.filter(k => k !== 'basic-notif')
+	}
+	return list
 }
 
 // Format a STATUS line from a consumer's { status, diag } return value.

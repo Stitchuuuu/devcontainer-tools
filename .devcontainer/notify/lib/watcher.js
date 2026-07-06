@@ -283,7 +283,7 @@ function handleLine(line, { timers, bus, delays, state }) {
 			timers.delete(sid)
 			log.info(`[watcher] user_replied   ${sid8} — CANCELLED pending ${pending.eventType}`)
 			state?.cancelled({ sid, eventType: pending.eventType, cause: 'user_replied' })
-			bus.emit('cancelled:notification', { id: pending.id, eventType: pending.eventType, reason: 'user_replied' })
+			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: 'user_replied' })
 		} else {
 			log.info(`[watcher] user_replied   ${sid8} — no pending timer (already fired or never armed)`)
 		}
@@ -315,7 +315,7 @@ function handleLine(line, { timers, bus, delays, state }) {
 			timers.delete(sid)
 			log.info(`[watcher] ${event.padEnd(14)} ${sid8} — CANCELLED pending ${pending.eventType}`)
 			state?.cancelled({ sid, eventType: pending.eventType, cause: event })
-			bus.emit('cancelled:notification', { id: pending.id, eventType: pending.eventType, reason: event })
+			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: event })
 		}
 		return
 	}
@@ -348,7 +348,7 @@ function handleLine(line, { timers, bus, delays, state }) {
 		clearTimeout(existing.timeout)
 		log.info(`[watcher] ${eventType.padEnd(14)} ${sid8} — REPLACED previous ${existing.eventType} timer`)
 		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs, payload: line })
-		bus.emit('cancelled:notification', { id: existing.id, eventType: existing.eventType, reason: `replaced-by-${eventType}` })
+		bus.emit('cancelled:notification', { id: existing.id, sid, eventType: existing.eventType, reason: `replaced-by-${eventType}` })
 	} else {
 		state?.armed({ sid, eventType, delayMs, payload: line })
 	}

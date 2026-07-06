@@ -358,6 +358,105 @@ Session 7b's implementation opts into `.customDismissAction` on the
 UN category whenever `--on-dismiss` is set — that's the maximum macOS
 lets us wire. Beyond that it's OS policy.
 
+## 8. Notify daemon integration (v0.2)
+
+This project also ships a Node.js **notify-queue daemon** at
+[.devcontainer/notify/](../../.devcontainer/notify/) — spawned on every
+devcontainer open, watches Claude Code's event queue, and dispatches
+desktop notifications. Session 8 wired an alternative dispatch path
+through `notif` so the daemon inherits all the sender / dismiss /
+callback capabilities documented above.
+
+**Two consumers, one active at a time :**
+
+| Channel | Backend | When it fires |
+|---|---|---|
+| `basic-notif` | `osascript` on macOS, `powershell.exe` on Windows | Default — zero external dependency |
+| `notify` | `notif send` + `notif remove` | Opt-in — needs the `notif` binary on disk |
+
+**Activation.** The daemon reads `NOTIFY_CHANNELS` from
+`.devcontainer/.env` (auto-exported by `initialize.sh`) :
+
+```bash
+# Default — `basic-notif` fires (via osascript). `notify` is opt-in and
+# excluded from `all`.
+NOTIFY_CHANNELS=all
+
+# Opt-in to notify. When both `basic-notif` and `notify` are listed,
+# the daemon drops `basic-notif` with a warning to avoid double-banners.
+NOTIFY_CHANNELS=notify,sound,discord,flash
+```
+
+**Binary resolution — `getNotifPath()`.** The `notify` consumer looks for
+`notif` in this order (first hit wins) :
+
+1. `NOTIF_BIN` env — explicit override.
+2. `$XDG_DATA_HOME/notif/notif` — XDG-conformant location.
+3. `~/.local/bin/notif`
+4. `~/bin/notif` — the path recommended in §1 of this doc.
+5. `<daemon-root>/vendor/notif` — a bundled copy shipped alongside the daemon.
+
+Miss on every candidate → the consumer reports `skipped` and the daemon
+falls back to `basic-notif` (osascript) for macOS. The resolved path is
+logged at boot :
+
+```
+[notify-app] notif binary resolved at /Users/you/bin/notif
+```
+
+**`NOTIF_QUIET=1`.** The daemon spawns every `notif send` / `notif
+remove` with `NOTIF_QUIET=1` so the CLI's progress lines (`dispatching
+notif …`, `sent.`, `removed.`) stay off stderr. The daemon isn't
+interactive — a running trail would just clutter `daemon.log`. To debug
+a specific invocation, run `notif send …` manually in a terminal
+without the env var and observe the full output.
+
+**Claude Code identity — auto-registered at boot.** The `notify`
+consumer is the devcontainer's Claude Code notification path — every
+banner dispatched through it appears in Notification Center under the
+display name **"Claude Code"** with the bundled Claude Code icon
+(sourced from the VS Code Marketplace extension, wrapped into a minimal
+`.icns` at [.devcontainer/notify/vendor/senders/claude-code.icns](../../.devcontainer/notify/vendor/senders/claude-code.icns)).
+
+At daemon boot, `notify-app.js` runs the equivalent of :
+
+```bash
+notif register --sender claude-code --name "Claude Code" \
+  --icon .devcontainer/notify/vendor/senders/claude-code.icns
+```
+
+`notif register` is idempotent — no-op after the first boot. On failure
+(binary crashed, filesystem readonly, …) the consumer logs a warning
+and falls back to auto-materialization on the first send : the bundle
+still gets created under the `claude-code` sender key but with the
+default bell icon instead. `hook.js`'s `line.sender` field remains
+`'default'` (placeholder for future consumers) — the `notify-app.js`
+consumer overrides it to `claude-code` at dispatch time.
+
+**Cancel-remove — `notif remove`.** Whenever a queued banner has been
+dispatched and Claude Code later cancels the event (user replied /
+tool cancelled / tool finished), the daemon issues
+`notif remove --sender claude-code --id <notif_id>` to dismiss the
+exact banner from Notification Center. Post-fire tracking is in-memory
+(bounded to a 10-min TTL) and lives inside the daemon process — no
+persistence, no coordination across daemon restarts.
+
+**Payload contract — sender + notif_id.** Every queue line written by
+[hook.js](../../.devcontainer/skills/notify-queue/hook.js) carries two
+fields the daemon threads into `notif send` :
+
+- `sender` — placeholder `'default'` in v0.2. The `notify` consumer
+  ignores it and forces `claude-code` ; other consumers (future
+  cross-cutting channels) may read it for per-event routing.
+- `notif_id` — millisecond-resolution unique id (shape :
+  `<event>-<sid8>-<epoch-ms>`) that survives the queue → daemon →
+  `notif send --id X` round-trip so `notif remove --id X` addresses
+  the exact banner.
+
+Both fields are also written to the JSONL queue file under
+`.devcontainer/notify/queue/` so an operator can `tail -f` and see
+what the daemon is routing.
+
 ## Troubleshooting
 
 - **Notifications never appear.** Check

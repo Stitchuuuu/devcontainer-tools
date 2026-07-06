@@ -125,6 +125,18 @@ pub fn setup_outer_bootstrap(sender_key: &str) -> Result<(), MacosError> {
     invoke_inner_setup(&bundle, sender_key)
 }
 
+/// Outer-mode entry point for `notif remove`. Materializes the bundle
+/// (idempotent) then execs the inner mode with the `remove` subcommand so the
+/// removeDeliveredNotifications call runs under the sender's identity.
+///
+/// # Errors
+/// Bubbles anything from [`ensure_bundle`] plus [`MacosError::OpenFailed`] if
+/// the inner exit was non-zero.
+pub fn remove_outer(sender_key: &str, id: &str) -> Result<(), MacosError> {
+    let bundle = ensure_bundle(sender_key, sender_key, None, None)?;
+    invoke_inner_remove(&bundle, sender_key, id)
+}
+
 /// LaunchServices `lsregister` — private but stable across decades. The
 /// canonical way to register a bundle with LSDB without launching it.
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
@@ -227,6 +239,16 @@ fn invoke_inner_send(
 fn invoke_inner_setup(bundle: &Path, sender_key: &str) -> Result<(), MacosError> {
     let mut cmd = Command::new(inner_exe_path(bundle));
     cmd.arg("setup").arg("--sender").arg(sender_key);
+    run_inner(cmd)
+}
+
+fn invoke_inner_remove(bundle: &Path, sender_key: &str, id: &str) -> Result<(), MacosError> {
+    let mut cmd = Command::new(inner_exe_path(bundle));
+    cmd.arg("remove")
+        .arg("--sender")
+        .arg(sender_key)
+        .arg("--id")
+        .arg(id);
     run_inner(cmd)
 }
 
@@ -635,6 +657,21 @@ mod inner {
         final_result
     }
 
+    /// Inner-mode remove. Calls
+    /// `UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:)`
+    /// with a single-element `NSArray<NSString>` carrying `id`. Fire-and-forget
+    /// — the underlying API has no synchronous return channel, so an unknown
+    /// id silently no-ops. Emits a `removed.` audit line on completion.
+    pub fn remove_inner(id: &str) -> Result<(), MacosError> {
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        let ns_id = NSString::from_str(id);
+        let id_ref: &NSString = &ns_id;
+        let ids: Retained<NSArray<NSString>> = NSArray::from_slice(&[id_ref]);
+        center.removeDeliveredNotificationsWithIdentifiers(&ids);
+        notif_core::warn::stderr(&format!("removed notif id='{id}'."));
+        Ok(())
+    }
+
     /// Inner-mode setup. Fires `requestAuthorizationWithOptions:` and blocks
     /// on completion. Uses [`AUTH_TIMEOUT`] since the system dialog needs a
     /// human click.
@@ -736,7 +773,7 @@ mod inner {
 }
 
 #[cfg(target_os = "macos")]
-pub use inner::{dispatch_inner, setup_inner};
+pub use inner::{dispatch_inner, remove_inner, setup_inner};
 
 // Non-macOS stubs so the workspace builds on the dev host (linux).
 #[cfg(not(target_os = "macos"))]
@@ -749,5 +786,9 @@ pub fn dispatch_inner(
 }
 #[cfg(not(target_os = "macos"))]
 pub fn setup_inner() -> Result<(), MacosError> {
+    unreachable!("inner mode is macOS-only")
+}
+#[cfg(not(target_os = "macos"))]
+pub fn remove_inner(_id: &str) -> Result<(), MacosError> {
     unreachable!("inner mode is macOS-only")
 }

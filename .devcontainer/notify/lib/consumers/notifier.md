@@ -4,6 +4,52 @@ Companion document to [notifier.js](./notifier.js). What works on each
 platform, what doesn't, and why. Specifically focused on what happens
 when the user **clicks** the desktop notification.
 
+## Session 8 note — split into two consumers
+
+Since session 8 of the [notif-cli rollout](../../../../plans/notif-cli/ROLLOUT.md),
+the desktop-notification path forks in two :
+
+- **`basic-notif`** — this file. `osascript` on macOS, `powershell.exe`
+  WinRT toast on Windows, `notify-send` stub on Linux. Registered as
+  channel `basic-notif` in [index.js](../../index.js) and included in
+  the default `NOTIFY_CHANNELS=all` expansion. Zero external
+  dependency.
+- **`notify`** — [notify-app.js](./notify-app.js). Standalone `notif`
+  binary (see [apps/notifier/](../../../../apps/notifier/)). Registered
+  as channel `notify` and **opt-in** — must be named explicitly in
+  `NOTIFY_CHANNELS` (e.g. `NOTIFY_CHANNELS=notify,sound,discord`).
+  Unlocks sender identity, per-notif dismiss (`notif remove`), and
+  callback hooks. macOS-only in v0.2 ; Windows / Linux backends land
+  in sessions 9 / 10.
+
+When both channels are listed in `NOTIFY_CHANNELS`, `notify` wins and
+`basic-notif` is dropped with a warning to avoid double-banners. See
+[index.js](../../index.js) `parseChannels` for the exact logic.
+
+## Payload contract (session 8+)
+
+Every queue line written by [hook.js](../../../skills/notify-queue/hook.js)
+carries two extra fields consumed by the `notify` channel :
+
+| Field | Type | Value in v0.2 | Purpose |
+|---|---|---|---|
+| `sender` | string | always `default` | Passed to `notif send --sender X`. Reserved for future per-event routing (`claude` vs `npm-script` vs …). |
+| `notif_id` | string | `<event>-<sid8>-<epoch-ms>` | Passed to `notif send --id Y`, remembered by `notify-app.js` in an in-memory `dispatched` Map, and passed back to `notif remove --id Y` on `cancelled:notification`. |
+
+The `basic-notif` channel ignores both fields — osascript / WinRT have
+no equivalent APIs. Adding them is idempotent : an older hook.js that
+predates session 8 lets `notify-app.js` fall back to a locally-minted
+`notif_id` (`fallback-<sid8>-<epoch-ms>`) with a one-shot warning line.
+
+## Cancel-remove wiring (session 8+)
+
+[watcher.js](../watcher.js) emits `cancelled:notification` on
+`user_replied`, `tool_started`, `tool_finished`, and `tool_cancelled`.
+Since session 8, every emission carries the `sid` so the `notify`
+consumer can look up its `dispatched` Map and issue
+`notif remove --sender X --id Y`. Pre-fire cancels (banner never
+dispatched → nothing in the Map) are silent no-ops on both channels.
+
 ## At a glance
 
 | Platform           | Toast emits | Click → app focus | Click → right window | Click → enter devcontainer |

@@ -225,6 +225,21 @@ enum Command {
         #[arg(long)]
         exit: bool,
     },
+    /// Remove a delivered notification from Notification Center by id.
+    ///
+    /// Fire-and-forget — the underlying
+    /// `UNUserNotificationCenter.removeDeliveredNotifications:` API
+    /// has no synchronous error channel, so an unknown id silently
+    /// no-ops. Runs through the sender's bundle so the removal call
+    /// carries the right identity.
+    Remove {
+        /// Sender key whose bundle holds the notification.
+        #[arg(long)]
+        sender: String,
+        /// Notification identifier previously passed to `notif send --id`.
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -640,6 +655,17 @@ fn run_macos(cmd: Command) -> Result<()> {
             } else {
                 notif_macos::daemon::listen_outer(&sender_key, &idle_timeout)
                     .context("launch inner-mode daemon")
+            }
+        }
+        Command::Remove { sender, id } => {
+            let s = Sender::new(sender.clone()).context("invalid sender key")?;
+            if is_inner_mode() {
+                notif_macos::dispatch::remove_inner(&id).context("inner remove failed")
+            } else {
+                notif_macos::dispatch::remove_outer(&s.key, &id)
+                    .with_context(|| format!("remove notification id={id:?} sender={:?}", s.key))?;
+                notif_core::warn::stderr("removed.");
+                Ok(())
             }
         }
     }
@@ -1153,6 +1179,9 @@ fn run_stub(cmd: Command) -> Result<()> {
             println!(
                 "[stub] would listen: sender={sender}, idle_timeout={idle_timeout}, exit={exit}, host={HOST}"
             );
+        }
+        Command::Remove { sender, id } => {
+            println!("[stub] would remove: sender={sender}, id={id}, host={HOST}");
         }
     }
     Ok(())
@@ -1689,6 +1718,54 @@ app_resolved_name: Visual Studio Code
             cli.command,
             Command::Listen { exit: true, .. },
         ));
+    }
+
+    // ---- Remove subcommand ---------------------------------------------------
+    //
+    // v0.2 added `notif remove --sender <key> --id <notif-id>` so the notify
+    // daemon can dismiss delivered banners on cancel events (user_replied /
+    // tool_cancelled). Both flags are required — no default sender, no id
+    // guess. Absence of either must fail parsing so a misconfigured caller
+    // gets an error instead of a silent no-op.
+
+    #[test]
+    fn remove_valid_form_parses() {
+        let cli = Cli::try_parse_from([
+            "notif",
+            "remove",
+            "--sender",
+            "default",
+            "--id",
+            "stop-abcd1234-1783000000",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Remove { sender, id } => {
+                assert_eq!(sender, "default");
+                assert_eq!(id, "stop-abcd1234-1783000000");
+            }
+            _ => panic!("expected Command::Remove"),
+        }
+    }
+
+    #[test]
+    fn remove_requires_id() {
+        let result = Cli::try_parse_from(["notif", "remove", "--sender", "default"]);
+        let Err(err) = result else { panic!("expected parse error, got Ok") };
+        assert!(
+            err.to_string().contains("--id"),
+            "expected --id in error: {err}"
+        );
+    }
+
+    #[test]
+    fn remove_requires_sender() {
+        let result = Cli::try_parse_from(["notif", "remove", "--id", "x"]);
+        let Err(err) = result else { panic!("expected parse error, got Ok") };
+        assert!(
+            err.to_string().contains("--sender"),
+            "expected --sender in error: {err}"
+        );
     }
 
     // ---- Tier 1 identity spoof gate + refuse-loudly guard --------------------
