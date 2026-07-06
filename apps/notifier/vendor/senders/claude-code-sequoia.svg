@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Claude Code app icon, Sequoia-native style.
+
+    Background : squircle (rounded rectangle, rx=ry=229 ≈ 22.37% of
+    1024) filled coral orange #C4694E — matches the source marketplace
+    PNG hue. Sequoia app icons fill their squircle edge-to-edge (the OS
+    tile / dock renders no additional mask), so no safe-area inset like
+    the notify.svg sibling.
+
+    Glyph : 12-ray sunburst (asterisk), white #FEFEFE, centered on
+    (512, 512). Rays alternate LONG / SHORT at 30° increments starting
+    from straight-up (0°). Each ray is a diamond/lozenge (two triangles
+    sharing the center point at their inner apex). Long rays reach a
+    tip radius of 360 (~70 % of the 512 half-canvas → the ~70 % glyph
+    footprint requested). Short rays reach 240. Ray half-width at the
+    fattest midpoint is 20 (long) / 16 (short) — thin enough to read as
+    "starburst" rather than "gear", matching the source PNG.
+  -->
+
+  <!-- Squircle background. rx/ry = 229 = round(0.2237 × 1024). -->
+  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="#C4694E"/>
+
+  <!--
+    Sunburst glyph. Each <use> stamps one ray, rotated around center.
+    Two prototype rays live in <defs> : #ray-long and #ray-short, both
+    drawn pointing straight up from (0, 0), then translated to (512, 512)
+    and rotated via the transform on <use>.
+
+    Ray geometry (long) : slim isoceles triangle with vertices
+      top    ( 0, -360)   tip
+      right  ( 20,   0)   base right
+      left   (-20,   0)   base left
+    → Path : M 0 -360 L 20 0 L -20 0 Z. Base sits on origin so
+    opposite rays share the (0,0) point and there's no visible gap
+    at the center.
+
+    Short ray : same shape, tip at -240, half-width 16.
+  -->
+  <defs>
+    <path id="ray-long"  d="M 0 -360 L 20 0 L -20 0 Z" fill="#FEFEFE"/>
+    <path id="ray-short" d="M 0 -240 L 16 0 L -16 0 Z" fill="#FEFEFE"/>
+  </defs>
+
+  <g transform="translate(512 512)">
+    <!-- 6 long rays at 0°, 60°, 120°, 180°, 240°, 300°. -->
+    <use href="#ray-long" transform="rotate(0)"/>
+    <use href="#ray-long" transform="rotate(60)"/>
+    <use href="#ray-long" transform="rotate(120)"/>
+    <use href="#ray-long" transform="rotate(180)"/>
+    <use href="#ray-long" transform="rotate(240)"/>
+    <use href="#ray-long" transform="rotate(300)"/>
+    <!-- 6 short rays at 30°, 90°, 150°, 210°, 270°, 330°. -->
+    <use href="#ray-short" transform="rotate(30)"/>
+    <use href="#ray-short" transform="rotate(90)"/>
+    <use href="#ray-short" transform="rotate(150)"/>
+    <use href="#ray-short" transform="rotate(210)"/>
+    <use href="#ray-short" transform="rotate(270)"/>
+    <use href="#ray-short" transform="rotate(330)"/>
+  </g>
+</svg>

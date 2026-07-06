@@ -41,6 +41,12 @@ const { getHostKind } = require('../host')
 const CLAUDE_CODE_SENDER = 'claude-code'
 const CLAUDE_CODE_NAME   = 'Claude Code'
 const CLAUDE_CODE_ICON   = path.join(__dirname, '..', '..', 'vendor', 'senders', 'claude-code.icns')
+// First-boot register requires the user to click Allow on the OS permission
+// dialog — 90 s window. Anything faster (e.g. the previous 5 s) killed the
+// dialog before the user could see it, which macOS then treated as a
+// silent denial cached in TCC — subsequent boots surfaced as "Notifications
+// are not allowed for this application".
+const REGISTER_TIMEOUT_MS = 90_000
 
 // Resolved absolute path to the `notif` binary. Set once at start() ; when
 // null (no candidate exists on disk) the consumer reports `skipped` and
@@ -102,41 +108,108 @@ function start({ bus }) {
 }
 
 /**
- * Bootstrap the "Claude Code" sender bundle at daemon boot. Runs
- * `notif register --sender claude-code --name "Claude Code" --icon <path>`
- * synchronously (with a bounded timeout) so subsequent sends land under
- * the right identity + icon.
+ * Bootstrap the "Claude Code" sender bundle at daemon boot. Two-step,
+ * both idempotent :
  *
- * Idempotent — `notif register` short-circuits when the bundle already
- * exists at the same display name. Failure is non-fatal : the consumer
- * falls back to auto-materialization on first send, which uses the
- * bundled default icon instead of the Claude Code one.
+ *   1. `notif register --sender claude-code --name "Claude Code" [--icon <path>]`
+ *      — materializes the bundle on a fresh install, no-ops when already
+ *      materialized (short-circuit on plist + exe presence, keeps the TCC
+ *      grant). Fires the OS permission dialog on the very first boot ;
+ *      subsequent boots do nothing.
+ *   2. `notif set-icon --sender claude-code --icon <path>` — unconditional
+ *      icon refresh, byte-compares against the on-disk icon.icns and no-ops
+ *      when identical. Handles the "existing bundle, missing / stale icon"
+ *      case that `register` short-circuits past (register does NOT refresh
+ *      icons on existing bundles).
+ *
+ * Both steps are non-fatal : on failure we log a warning and continue.
+ * The next `notif send --sender claude-code` will auto-materialize the
+ * bundle if step 1 didn't ; the icon may end up as the default bell if
+ * step 2 didn't run — the daemon still delivers banners, just under a
+ * plain sender identity.
  *
  * @returns {object}  diag fields to fold into start()'s return
  */
 function registerClaudeCodeSender() {
-	const args = ['register', '--sender', CLAUDE_CODE_SENDER, '--name', CLAUDE_CODE_NAME]
-	if (fs.existsSync(CLAUDE_CODE_ICON)) {
-		args.push('--icon', CLAUDE_CODE_ICON)
-	} else {
+	const hasIcon = fs.existsSync(CLAUDE_CODE_ICON)
+	if (!hasIcon) {
 		log.warn(`[notify-app] Claude Code icon missing at ${CLAUDE_CODE_ICON} — sender will use the default bell`)
 	}
+
+	// On a FRESH install the bundle doesn't exist and `notif register` fires
+	// the OS permission dialog which needs the user to click Allow — that
+	// takes much longer than the previous 5 s timeout allowed, so the window
+	// is 90 s. On subsequent boots the bundle already exists on disk : we
+	// short-circuit to avoid re-running the setup dance (idempotent but
+	// wastes daemon boot time + may silently fail if macOS treats a fresh
+	// setup call as suspicious).
+	//
+	// Icon updates from a repo commit do NOT propagate automatically —
+	// `notif register` short-circuits on existing bundles and doesn't refresh
+	// `Contents/Resources/icon.icns`. To adopt a new icon after this file
+	// changed, run `notif set-icon --sender claude-code --icon <path>` on the
+	// host manually.
+	if (bundleAlreadyMaterialized()) {
+		return { register: 'skipped-bundle-exists' }
+	}
+	const args = ['register', '--sender', CLAUDE_CODE_SENDER, '--name', CLAUDE_CODE_NAME]
+	if (hasIcon) args.push('--icon', CLAUDE_CODE_ICON)
+	const regStatus = runNotif(args, 'register', REGISTER_TIMEOUT_MS)
+	return { register: regStatus }
+}
+
+/**
+ * Detect whether the Claude Code sender bundle already exists on disk. Used
+ * to skip step 1 above on subsequent boots. Checks both the display-named
+ * folder (`Claude Code.app` — what `notif register --name "Claude Code"`
+ * produces) and the key-fallback folder (`claude-code.app` — what an early
+ * hand-crafted register would have left behind).
+ *
+ * @returns {boolean}
+ */
+function bundleAlreadyMaterialized() {
+	const root = path.join(os.homedir(), '.local', 'share', 'notif', 'senders')
+	const candidates = [
+		path.join(root, `${CLAUDE_CODE_NAME}.app`, 'Contents', 'MacOS', 'notif'),
+		path.join(root, `${CLAUDE_CODE_SENDER}.app`, 'Contents', 'MacOS', 'notif'),
+	]
+	return candidates.some(p => fs.existsSync(p))
+}
+
+/**
+ * Small wrapper around spawnSync for the register + set-icon chain. Logs
+ * outcome + returns a diag string. Never throws.
+ *
+ * @param {string[]} args      argv passed to `notif`
+ * @param {string} label       log label ("register" / "set-icon")
+ * @param {number} timeoutMs   spawnSync timeout
+ * @returns {string}           `ok` | `failed-<code>` | `threw`
+ */
+function runNotif(args, label, timeoutMs) {
 	try {
 		const r = spawnSync(notifBinPath, args, {
 			stdio:   'pipe',
-			timeout: 5000,
+			timeout: timeoutMs,
 			env:     { ...process.env, NOTIF_QUIET: '1' },
 		})
 		if (r.status === 0) {
-			log.info(`[notify-app] Claude Code sender registered (icon=${fs.existsSync(CLAUDE_CODE_ICON) ? 'bundled' : 'default'})`)
-			return { register: 'ok' }
+			log.info(`[notify-app] notif ${label} ok`)
+			return 'ok'
 		}
 		const stderr = (r.stderr || '').toString().trim()
-		log.warn(`[notify-app] notif register exited ${r.status}: ${stderr || '<no stderr>'} — falling back to auto-materialization on first send`)
-		return { register: `failed-${r.status}` }
+		if (r.signal) {
+			log.warn(`[notify-app] notif ${label} killed by ${r.signal} after ${timeoutMs}ms (probably user did not respond to the OS permission dialog in time) — stderr: ${stderr || '<no stderr>'}`)
+			return `timeout-${r.signal}`
+		}
+		if (stderr.includes('Notifications are not allowed')) {
+			log.warn(`[notify-app] notif ${label} exited ${r.status}: TCC has cached a "denied" state for com.notify.${CLAUDE_CODE_SENDER}. Run \`tccutil reset Notifications com.notify.${CLAUDE_CODE_SENDER}\` on the host, then rebuild the devcontainer.`)
+			return `failed-tcc-denied`
+		}
+		log.warn(`[notify-app] notif ${label} exited ${r.status}: ${stderr || '<no stderr>'}`)
+		return `failed-${r.status}`
 	} catch (e) {
-		log.warn(`[notify-app] notif register threw: ${e.message} — falling back to auto-materialization on first send`)
-		return { register: 'threw' }
+		log.warn(`[notify-app] notif ${label} threw: ${e.message}`)
+		return 'threw'
 	}
 }
 
