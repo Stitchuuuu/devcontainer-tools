@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "notif-cli"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "notif-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "notif-icon-gen"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -507,14 +507,14 @@ dependencies = [
 
 [[package]]
 name = "notif-linux"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "notif-core",
 ]
 
 [[package]]
 name = "notif-macos"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "block2",
  "libc",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "notif-windows"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "notif-core",
 ]
