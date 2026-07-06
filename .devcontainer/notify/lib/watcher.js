@@ -285,7 +285,12 @@ function handleLine(line, { timers, bus, delays, state }) {
 			state?.cancelled({ sid, eventType: pending.eventType, cause: 'user_replied' })
 			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: 'user_replied' })
 		} else {
-			log.info(`[watcher] user_replied   ${sid8} — no pending timer (already fired or never armed)`)
+			log.info(`[watcher] user_replied   ${sid8} — no pending timer (already fired or never armed) — signalling post-fire cancel to consumers`)
+			// Post-fire cancel : the notif already fired ; consumers (notify-app)
+			// maintain their own "dispatched" state to dismiss the delivered banner.
+			// Without this bus emission, `notif remove` never fires and the
+			// banner lingers in Notification Center until the user swipes it.
+			bus.emit('cancelled:notification', { sid, eventType: null, reason: 'user_replied' })
 		}
 		return
 	}
@@ -316,6 +321,14 @@ function handleLine(line, { timers, bus, delays, state }) {
 			log.info(`[watcher] ${event.padEnd(14)} ${sid8} — CANCELLED pending ${pending.eventType}`)
 			state?.cancelled({ sid, eventType: pending.eventType, cause: event })
 			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: event })
+		} else if (event === 'tool_cancelled') {
+			// Post-fire cancel : the permission notif already fired ; the user
+			// dismissed the tool prompt (via tail-cancel.js's transcript scan).
+			// Signal consumers (notify-app) so they can dismiss the delivered
+			// banner via `notif remove`. `tool_started` / `tool_finished` do NOT
+			// trigger a post-fire dismiss — those imply user granted, so leaving
+			// the banner up is intended UX (user knows what they did).
+			bus.emit('cancelled:notification', { sid, eventType: null, reason: event })
 		}
 		return
 	}
