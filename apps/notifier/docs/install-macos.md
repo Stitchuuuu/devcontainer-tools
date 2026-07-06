@@ -262,6 +262,31 @@ Notification Center until the user clicks or dismisses them. So
 and drops the binding. The flag stays in the CLI for portability with
 future Windows / Linux backends that may fire a real timeout event.
 
+### `--on-dismiss` — which gestures actually fire it
+
+macOS's `UNNotificationDismissActionIdentifier` is sent to the delegate
+only when the user **explicitly** dismisses a notification. Apple
+draws a fine line here :
+
+| Gesture | Fires `--on-dismiss` ? |
+|---|---|
+| Click the **X** on the banner in Notification Center | ✅ yes |
+| Click the **X** / "Close" on an alert-style banner | ✅ yes |
+| **Swipe** a live banner off-screen while it's still visible | ❌ often no — banner just moves to Notification Center |
+| Use **Clear All** in Notification Center | ❌ no (bulk clear, no per-notif delegate call) |
+| Banner **auto-fades** after ~5 s | ❌ no (no user action) |
+
+If you swipe the banner too fast, macOS treats it as "moved to
+Notification Center" rather than "user dismissed". The delegate never
+fires. To reliably test `--on-dismiss`, let the banner fade, open
+Notification Center (top-right clock / two-finger swipe from the right
+edge), and click the little `X` that appears when hovering the
+notification.
+
+Session 7b's implementation opts into `.customDismissAction` on the
+UN category whenever `--on-dismiss` is set — that's the maximum macOS
+lets us wire. Beyond that it's OS policy.
+
 ## Troubleshooting
 
 - **Notifications never appear.** Check
