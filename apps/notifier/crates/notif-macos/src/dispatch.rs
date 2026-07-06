@@ -460,24 +460,33 @@ mod inner {
         //   2. Auto-generated `notif-<hex>` when actions are declared but
         //      no raw override.
         //   3. None (no actions → no category, banner is body-only).
-        let effective_category_id = overrides
-            .category_identifier
-            .clone()
-            .or_else(|| {
-                if callbacks.on_actions.is_empty() {
-                    None
-                } else {
-                    Some(format!(
-                        "notif-cat-{}",
-                        notif.id.as_deref().unwrap_or("auto"),
-                    ))
-                }
-            });
+        // A category is needed whenever :
+        //   - `--on-action` is set (buttons need a category).
+        //   - `--on-dismiss` is set — UN center will NOT emit
+        //     `didReceiveNotificationResponse` with the `dismiss` action
+        //     identifier unless the notification's category carries the
+        //     `.customDismissAction` option. Without that flag, the
+        //     system dismisses silently and the delegate never fires.
+        //   - `--macos-category-identifier` override was passed (Tier 3
+        //     raw override).
+        let needs_category = overrides.category_identifier.is_some()
+            || !callbacks.on_actions.is_empty()
+            || callbacks.on_dismiss.is_some();
+        let effective_category_id = overrides.category_identifier.clone().or_else(|| {
+            if needs_category {
+                Some(format!(
+                    "notif-cat-{}",
+                    notif.id.as_deref().unwrap_or("auto"),
+                ))
+            } else {
+                None
+            }
+        });
 
-        if !callbacks.on_actions.is_empty() {
+        if needs_category {
             let cat_id_str = effective_category_id
                 .as_deref()
-                .expect("non-empty on_actions implies effective_category_id set");
+                .expect("needs_category implies effective_category_id set");
             let cat_id = NSString::from_str(cat_id_str);
 
             // Build UNNotificationAction items in the exact order the
@@ -502,7 +511,15 @@ mod inner {
                 action_ptrs.iter().map(std::convert::AsRef::as_ref).collect();
             let actions_arr = NSArray::from_slice(&refs);
             let intents_arr: Retained<NSArray<NSString>> = NSArray::new();
-            let cat_opts = UNNotificationCategoryOptions::empty();
+            // Opt in to `didReceiveNotificationResponse` for the dismiss
+            // action iff `--on-dismiss` was set. Off otherwise — the
+            // system's default dismiss is cheaper (no delegate roundtrip
+            // per swipe-away).
+            let cat_opts = if callbacks.on_dismiss.is_some() {
+                UNNotificationCategoryOptions::CustomDismissAction
+            } else {
+                UNNotificationCategoryOptions::empty()
+            };
             let category =
                 UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
                     &cat_id,
@@ -515,8 +532,8 @@ mod inner {
                 NSSet::from_slice(&[cat_ref]);
             // `setNotificationCategories` REPLACES the registered set on
             // the UN center. Fire-and-forget CLI invocations are fine
-            // with that — the daemon (`notif listen`) will merge sets
-            // when it lands.
+            // with that — the daemon (`notif listen`) merges sets
+            // implicitly by re-registering per send.
             center.setNotificationCategories(&categories);
 
             let action_labels: Vec<&str> = callbacks
@@ -525,9 +542,10 @@ mod inner {
                 .map(|(l, _)| l.as_str())
                 .collect();
             notif_core::warn::stderr(&format!(
-                "registered UN category '{}' with {} action(s): {}",
+                "registered UN category '{}' with {} action(s){}{}",
                 cat_id_str,
                 callbacks.on_actions.len(),
+                if action_labels.is_empty() { "" } else { ": " },
                 action_labels.join(", "),
             ));
         }
