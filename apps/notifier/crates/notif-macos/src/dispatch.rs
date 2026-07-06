@@ -278,10 +278,10 @@ mod inner {
     use objc2::runtime::Bool;
     use objc2_foundation::{NSArray, NSError, NSSet, NSString, NSURL, NSUUID};
     use objc2_user_notifications::{
-        UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationAction,
-        UNNotificationActionOptions, UNNotificationAttachment, UNNotificationCategory,
-        UNNotificationCategoryOptions, UNNotificationInterruptionLevel, UNNotificationRequest,
-        UNNotificationSound, UNUserNotificationCenter,
+        UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
+        UNNotificationAction, UNNotificationActionOptions, UNNotificationAttachment,
+        UNNotificationCategory, UNNotificationCategoryOptions, UNNotificationInterruptionLevel,
+        UNNotificationRequest, UNNotificationSound, UNUserNotificationCenter,
     };
 
     use notif_core::callback::CallbackConfig;
@@ -659,15 +659,38 @@ mod inner {
 
     /// Inner-mode remove. Calls
     /// `UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:)`
-    /// with a single-element `NSArray<NSString>` carrying `id`. Fire-and-forget
-    /// — the underlying API has no synchronous return channel, so an unknown
-    /// id silently no-ops. Emits a `removed.` audit line on completion.
+    /// with a single-element `NSArray<NSString>` carrying `id`, then blocks on
+    /// a `getDeliveredNotifications(completionHandler:)` fence so the XPC to
+    /// `notificationcenterd` is guaranteed to have flushed before the process
+    /// exits. Without the fence the remove call queues but is dropped when the
+    /// short-lived inner process terminates — the banner stays in NC.
+    ///
+    /// The underlying `removeDeliveredNotifications` API has no completion
+    /// channel of its own, so we piggy-back on the ordering guarantee of the
+    /// center's serial queue: once `getDeliveredNotifications` returns, every
+    /// prior queued call (including our remove) has already been serviced.
+    ///
+    /// Unknown ids still silently no-op — this fix is only about the
+    /// process-exit race, not about validating ids.
     pub fn remove_inner(id: &str) -> Result<(), MacosError> {
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let ns_id = NSString::from_str(id);
         let id_ref: &NSString = &ns_id;
         let ids: Retained<NSArray<NSString>> = NSArray::from_slice(&[id_ref]);
         center.removeDeliveredNotificationsWithIdentifiers(&ids);
+
+        // Sync fence — see fn-level doc.
+        let slot: Arc<Mutex<Option<Result<(), MacosError>>>> = Arc::new(Mutex::new(None));
+        let slot_cb = slot.clone();
+        let block = RcBlock::new(move |_notifs: std::ptr::NonNull<NSArray<UNNotification>>| {
+            *slot_cb.lock().unwrap() = Some(Ok(()));
+        });
+        center.getDeliveredNotificationsWithCompletionHandler(&block);
+        // Timeout mirrors DISPATCH_TIMEOUT — 2 s is generous for a queue flush
+        // that should be sub-millisecond ; the wait_for_slot poll converges
+        // well before that on a healthy system.
+        let _ = wait_for_slot(&slot, DISPATCH_TIMEOUT);
+
         notif_core::warn::stderr(&format!("removed notif id='{id}'."));
         Ok(())
     }
