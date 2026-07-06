@@ -520,12 +520,12 @@ fn run_macos(cmd: Command) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn run_clean(sender: Option<&str>, all: bool, yes: bool) -> Result<()> {
     use anyhow::{bail, Context};
-    match (sender, all) {
+    let touched_tcc = match (sender, all) {
         (Some(key), false) => {
             let report = notif_macos::clean::clean_sender(key)
                 .with_context(|| format!("clean sender {key:?}"))?;
             print_clean(&report);
-            Ok(())
+            true
         }
         (None, true) => {
             let reports = notif_macos::clean::clean_all(yes).context("clean --all")?;
@@ -536,10 +536,22 @@ fn run_clean(sender: Option<&str>, all: bool, yes: bool) -> Result<()> {
             for r in &reports {
                 print_clean(r);
             }
-            Ok(())
+            !reports.is_empty()
         }
         _ => bail!("clean requires either --sender <KEY> or --all"),
+    };
+
+    if touched_tcc {
+        eprintln!();
+        eprintln!("Note — `tccutil` on macOS Sonoma+ often reports success without actually");
+        eprintln!("resetting the TCC grant on unnotarized bundles. If the permission dialog");
+        eprintln!("does NOT reappear on the next `notif send`, reset manually via :");
+        eprintln!();
+        eprintln!("    open 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'");
+        eprintln!();
+        eprintln!("Then toggle Off/On (or Remove via the '-' button) for the sender's entry.");
     }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
