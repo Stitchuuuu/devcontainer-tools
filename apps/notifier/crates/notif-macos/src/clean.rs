@@ -46,7 +46,12 @@ impl std::fmt::Display for TccStatus {
                 f,
                 "tcc: reset via `reset All` fallback (Notifications-scoped failed: {msg})",
             ),
-            Self::Failed(msg) => write!(f, "tcc: FAILED ({msg}) — stale grant remains"),
+            Self::Failed(msg) => write!(
+                f,
+                "tcc: FAILED ({msg}) — stale grant remains ; \
+                 fix manually via System Settings → Notifications → toggle Off/On or Remove : \
+                 open \"x-apple.systempreferences:com.apple.Notifications-Settings.extension\"",
+            ),
             Self::Skipped(reason) => write!(f, "tcc: skipped ({reason})"),
         }
     }
