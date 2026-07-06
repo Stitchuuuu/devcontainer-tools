@@ -125,7 +125,16 @@ function start({ bus, queueDir, delays, state }) {
 	// firing independently — this is purely additive.
 	bus.on('cancel:notification', ({ sid, kind, reason }) => {
 		const pending = timers.get(sid)
-		if (!pending) return
+		if (!pending) {
+			// No pending timer — banner may already be dispatched (user took
+			// >30s to click, so the timer fired first). Emit post-fire cancel
+			// so notify-app can dismiss the delivered banner via `notif remove`.
+			// No `kind === 'permission'` filter here : under the "1 banner per
+			// sid" invariant only one banner exists, so any user action on the
+			// sid legitimately dismisses it regardless of what event fired it.
+			bus.emit('cancelled:notification', { sid, eventType: null, reason: `inbound-post-fire:${reason}` })
+			return
+		}
 		if (kind === 'permission'
 		 && pending.eventType !== 'permission_request'
 		 && pending.eventType !== 'permission_prompt') return
@@ -133,7 +142,10 @@ function start({ bus, queueDir, delays, state }) {
 		timers.delete(sid)
 		log.info(`[watcher] cancel:notification ${sid.slice(0, 8)} — ${pending.eventType} cancelled (${reason})`)
 		state?.cancelled({ sid, eventType: pending.eventType, cause: 'cancel:notification', kind, reason })
-		bus.emit('cancelled:notification', { id: pending.id, eventType: pending.eventType, reason: `inbound:${reason}` })
+		// Include `sid` so notify-app.js can look up its `dispatched` map. Pre-fire
+		// there's nothing dispatched yet, but keeping the shape consistent with
+		// the post-fire emit above avoids future footguns.
+		bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: `inbound:${reason}` })
 	})
 
 	log.info(`[watcher] watching ${queueDir} (delays: ${JSON.stringify(delays)})`)
@@ -321,13 +333,16 @@ function handleLine(line, { timers, bus, delays, state }) {
 			log.info(`[watcher] ${event.padEnd(14)} ${sid8} — CANCELLED pending ${pending.eventType}`)
 			state?.cancelled({ sid, eventType: pending.eventType, cause: event })
 			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: event })
-		} else if (event === 'tool_cancelled') {
-			// Post-fire cancel : the permission notif already fired ; the user
-			// dismissed the tool prompt (via tail-cancel.js's transcript scan).
-			// Signal consumers (notify-app) so they can dismiss the delivered
-			// banner via `notif remove`. `tool_started` / `tool_finished` do NOT
-			// trigger a post-fire dismiss — those imply user granted, so leaving
-			// the banner up is intended UX (user knows what they did).
+		} else if (event === 'tool_cancelled' || event === 'tool_finished') {
+			// Post-fire cancel : the permission notif already fired and the user
+			// closed the loop — either by denying (`tool_cancelled` via
+			// tail-cancel.js's transcript scan) or by approving+running the tool
+			// to completion (`tool_finished` via PostToolUse). Either way the
+			// banner is stale and must be dismissed via `notif remove` to keep
+			// the "1 delivered banner per sid" invariant.
+			// `tool_started` (PreToolUse) stays a no-op : it fires while the user
+			// is still deciding, and dismissing then would kill the banner
+			// mid-decision.
 			bus.emit('cancelled:notification', { sid, eventType: null, reason: event })
 		}
 		return

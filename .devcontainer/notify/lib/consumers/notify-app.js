@@ -297,15 +297,43 @@ function send(payload) {
 	if (priority)          args.push('--priority', priority)
 
 	log.info(`[notify-app] DISPATCH ${payload.eventType} ${sid8} — id=${notifId} sender=${sender}`)
+	// Enforce the "1 delivered banner per sid" invariant : dismiss any prior
+	// banner for this sid BEFORE dispatching the new one, so Notification
+	// Center never accumulates duplicates when a session emits multiple
+	// events (e.g. permission_request then stop).
+	dismissPrevious(sid, 'replaced-by-new-notif')
 	spawnFireAndForget(notifBinPath, args)
 	rememberDispatched(sid, sender, notifId)
 }
 
 /**
- * Bus handler for `cancelled:notification`. When a banner was dispatched for
- * this sid, spawn `notif remove --sender X --id Y` to dismiss it from
- * Notification Center. Pre-fire cancels (no dispatched entry) are silent —
- * watcher.js already cleared the timer, no banner ever appeared.
+ * Dismiss the currently-tracked banner for a sid via `notif remove`, and drop
+ * the `dispatched` entry. Silent no-op when nothing is tracked (pre-fire
+ * cancels never had a banner to remove ; a fresh dispatch on an empty slot
+ * has nothing to replace).
+ *
+ * @param {string} sid
+ * @param {string} reason  logged for diagnostics
+ * @returns {void}         fire-and-forget
+ */
+function dismissPrevious(sid, reason) {
+	const entry = dispatched.get(sid)
+	if (!entry) return
+	dispatched.delete(sid)
+	if (entry.timeout) clearTimeout(entry.timeout)
+	const sid8 = sid.slice(0, 8)
+	log.info(`[notify-app] dismiss ${sid8} — removing notif id=${entry.notifId} (${reason})`)
+	spawnFireAndForget(notifBinPath, [
+		'remove',
+		'--sender', entry.sender,
+		'--id',     entry.notifId,
+	])
+}
+
+/**
+ * Bus handler for `cancelled:notification`. Delegates to `dismissPrevious`
+ * so the "1 banner per sid" invariant is enforced through a single code
+ * path for both cancel-triggered and dispatch-triggered dismissals.
  *
  * @param {object} evt
  * @param {string} [evt.sid]        session id — provided by watcher.js since session-8
@@ -315,17 +343,7 @@ function send(payload) {
  */
 function onCancelled({ sid, eventType, reason } = {}) {
 	if (!sid) return
-	const entry = dispatched.get(sid)
-	if (!entry) return
-	dispatched.delete(sid)
-	if (entry.timeout) clearTimeout(entry.timeout)
-	const sid8 = sid.slice(0, 8)
-	log.info(`[notify-app] cancel ${sid8} — removing notif id=${entry.notifId} (${eventType}/${reason})`)
-	spawnFireAndForget(notifBinPath, [
-		'remove',
-		'--sender', entry.sender,
-		'--id',     entry.notifId,
-	])
+	dismissPrevious(sid, `${eventType || 'unknown'}/${reason}`)
 }
 
 /**
