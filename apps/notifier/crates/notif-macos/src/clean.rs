@@ -23,10 +23,16 @@ use crate::sender::{find_bundle_by_key, list_senders, senders_root};
 /// Outcome of a `tccutil` call.
 #[derive(Debug, Clone)]
 pub enum TccStatus {
-    /// `tccutil reset Notifications <id>` returned 0.
+    /// `tccutil reset Notifications <id>` returned 0 on the first try.
     Ok,
-    /// `tccutil` failed with a non-zero exit — usually "no matching entry",
-    /// treated as best-effort. The message is stderr for logging.
+    /// The targeted `reset Notifications <id>` failed, but the broader
+    /// `reset All <id>` fallback succeeded. Payload = original failure
+    /// reason. Common on macOS Sonoma+ where `reset Notifications` is
+    /// buggy against per-bundle identifiers.
+    OkViaResetAll(String),
+    /// Both `reset Notifications` and `reset All` failed. Payload =
+    /// last error. TCC keeps the stale grant; next re-registration
+    /// reuses the old permission instead of re-prompting.
     Failed(String),
     /// The caller elected not to touch TCC (e.g. absent identifier).
     Skipped(String),
@@ -36,7 +42,11 @@ impl std::fmt::Display for TccStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ok => f.write_str("tcc: reset"),
-            Self::Failed(msg) => write!(f, "tcc: skipped ({msg})"),
+            Self::OkViaResetAll(msg) => write!(
+                f,
+                "tcc: reset via `reset All` fallback (Notifications-scoped failed: {msg})",
+            ),
+            Self::Failed(msg) => write!(f, "tcc: FAILED ({msg}) — stale grant remains"),
             Self::Skipped(reason) => write!(f, "tcc: skipped ({reason})"),
         }
     }
@@ -155,18 +165,34 @@ fn tccutil_reset(identifier: &str) -> TccStatus {
     if identifier.is_empty() || identifier == "?" {
         return TccStatus::Skipped("no identifier".to_string());
     }
-    let out = match Command::new("tccutil")
-        .args(["reset", "Notifications", identifier])
+    match run_tccutil(&["reset", "Notifications", identifier]) {
+        Ok(()) => TccStatus::Ok,
+        Err(notif_err) => match run_tccutil(&["reset", "All", identifier]) {
+            Ok(()) => TccStatus::OkViaResetAll(notif_err),
+            Err(all_err) => TccStatus::Failed(format!(
+                "reset Notifications: {notif_err}; reset All: {all_err}",
+            )),
+        },
+    }
+}
+
+/// Runs `tccutil <args>` and returns Ok(()) on exit 0 or the trimmed
+/// stderr / spawn error on failure. Keeps the error path uniform so the
+/// caller can layer fallbacks.
+fn run_tccutil(args: &[&str]) -> Result<(), String> {
+    let out = Command::new("tccutil")
+        .args(args)
         .output()
-    {
-        Ok(o) => o,
-        Err(e) => return TccStatus::Failed(format!("spawn failed: {e}")),
-    };
+        .map_err(|e| format!("spawn failed: {e}"))?;
     if out.status.success() {
-        TccStatus::Ok
+        // tccutil sometimes prints "Failed to reset ..." to stderr
+        // even when its exit code is 0 (real macOS bug). Trust the
+        // exit code and let the caller retry only when the code is
+        // non-zero.
+        Ok(())
     } else {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        TccStatus::Failed(if msg.is_empty() {
+        Err(if msg.is_empty() {
             format!("exit {}", out.status.code().unwrap_or(-1))
         } else {
             msg
