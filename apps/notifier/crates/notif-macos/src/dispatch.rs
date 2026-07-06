@@ -536,17 +536,14 @@ mod inner {
             content.setCategoryIdentifier(&NSString::from_str(cid));
         }
 
-        // Surface the click / dismiss / timeout callbacks that aren't
-        // covered by the action buttons — those still need the daemon.
-        let non_action_callback_count = usize::from(callbacks.on_click.is_some())
-            + usize::from(callbacks.on_dismiss.is_some())
-            + usize::from(callbacks.on_timeout.is_some());
-        if non_action_callback_count > 0 {
-            notif_core::warn::stderr(&format!(
-                "callback stub: {} click/dismiss/timeout target(s) registered — dispatch lands via `notif listen` daemon",
-                non_action_callback_count,
-            ));
-        }
+        // (Session 7b) The "callback stub: N target(s) registered" log
+        // that lived here in v0.2 → 7a is now unreachable : the outer
+        // routes any send-with-callbacks through `notif listen` (which
+        // calls back into this same fn) so the delegate wiring exists
+        // by the time `addNotificationRequest` fires. From inside the
+        // daemon, action buttons are attached above and click / dismiss
+        // callbacks are bound in the registry — no user-facing stub
+        // announcement is warranted.
 
         let identifier = match &notif.id {
             Some(v) => NSString::from_str(v),

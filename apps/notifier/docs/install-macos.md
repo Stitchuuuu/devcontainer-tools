@@ -152,6 +152,116 @@ deleting the folder, so a subsequent `notif register` for the same
 key gets a fresh permission prompt instead of silently inheriting a
 stale grant.
 
+## 7. Callbacks — react to click / action / dismiss
+
+`notif send` accepts four callback flags — `--on-click`, `--on-action`,
+`--on-dismiss`, `--on-timeout` — that hook into the user's response.
+Each takes a **target string** with one of three prefixes:
+
+| Prefix | Shape | Behavior |
+|---|---|---|
+| `hook:<argv>` | subprocess argv | Spawned with the JSON payload on `stdin`. Fire-and-forget. `argv` is tokenized per POSIX shell rules (`shell-words`). |
+| `url:<https?://…>` | HTTP endpoint | JSON payload `POST`ed as `application/json`. 5 s connect / 10 s total. Non-2xx logged, not retried. |
+| `file:<abs-path>` | file path | One JSONL line (`<json>\n`) appended per fire. `O_APPEND` keeps concurrent writers atomic. |
+
+**Auto-detect** — prefix-less targets are classified by shape :
+`http://…` / `https://…` → url, `/…` → file, else → hook. So a bare
+`--on-click /tmp/clicks.jsonl` is equivalent to `--on-click file:/tmp/clicks.jsonl`.
+
+### Payload shape
+
+All three dispatchers receive the same JSON object :
+
+```json
+{
+  "notif_id": "…",
+  "event": "click | action:<label> | dismiss | timeout",
+  "sender": "vscode",
+  "title": "Deploy done",
+  "body": "staging → prod",
+  "ts": "2026-07-06T12:00:00Z"
+}
+```
+
+Order and keys are stable — snapshot-tested inside `notif-core`.
+
+### Worked examples
+
+**`hook:` — trigger a local script on click.**
+
+```bash
+cat > /tmp/on-click.sh <<'EOF'
+#!/bin/sh
+# Reads the payload JSON on stdin ; log it.
+jq '.title + " — clicked at " + .ts' >> /tmp/click.log
+EOF
+chmod +x /tmp/on-click.sh
+
+notif send --title "Deploy done" --body "staging → prod" \
+    --on-click hook:/tmp/on-click.sh
+```
+
+**`url:` — post a click to a webhook.**
+
+```bash
+notif send --title "Alert" --body "CPU 92%" \
+    --on-click url:https://webhook.site/<uuid>
+```
+
+**`file:` — append every dismiss to a JSONL trail.**
+
+```bash
+notif send --title "Reminder" --body "coffee" \
+    --on-dismiss file:/tmp/dismissed.jsonl
+```
+
+**`--on-action` — multiple buttons, each with its own target.**
+
+```bash
+notif send --title "PR review" --body "@you" \
+    --on-action "reply:hook:/usr/local/bin/reply-to-pr" \
+    --on-action "ignore:file:/tmp/ignored.jsonl"
+```
+
+Buttons appear on the banner in the order of `--on-action` flags.
+The first flag is the primary action.
+
+### How dispatch works — the `notif listen` daemon
+
+When you pass **any** `--on-*` flag, `notif send` auto-spawns a
+long-lived per-sender daemon (`notif listen --sender <key>`) that owns
+the notification center's delegate. Without a delegate, macOS silently
+drops every click / action / dismiss ; the daemon exists specifically
+to catch those events and fire the matching target.
+
+Runtime characteristics :
+
+- **One daemon per sender.** `Notify` (Tier 0) gets one ; each Tier 2
+  sender gets its own. `pgrep -f "notif listen"` shows them.
+- **Auto-spawn.** First send-with-callback for a sender materializes
+  the bundle, seeds LaunchServices, and `setsid`-detaches
+  `notif listen`. Subsequent sends see the socket already up (≤ 5 ms
+  round-trip).
+- **Idle timeout.** Daemon self-exits after `--idle-timeout` (default
+  `24h`) with no activity **and** an empty callback registry. Long
+  enough that ordinary sessions never bounce a running daemon.
+- **Clean shutdown.** `notif listen --exit --sender <key>` sends a
+  shutdown request. Sends after that will auto-respawn.
+
+Without callbacks, `notif send` skips the daemon entirely and uses the
+existing direct-spawn inner path (~2 s exit) — the daemon costs
+nothing when it's not needed.
+
+### `--on-timeout` on macOS
+
+macOS's notification center does **not** emit a "timed out" event —
+banners fade off-screen after ~5 s but linger indefinitely in
+Notification Center until the user clicks or dismisses them. So
+`--on-timeout` on macOS is a **no-op** ; the daemon logs one
+`info: --on-timeout is a no-op on macOS …` line per sender lifetime
+and drops the binding. The flag stays in the CLI for portability with
+future Windows / Linux backends that may fire a real timeout event.
+
 ## Troubleshooting
 
 - **Notifications never appear.** Check
@@ -165,3 +275,16 @@ stale grant.
   macOS occasionally invalidates ad-hoc signatures across major
   version bumps. `notif clean --sender <key>` + a fresh `send`
   re-materializes and re-signs.
+- **Callbacks never fire.** Verify the daemon is up with
+  `pgrep -f "notif listen"`. If it's not, the send didn't include any
+  `--on-*` flag (no daemon needed) or the auto-spawn hit an error —
+  the outer prints `callback daemon start failed: …` on stderr.
+  Retry with `NOTIF_LOG=/tmp/notif.log …` to capture the daemon's
+  startup lines. To manually verify the delegate wiring, run
+  `notif listen --sender <key>` in one terminal and
+  `notif send --title X --body Y --on-click hook:/tmp/x.sh` in
+  another ; click the banner and confirm `/tmp/x.sh` fires.
+- **`callback daemon start failed: socket … did not accept`.**
+  The daemon's inner-mode `notif listen` spawned but didn't `bind()`
+  the socket within 3 s. Usually a permission issue on
+  `~/.local/share/notif/senders/` — check ownership + mode.

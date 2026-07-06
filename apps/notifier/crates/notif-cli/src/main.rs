@@ -206,6 +206,25 @@ enum Command {
         #[arg(long)]
         icon: std::path::PathBuf,
     },
+    /// Run (or shut down) the callback daemon that owns the UN center
+    /// delegate for a sender. Auto-spawned on demand by `notif send` when
+    /// any `--on-*` flag is present ; can also be launched manually to
+    /// verify the socket protocol or tune the idle timeout.
+    Listen {
+        /// Sender key whose bundle owns this daemon. Absent → `default`.
+        #[arg(long)]
+        sender: Option<String>,
+        /// Duration after which the daemon self-exits when the callback
+        /// registry is empty. Accepts `<n>s`, `<n>m`, `<n>h`, `<n>d`, or
+        /// a bare integer (seconds).
+        #[arg(long, default_value = "24h")]
+        idle_timeout: String,
+        /// Ask a running daemon to shut down cleanly, then exit.
+        /// Mutually exclusive with the run mode — no accept loop is
+        /// started.
+        #[arg(long)]
+        exit: bool,
+    },
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -429,11 +448,43 @@ fn run_macos(cmd: Command) -> Result<()> {
                 notif_core::warn::stderr(&format!(
                     "sending notification via '{}'…", notif.sender.key,
                 ));
-                // Bypass the `Backend` trait to pass Tier 3 overrides +
-                // callback config. `MacosBackend.dispatch(&notif)` still
-                // works from callers that don't have either.
-                notif_macos::dispatch::dispatch_outer(&notif, &overrides, &callbacks)
-                    .context("dispatch")?;
+                if callbacks.is_empty() {
+                    // Fast path — no callbacks, no daemon. Same
+                    // direct-spawn inner-mode dispatch as v0.1.
+                    notif_macos::dispatch::dispatch_outer(&notif, &overrides, &callbacks)
+                        .context("dispatch")?;
+                } else {
+                    // Callback path — route via the per-sender daemon
+                    // (session 7b). Daemon owns both the UN center
+                    // delegate AND the actual `addNotificationRequest`
+                    // call, so `notif send` returns as soon as the
+                    // daemon acks (typically <10 ms after the socket
+                    // connects).
+                    let send = build_send_payload(&notif);
+                    let payload_context = build_payload_context(&notif);
+                    notif_macos::daemon::ensure_running(&notif.sender.key)
+                        .context("ensure callback daemon running")?;
+                    let sock = notif_macos::daemon::paths::socket_path(&notif.sender.key)?;
+                    let resp = notif_macos::daemon::client::send_notif(
+                        &sock,
+                        send,
+                        overrides.clone(),
+                        callbacks.clone(),
+                        payload_context,
+                    )
+                    .context("send to callback daemon")?;
+                    match resp {
+                        notif_macos::daemon::proto::Response::Ack { dispatched_id }
+                        | notif_macos::daemon::proto::Response::PendingAuth { dispatched_id } => {
+                            notif_core::warn::stderr(&format!(
+                                "dispatched via daemon (id={dispatched_id})",
+                            ));
+                        }
+                        notif_macos::daemon::proto::Response::Err { msg } => {
+                            bail!("daemon rejected send: {msg}");
+                        }
+                    }
+                }
                 notif_core::warn::stderr("sent.");
                 Ok(())
             }
@@ -514,6 +565,65 @@ fn run_macos(cmd: Command) -> Result<()> {
             println!("icon updated for sender {} at {}", s.key, path.display());
             Ok(())
         }
+        Command::Listen { sender, idle_timeout, exit } => {
+            let sender_key = sender.unwrap_or_else(|| DEFAULT_KEY.to_string());
+            if exit {
+                notif_macos::daemon::shutdown(&sender_key)
+                    .with_context(|| format!("shutdown daemon for sender {sender_key:?}"))?;
+                notif_core::warn::stderr(&format!("shutdown signal sent to sender {sender_key:?}"));
+                return Ok(());
+            }
+            let idle = notif_core::duration::parse_duration(&idle_timeout)
+                .map_err(|e| anyhow::anyhow!("--idle-timeout: {e}"))?;
+            if is_inner_mode() {
+                notif_macos::daemon::run_daemon(&sender_key, idle)
+                    .context("run callback daemon")
+            } else {
+                notif_macos::daemon::listen_outer(&sender_key, &idle_timeout)
+                    .context("launch inner-mode daemon")
+            }
+        }
+    }
+}
+
+/// Serialize a resolved [`notif_core::Notification`] into the daemon
+/// socket's [`SendPayload`] shape. Keeps the wire layer at arm's length
+/// from the CLI enum so changes to either side don't cascade.
+///
+/// [`SendPayload`]: notif_macos::daemon::proto::SendPayload
+#[cfg(target_os = "macos")]
+fn build_send_payload(notif: &notif_core::Notification) -> notif_macos::daemon::proto::SendPayload {
+    notif_macos::daemon::proto::SendPayload {
+        title: notif.title.clone(),
+        body: notif.body.clone(),
+        subtitle: notif.subtitle.clone(),
+        priority: notif.priority.wire_str().to_string(),
+        sender_key: notif.sender.key.clone(),
+        id: notif.id.clone(),
+        sound: notif.sound.as_ref().map(|s| s.wire_str().to_string()),
+        image: notif.image.as_ref().map(|p| p.to_string_lossy().to_string()),
+    }
+}
+
+/// Seed a [`CallbackPayload`] with everything except `notif_id` (the
+/// daemon fills that in with the resolved id after minting) and `event`
+/// (the delegate fills per response kind at fire time).
+#[cfg(target_os = "macos")]
+fn build_payload_context(
+    notif: &notif_core::Notification,
+) -> notif_core::callback::CallbackPayload {
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
+    let ts = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default();
+    notif_core::callback::CallbackPayload {
+        notif_id: notif.id.clone().unwrap_or_default(),
+        event: String::new(),
+        sender: notif.sender.key.clone(),
+        title: notif.title.clone(),
+        body: notif.body.clone(),
+        ts,
     }
 }
 
@@ -870,6 +980,12 @@ fn run_stub(cmd: Command) -> Result<()> {
             println!(
                 "[stub] would set-icon sender={sender}, icon={}, host={HOST}",
                 icon.display(),
+            );
+        }
+        Command::Listen { sender, idle_timeout, exit } => {
+            let sender = sender.unwrap_or_else(|| "default".to_string());
+            println!(
+                "[stub] would listen: sender={sender}, idle_timeout={idle_timeout}, exit={exit}, host={HOST}"
             );
         }
     }
@@ -1347,6 +1463,66 @@ app_resolved_name: Visual Studio Code
             format_dry_run(&notif, Some("Visual Studio Code"), Some("Visual Studio Code")),
             expected,
         );
+    }
+
+    // ---- notif listen ----------------------------------------------------
+
+    #[test]
+    fn listen_no_args_parses() {
+        let cli = Cli::try_parse_from(["notif", "listen"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Listen { sender: None, exit: false, .. },
+        ));
+    }
+
+    #[test]
+    fn listen_with_sender() {
+        let cli = Cli::try_parse_from(["notif", "listen", "--sender", "vscode"]).unwrap();
+        match cli.command {
+            Command::Listen { sender: Some(s), .. } => assert_eq!(s, "vscode"),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn listen_with_idle_timeout() {
+        let cli = Cli::try_parse_from([
+            "notif",
+            "listen",
+            "--idle-timeout",
+            "2h",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Listen { idle_timeout, .. } => assert_eq!(idle_timeout, "2h"),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn listen_default_idle_timeout_is_24h() {
+        let cli = Cli::try_parse_from(["notif", "listen"]).unwrap();
+        match cli.command {
+            Command::Listen { idle_timeout, .. } => assert_eq!(idle_timeout, "24h"),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn listen_exit_flag() {
+        let cli = Cli::try_parse_from([
+            "notif",
+            "listen",
+            "--exit",
+            "--sender",
+            "default",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Listen { exit: true, .. },
+        ));
     }
 }
 

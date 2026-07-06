@@ -14,10 +14,16 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// Raw macOS override flags accepted by `notif send`. Every field is
 /// `Option<T>` — absence = "use the portable spec (or the OS default if
 /// no portable spec was passed)".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` are on the struct so the daemon socket
+/// protocol ([`crate::daemon::proto`]) can wire it over the socket
+/// without a separate DTO layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MacosOverrides {
     /// `--macos-sound-name <name>` → `UNNotificationSound::soundNamed(name)`.
     /// Overrides `--sound` when both are set.
@@ -53,7 +59,7 @@ impl MacosOverrides {
 /// Apple's raw camelCase (`passive`, `active`, `timeSensitive`, `critical`)
 /// so the CLI flag round-trips through the outer→inner hop without
 /// mapping tables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InterruptionLevel {
     Passive,
     Active,

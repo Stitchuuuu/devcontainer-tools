@@ -61,4 +61,19 @@ pub enum MacosError {
     /// `open -W -a <.app>` exited non-zero. Payload is the launched exit code.
     #[error("open(1) exited {0}")]
     OpenFailed(i32),
+
+    /// `notif listen` daemon could not be started (`Command::spawn` failed
+    /// or the socket did not accept within the poll window).
+    #[error("callback daemon start failed: {0}")]
+    DaemonStartFailed(String),
+
+    /// Wire protocol violation on the daemon Unix socket — length prefix
+    /// out of range, invalid JSON, unexpected variant. Not a network
+    /// failure ; a bug or a mismatched binary version.
+    #[error("daemon protocol error: {0}")]
+    DaemonProtocol(String),
+
+    /// Duration string on a flag failed [`notif_core::duration::parse_duration`].
+    #[error("bad duration: {0}")]
+    BadDuration(String),
 }

@@ -19,3 +19,7 @@ clap = { version = "4.6", features = ["derive"] }
 notif-core = { path = "../notif-core" }
 notif-macos = { path = "../notif-macos" }
 anyhow = "1"
+# ISO-8601 timestamp seed for `CallbackPayload.ts`. Already in the
+# transitive tree via notif-core, so this is a re-exposure, not a new
+# dep.
+time = { version = "0.3.53", features = ["formatting"] }

@@ -17,20 +17,30 @@
 //! [`Hook`][CallbackKind::Hook]) so callers can pass a bare `/tmp/log.jsonl`
 //! or `https://cb.example.com/x`.
 //!
-//! [`fire`] is currently a no-op stub — the real dispatchers (HTTP client,
-//! subprocess exec, file append) live in the `notif listen` daemon and
-//! run against the same signature so the on-disk contract stays stable.
+//! [`fire`] routes on `target.kind` to the matching dispatcher:
+//! [`dispatch_hook`] spawns a subprocess (argv split via `shell-words`, JSON
+//! on stdin, fire-and-forget), [`dispatch_url`] POSTs the JSON body over
+//! HTTP via `ureq 3`, [`dispatch_file`] appends one `\n`-terminated JSONL
+//! line. All three swallow their own failures (logged via [`crate::warn::emit`])
+//! — a single failing callback must not cascade into the delegate's next
+//! response handling.
 //!
 //! [`Url`]: CallbackKind::Url
 //! [`File`]: CallbackKind::File
 //! [`Hook`]: CallbackKind::Hook
 
 use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::warn;
+
 /// Which dispatch mechanism a [`CallbackTarget`] uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallbackKind {
     /// Exec a subprocess (`hook:<argv>`), stream the payload on stdin.
     Hook,
@@ -54,7 +64,7 @@ impl CallbackKind {
 
 /// One parsed callback target — a dispatch mechanism plus the payload the
 /// mechanism consumes (subprocess argv, URL, or file path).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackTarget {
     pub kind: CallbackKind,
     /// Prefix-stripped payload. For [`Hook`][CallbackKind::Hook] the
@@ -221,7 +231,7 @@ pub struct CallbackPayload {
 /// Ordering: [`on_actions`] preserves the CLI order of `--on-action` flags,
 /// since macOS renders custom actions in registration order and users
 /// expect the first flag to become the primary action.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackConfig {
     pub on_click: Option<CallbackTarget>,
     pub on_actions: Vec<(String, CallbackTarget)>,
@@ -252,20 +262,135 @@ impl CallbackConfig {
     }
 }
 
-/// Dispatch a callback. Currently a no-op stub — the real hook / url /
-/// file dispatchers live in the `notif listen` daemon and consume the
-/// same signature. The stub returns `Ok(())` so consumers (delegate code
-/// paths in the backends) can already call it in situ.
+/// HTTP request timeouts for [`dispatch_url`]. Kept conservative — a
+/// callback endpoint that hangs must not stall the daemon's response
+/// dispatch for other pending notifications.
+const URL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const URL_GLOBAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Dispatch a callback. Routes on [`target.kind`] to the matching
+/// dispatcher: subprocess exec (`hook:`), HTTP POST (`url:`), or JSONL
+/// append (`file:`).
+///
+/// # Failure model
+/// All three dispatchers **swallow their own failures** — a broken hook
+/// script, a 5xx URL endpoint, or a full disk gets a single `warning:`
+/// line via [`crate::warn::emit`] and this function returns `Ok(())`.
+/// Rationale: the delegate closure that calls `fire` has no useful
+/// recovery path, and one failing callback must not block the next.
 ///
 /// # Errors
-///
-/// Real implementation bubbles any I/O / HTTP / subprocess failure from
-/// the selected dispatcher. The stub form always returns `Ok(())`.
+/// Returns `Err` only for encoder-level failures that indicate a bug
+/// (JSON serialization of a well-formed [`CallbackPayload`] failing —
+/// should never happen given the struct's `Serialize` derive).
 pub fn fire(target: &CallbackTarget, payload: &CallbackPayload) -> std::io::Result<()> {
-    // Deliberately silent — the daemon-side dispatcher takes over this
-    // signature without touching callers.
-    let _ = (target, payload);
+    let json = serde_json::to_string(payload).map_err(std::io::Error::other)?;
+    match target.kind {
+        CallbackKind::Hook => dispatch_hook(&target.payload, &json),
+        CallbackKind::Url => dispatch_url(&target.payload, &json),
+        CallbackKind::File => dispatch_file(&target.payload, &json),
+    }
     Ok(())
+}
+
+/// Spawn a subprocess and stream the payload JSON to its stdin.
+///
+/// argv is split via `shell_words::split` (POSIX shell tokenization). On
+/// tokenizer failure — mismatched quotes, unterminated backslash — we fall
+/// back to whitespace split with a `warning:` note. Fire-and-forget: we
+/// do NOT `wait()` on the child. The write handle to stdin is dropped
+/// before the function returns, which closes the child's stdin.
+fn dispatch_hook(argv_line: &str, json: &str) {
+    let argv = match shell_words::split(argv_line) {
+        Ok(v) => v,
+        Err(_) => {
+            warn::emit(
+                "callback_hook_shell_words_fallback",
+                &format!("hook argv {argv_line:?} failed shell-words tokenizer; falling back to whitespace split"),
+            );
+            argv_line.split_whitespace().map(str::to_string).collect()
+        }
+    };
+    if argv.is_empty() {
+        warn::emit("callback_hook_empty_argv", "hook target expanded to zero argv tokens; nothing to exec");
+        return;
+    }
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            warn::emit(
+                "callback_hook_spawn_failed",
+                &format!("hook spawn {:?} failed: {e}", argv.join(" ")),
+            );
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(e) = stdin.write_all(json.as_bytes()) {
+            warn::emit(
+                "callback_hook_stdin_write_failed",
+                &format!("hook stdin write failed for {:?}: {e}", argv[0]),
+            );
+        }
+        // stdin dropped here → EOF for the child.
+    }
+    // No wait() — fire-and-forget. Child is reaped when the parent exits.
+}
+
+/// HTTP POST the payload JSON to `url`.
+///
+/// `ureq`'s default `http_status_as_error = true` maps non-2xx statuses
+/// to `Err`, so a single check covers both transport failures and
+/// application-level rejects. All errors surface once via `warn::emit`
+/// under distinct dedup categories so hot loops can't flood stderr.
+fn dispatch_url(url: &str, json: &str) {
+    let agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(URL_CONNECT_TIMEOUT))
+        .timeout_global(Some(URL_GLOBAL_TIMEOUT))
+        .build()
+        .new_agent();
+    let res = agent
+        .post(url)
+        .content_type("application/json")
+        .send(json);
+    if let Err(e) = res {
+        warn::emit(
+            "callback_url_failed",
+            &format!("POST {url}: {e}"),
+        );
+    }
+}
+
+/// Append the payload JSON followed by `\n` to `path`, creating the file
+/// if missing. Uses `OpenOptions::append` for POSIX per-line atomicity
+/// (guaranteed for writes < `PIPE_BUF` = 4096 bytes; our JSON payloads are
+/// well under 500 bytes).
+fn dispatch_file(path: &str, json: &str) {
+    let mut file = match OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            warn::emit(
+                "callback_file_open_failed",
+                &format!("open {path}: {e}"),
+            );
+            return;
+        }
+    };
+    let mut line = String::with_capacity(json.len() + 1);
+    line.push_str(json);
+    line.push('\n');
+    if let Err(e) = file.write_all(line.as_bytes()) {
+        warn::emit(
+            "callback_file_write_failed",
+            &format!("write {path}: {e}"),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -458,19 +583,179 @@ mod tests {
         assert_eq!(labels, vec!["a", "b", "c"]);
     }
 
-    // ---- Stub fire ------------------------------------------------------
+    // ---- Real dispatchers -----------------------------------------------
 
-    #[test]
-    fn stub_fire_returns_ok() {
-        let target = CallbackTarget { kind: CallbackKind::File, payload: "/tmp/x".into() };
-        let payload = CallbackPayload {
-            notif_id: "id".into(),
+    fn sample_payload() -> CallbackPayload {
+        CallbackPayload {
+            notif_id: "abc-123".into(),
             event: "click".into(),
             sender: "default".into(),
-            title: "t".into(),
-            body: "b".into(),
-            ts: "2026-07-05T12:00:00Z".into(),
+            title: "T".into(),
+            body: "B".into(),
+            ts: "2026-07-06T09:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn dispatch_file_appends_jsonl_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clicks.jsonl");
+        let target = CallbackTarget {
+            kind: CallbackKind::File,
+            payload: path.to_string_lossy().to_string(),
         };
-        assert!(fire(&target, &payload).is_ok());
+        fire(&target, &sample_payload()).unwrap();
+        fire(&target, &sample_payload()).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.split_terminator('\n').collect();
+        assert_eq!(lines.len(), 2, "expected 2 JSONL lines, got {contents:?}");
+        for line in lines {
+            let round: CallbackPayload = serde_json::from_str(line).unwrap();
+            assert_eq!(round.notif_id, "abc-123");
+        }
+    }
+
+    #[test]
+    fn dispatch_hook_pipes_json_on_stdin() {
+        // Use `sh -c 'cat > "$OUT"'` — writes stdin to the file $OUT points at.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hook.out");
+        // Quote the path so shell-words handles it as a single token even
+        // if the tempdir contains spaces (unlikely, but robust).
+        let argv = format!("sh -c cat>{} </dev/stdin", out.display());
+        // ^ workaround: we can't easily pass an env var through argv split
+        // and preserve fire-and-forget. Simpler: use a wrapper script.
+        let _ = argv; // (used only to acknowledge the alternative)
+        // Simpler approach: write a tiny script.
+        let script = dir.path().join("hook.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ncat > {}\n", out.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let target = CallbackTarget {
+            kind: CallbackKind::Hook,
+            payload: script.to_string_lossy().to_string(),
+        };
+        fire(&target, &sample_payload()).unwrap();
+
+        // Fire-and-forget: poll briefly for the child to flush.
+        for _ in 0..50 {
+            if out.exists() && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let written = std::fs::read_to_string(&out).unwrap();
+        let round: CallbackPayload = serde_json::from_str(&written).unwrap();
+        assert_eq!(round.notif_id, "abc-123");
+    }
+
+    #[test]
+    fn dispatch_hook_bad_argv_falls_back_to_whitespace_split() {
+        // Mismatched quote in argv → shell-words errors → fallback to
+        // whitespace split. `true` is a builtin that exits 0 regardless
+        // of args, so the child spawns without a real crash even though
+        // the tokenization changed.
+        let target = CallbackTarget {
+            kind: CallbackKind::Hook,
+            payload: r#"true "unterminated"#.into(),
+        };
+        // Just assert `fire` returns Ok (no panic on tokenizer error).
+        fire(&target, &sample_payload()).unwrap();
+    }
+
+    #[test]
+    fn dispatch_url_posts_json_body() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        // Bind to 127.0.0.1:0 → OS picks a free port.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/cb");
+
+        // Accept one connection in a bg thread, read request, send 200.
+        let received: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let received_bg = received.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = String::new();
+            {
+                let mut reader = BufReader::new(&stream);
+                // Read headers.
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                // Read body.
+                let mut body = vec![0u8; content_length];
+                std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+                buf.push_str(&String::from_utf8_lossy(&body));
+            }
+            use std::io::Write as _;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            *received_bg.lock().unwrap() = Some(buf);
+        });
+
+        let target = CallbackTarget { kind: CallbackKind::Url, payload: url };
+        fire(&target, &sample_payload()).unwrap();
+
+        server.join().unwrap();
+        let body = received.lock().unwrap().clone().expect("server captured body");
+        let round: CallbackPayload = serde_json::from_str(&body).unwrap();
+        assert_eq!(round.notif_id, "abc-123");
+    }
+
+    #[test]
+    fn dispatch_url_non_2xx_does_not_propagate() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/cb");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut sink = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    let n: usize = v.trim().parse().unwrap_or(0);
+                    let mut body = vec![0u8; n];
+                    std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+                    sink.push_str(&String::from_utf8_lossy(&body));
+                }
+            }
+            let _ = sink;
+            use std::io::Write as _;
+            stream
+                .write_all(b"HTTP/1.1 500 Server Error\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let target = CallbackTarget { kind: CallbackKind::Url, payload: url };
+        // Must return Ok even though the server responded 500.
+        fire(&target, &sample_payload()).unwrap();
+        server.join().unwrap();
     }
 }

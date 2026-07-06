@@ -8,6 +8,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub mod callback;
+pub mod duration;
 pub mod warn;
 
 /// A user-visible notification payload, backend-agnostic.

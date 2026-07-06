@@ -6,12 +6,25 @@ license.workspace = true
 
 [dependencies]
 notif-core = { path = "../notif-core" }
+# `serde` is unconditional (not macOS-gated) because `overrides.rs` derives
+# `Serialize`/`Deserialize` at the type-only layer and compiles on Linux
+# for the CLI-shape tests. See session 7a decision "MacosOverrides lives
+# in notif-macos" + session 7b "overrides serde wired for the daemon
+# socket protocol".
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSError", "NSUUID", "NSDictionary", "NSArray", "NSDate", "NSValue", "NSURL", "NSSet"] }
-objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationAttachment", "UNNotificationAction", "UNNotificationCategory", "block2"] }
+objc2-user-notifications = { version = "0.3", features = ["UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationAttachment", "UNNotificationAction", "UNNotificationCategory", "UNNotification", "UNNotificationResponse", "block2"] }
+objc2-core-foundation = { version = "0.3", features = ["CFRunLoop"] }
 block2 = "0.6"
 plist = { version = "1", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
+serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tempfile = "3.27.0"

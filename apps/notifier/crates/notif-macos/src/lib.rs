@@ -33,6 +33,8 @@ pub mod bundle;
 #[cfg(target_os = "macos")]
 pub mod clean;
 #[cfg(target_os = "macos")]
+pub mod daemon;
+#[cfg(target_os = "macos")]
 pub mod dispatch;
 #[cfg(target_os = "macos")]
 pub mod error;
