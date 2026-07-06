@@ -384,6 +384,16 @@ settled questions.)_
 **Tests** :
 - _command run + expected outcome_
 
+**Smoke results** :
+- **Est. duration** : ~<n> min (<n> scenarios).
+- **<YYYY-MM-DD>** — <env, e.g. `macOS 15.7.7 aarch64`>. <what
+  passed / failed on the target platform> ; <fix commits if any> ;
+  <what's still pending>.
+- (Skip this section entirely if the session ships nothing
+  user-visible. Otherwise back-fill as tests run — the entry stays a
+  `pending` line until the smoke happens, so `git bisect` always
+  knows which commit's binary was actually validated on the host.)
+
 **Commit** : `<short hash> — <commit subject>` (or "not committed yet")
 ```
 
@@ -458,6 +468,111 @@ DoD at the end of this session :
 > The session file IS the prompt — no wrapper, no fence. The user copies the
 > file's full content into a fresh chat. Effort estimates, prerequisites, and
 > per-session metadata belong in STATUS.md (extra columns if needed), not here.
+
+### Template — `TEST-PLAN-<session-id>.md` (optional, scaffolded per session)
+
+**When to use** — sessions that ship **user-visible or
+platform-specific behavior that the container can't validate** (macOS
+UN center, Windows toast, Linux D-Bus, browser UI, CLI installed on
+the host, etc.). Sessions that ship pure container-testable code
+(refactors, backend logic, unit-testable modules) don't need one.
+
+**Where** — `plans/<feature>/TEST-PLAN-<session-id>.md` alongside
+`sessions/session-<id>-<slug>.md`. Session ID matches the LOG entry
+(`7b`, `3.5`, etc.).
+
+**Scaffolding trigger** — proposed at session-end alongside the LOG
+back-fill, when the session shipped platform-visible behavior. The
+same convention lets the LOG entry's `**Smoke results**` reference the
+plan file by name.
+
+````markdown
+# Test Plan — session <session-id> end-to-end smoke
+
+> **Scope** : validate what session <session-id> shipped —
+> <one-line summary>.
+>
+> **Durée estimée totale** : ~<n> min (dont ~<n> min de bootstrap +
+> <specific-waits, e.g. "35s pour § X idle-timeout">).
+>
+> **Scenarios indépendants** — tu peux stopper après le § <n> et
+> reprendre plus tard sans perte de contexte.
+>
+> **Shipped commits** on `main` :
+>
+> | Commit | Subject |
+> |---|---|
+> | `<hash>` | <subject> |
+>
+> **Prerequisites** :
+> - <container / host prep>
+> - <optional external services (webhooks, test fixtures, …)>
+
+## 0. Bootstrap (once per test session)  (~<n> min)
+
+### 0.1 <build step>
+
+<commands + expected output>
+
+### 0.2 <host prep step>
+
+<commands + expected output>
+
+## 1. <first scenario name>  (~<n> min)
+
+Goal : <one-liner>.
+
+<commands>
+
+**Expect** : <observable outcome>.
+
+## <n>. <last scenario>  (~<n> min)
+
+<...>
+
+## Result checklist
+
+- [ ] **1** — <one-liner>
+- [ ] **2** — <one-liner>
+- [ ] <...>
+
+If all pass, the session's `**Smoke results**` entry in LOG.md is
+back-filled with a `<date> — <env>. All N scenarios green.` line.
+Any failure = open a `fix(<scope>)` follow-up commit and back-fill
+which scenario found it.
+
+---
+
+## Reprise dans un fresh chat
+
+Quand tu smoke-testes plus tard, colle ceci dans une nouvelle
+conversation. Le `@` déclenche l'inclusion du fichier (feature VS Code
+extension) :
+
+​```
+Reprise du rollout <feature-name> après smoke test <session-id>.
+
+Contexte :
+- @plans/<feature-name>/LOG.md § <session-id> — décisions + gotchas
+- @plans/<feature-name>/TEST-PLAN-<session-id>.md — le plan que je viens de suivre
+
+Résultats de mes tests (à compléter) :
+- [ ] 1 <scenario> : 
+- [ ] 2 <scenario> : 
+- [ ] <...>
+
+Bugs observés :
+- <colle ici, ou "aucun" si tout passe>
+
+Environnement : macOS <version>, <binary-name> <version>
+​```
+````
+
+Substitute `<placeholder>` with the actual session-specific values
+before writing the file. The fresh-chat prompt inline stays in
+French per the user's `feedback-fresh-chat-prompt-inline.md` memory
+even when the surrounding TEST-PLAN sections are in English — the
+prompt IS the user-facing artifact, the rest is documentation.
 
 ### Template — `prompt-only` mode (no file, displayed in chat or embedded in plan)
 
