@@ -84,7 +84,44 @@ IMPACT_LINES = [
 ]
 
 
-def patch_package_json(pkg_path):
+def resolve_enum_name(pkg_path):
+    """Return the enum value our patch should use for the "opens in active
+    column, at end of tab group" behavior.
+
+    Version-based cutoff (RELIABLE, unlike enum inspection which gets
+    polluted by our own previous patches once they've run) :
+
+    - v2.1.201- : `"primary"` — the historical value, matches
+                  legacy devcontainer.json / vscode-settings.jsonc.
+    - v2.1.202+ : `"active-panel"` — reserves `"primary"` for potential
+                  future Anthropic wiring (they already register a
+                  `primaryEditor.open` command in all versions, and the
+                  `getPreferredLocation()` getter would only need one line
+                  to route it — see the update recipe notes for the full
+                  reasoning).
+
+    Migration : devcontainer.json / vscode-settings.jsonc using `"primary"`
+    stay valid on ≤201, but must be updated to `"active-panel"` when
+    upgrading to 202+.
+    """
+    p = json.loads(pkg_path.read_text())
+    try:
+        version = p["version"]
+    except KeyError:
+        banner("ICON-FIX-OPEN-IN-CURRENT-PANEL PATCH FAILED",
+               "package.json: 'version' field missing",
+               IMPACT_LINES)
+        sys.exit(1)
+    # `2.1.202` → (2, 1, 202). Parse defensively — any unparseable component
+    # falls through to the safer "primary" default.
+    try:
+        parts = tuple(int(x) for x in version.split("."))
+    except ValueError:
+        return "primary"
+    return "active-panel" if parts >= (2, 1, 202) else "primary"
+
+
+def patch_package_json(pkg_path, name):
     p = json.loads(pkg_path.read_text())
     try:
         loc = p["contributes"]["configuration"]["properties"]["claudeCode.preferredLocation"]
@@ -93,19 +130,21 @@ def patch_package_json(pkg_path):
                f"package.json: schema path missing ({e})",
                IMPACT_LINES)
         sys.exit(1)
-    if "primary" in loc["enum"]:
-        print(f"{YELLOW}[1/6]{RESET} package.json — already patched")
+    if name in loc["enum"]:
+        print(f"{YELLOW}[1/6]{RESET} package.json — {name!r} already in enum")
         return
-    loc["enum"].append("primary")
-    loc.setdefault("enumDescriptions", []).append("Primary Editor (Active Column)")
+    loc["enum"].append(name)
+    desc = "Primary Editor (Active Column)" if name == "primary" else "Active Panel (Same Column, End of Group)"
+    loc.setdefault("enumDescriptions", []).append(desc)
     pkg_path.write_text(json.dumps(p, indent=2))
-    print(f"{GREEN}[1/6]{RESET} package.json — added 'primary' to preferredLocation enum")
+    print(f"{GREEN}[1/6]{RESET} package.json — added {name!r} to preferredLocation enum")
 
 
-def patch_editor_open_guard(content):
+def patch_editor_open_guard(content, name):
     """Prevent `editor.open` from silently overwriting the preferredLocation
-    setting when it's "primary" (which would otherwise mutate it to "panel")."""
-    marker = 'getConfiguration("claudeCode").get("preferredLocation")!=="primary"'
+    setting when it's our chosen value (which would otherwise mutate it to
+    "panel")."""
+    marker = f'getConfiguration("claudeCode").get("preferredLocation")!=="{name}"'
     if marker in content:
         print(f"{YELLOW}[2/6]{RESET} extension.js editor.open guard — already patched")
         return content
@@ -123,19 +162,19 @@ def patch_editor_open_guard(content):
     replacement = (
         f'registerCommand("claude-vscode.editor.open",async({a1},{a2},{a3})=>{{'
         f'if({c1}!=={vs}.ViewColumn.Active'
-        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="primary")'
+        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="{name}")'
         f'{st}.setPreferredLocation("panel");'
     )
     new_content = pat.sub(replacement, content, count=1)
-    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st})")
+    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st}, name={name!r})")
     return new_content
 
 
-def patch_editor_openLast(content):
+def patch_editor_openLast(content, name):
     """Redirect `editor.openLast` (= the icon and status bar handler) to
-    `primaryEditor.open` when the setting is "primary"."""
+    `primaryEditor.open` when the setting equals our chosen enum value."""
     idx = content.find('"claude-vscode.editor.openLast"')
-    marker = 'getConfiguration("claudeCode").get("preferredLocation")==="primary"'
+    marker = f'getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
     if idx != -1 and marker in content[idx:idx + 600]:
         print(f"{YELLOW}[3/6]{RESET} extension.js editor.openLast — already patched")
         return content
@@ -156,12 +195,12 @@ def patch_editor_openLast(content):
         f'registerCommand("claude-vscode.editor.openLast",async()=>{{'
         f'if({st}.getPreferredLocation()==="sidebar"){{'
         f'await {vs}.commands.executeCommand("claude-vscode.sidebar.open");return}}'
-        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"){{'
+        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"){{'
         f'await {vs}.commands.executeCommand("claude-vscode.primaryEditor.open");return}}'
         f'await {vs}.commands.executeCommand("claude-vscode.editor.open")'
     )
     new_content = pat.sub(replacement, content, count=1)
-    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs})")
+    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs}, name={name!r})")
     return new_content
 
 
@@ -189,21 +228,27 @@ def patch_primaryEditor_use_active_column(content):
                IMPACT_LINES)
         sys.exit(1)
     a, r, pm, vs = m.groups()
+    # `_tg` (underscore-prefixed) avoids shadow-collision when the captured
+    # arrow params happen to include a bare `g` — the minifier assigned
+    # `(g,b)` to primaryEditor.open on 2.1.202, which turned the previous
+    # `let g=...` injection into `async(g,b)=>{let g=...}` (duplicate
+    # declaration, SyntaxError). Minified names are one-lowercase-letter, so
+    # any underscore prefix guarantees no future collision.
     replacement = (
         f'registerCommand("claude-vscode.primaryEditor.open",async({a},{r})=>{{'
-        f'let g={vs}.window.tabGroups.activeTabGroup;'
-        f'{pm}.createPanel({a},{r},g&&g.viewColumn?g.viewColumn:{vs}.ViewColumn.Active)}})'
+        f'let _tg={vs}.window.tabGroups.activeTabGroup;'
+        f'{pm}.createPanel({a},{r},_tg&&_tg.viewColumn?_tg.viewColumn:{vs}.ViewColumn.Active)}})'
     )
     new_content = pat.sub(replacement, content, count=1)
     print(f"{GREEN}[4/6]{RESET} extension.js primaryEditor.open active column — applied (panelMgr={pm}, vscode={vs})")
     return new_content
 
 
-def patch_plus_button_active_column(content):
+def patch_plus_button_active_column(content, name):
     """Fix the `+` button in the Claude webview header. The handler for the
     `new_conversation_tab` message originally calls `editor.open(sessionId,
-    prompt)`. Branch on `preferredLocation`: when "primary", route to
-    `primaryEditor.open` (which resolves the active column via
+    prompt)`. Branch on `preferredLocation`: when our chosen value, route
+    to `primaryEditor.open` (which resolves the active column via
     `tabGroups.activeTabGroup.viewColumn` and renders full chrome) ; else
     fall back to the unmodified two-arg `editor.open(sid, prompt)`
     (Anthropic's original split-column behavior). Mirrors step [3/6]'s
@@ -231,23 +276,23 @@ def patch_plus_button_active_column(content):
     msg, vs = m.groups()
     replacement = (
         f'{msg}.request.type==="new_conversation_tab")return await '
-        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"'
+        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
         f'?{vs}.commands.executeCommand("claude-vscode.primaryEditor.open",'
         f'{msg}.request.sessionId,{msg}.request.initialPrompt)'
         f':{vs}.commands.executeCommand("claude-vscode.editor.open",'
         f'{msg}.request.sessionId,{msg}.request.initialPrompt))'
     )
     new_content = pat.sub(replacement, content, count=1)
-    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs})")
+    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs}, name={name!r})")
     return new_content
 
 
-def patch_openlast_move_to_end(content):
-    """For the primary branch of `editor.openLast` (icon top-right / status
-    bar item / command palette), follow `primaryEditor.open` with a single
-    `workbench.action.moveEditorToEnd` so the new tab lands at the end of
-    the active tab group. Wrapped in `try/catch` ; failures log to the
-    « Claude VSCode » output channel via the PanelManager singleton's
+def patch_openlast_move_to_end(content, name):
+    """For the active-panel branch of `editor.openLast` (icon top-right /
+    status bar item / command palette), follow `primaryEditor.open` with a
+    single `workbench.action.moveEditorToEnd` so the new tab lands at the
+    end of the active tab group. Wrapped in `try/catch` ; failures log to
+    the « Claude VSCode » output channel via the PanelManager singleton's
     `.output` field.
 
     Why this command : `vscode.window.tabGroups` has no `move()` method
@@ -276,9 +321,12 @@ def patch_openlast_move_to_end(content):
         sys.exit(1)
     pm = pm_match.group(1)
 
+    # Step 3 has already written `==="<name>"` here — reuse the same NAME to
+    # match the post-[3/6] state. Escaping isn't needed (kebab-case names are
+    # regex-safe), but re.escape is defensive against future naming choices.
     pat = re.compile(
         r'(getConfiguration\("claudeCode"\)\.get\("preferredLocation"\)'
-        r'==="primary"\)\{await (\w+)\.commands\.executeCommand'
+        r'===' + re.escape(f'"{name}"') + r'\)\{await (\w+)\.commands\.executeCommand'
         r'\("claude-vscode\.primaryEditor\.open"\);)'
         r'[\s\S]*?'
         r'(return\})'
@@ -311,16 +359,20 @@ def main():
 
     print(f"Patching Claude Code extension at: {ext_dir}")
 
-    patch_package_json(pkg)
+    name = resolve_enum_name(pkg)
+    print(f"  enum value in use: {BOLD}{name!r}{RESET} "
+          f"({'v2.1.202+ — Anthropic reserved primary' if name == 'active-panel' else 'v2.1.201- — historical primary'})")
+
+    patch_package_json(pkg, name)
 
     content = js.read_text()
     original = content
 
-    content = patch_editor_open_guard(content)
-    content = patch_editor_openLast(content)
+    content = patch_editor_open_guard(content, name)
+    content = patch_editor_openLast(content, name)
     content = patch_primaryEditor_use_active_column(content)
-    content = patch_plus_button_active_column(content)
-    content = patch_openlast_move_to_end(content)
+    content = patch_plus_button_active_column(content, name)
+    content = patch_openlast_move_to_end(content, name)
 
     if content != original:
         js.write_text(content)

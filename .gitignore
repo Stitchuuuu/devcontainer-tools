@@ -17,6 +17,10 @@
 .devcontainer/notify/floating-perms-state.json.lock
 .devcontainer/notify/floating-perms-audit.jsonl
 
+# sync-skills — timestamped backups of ~/.claude/settings.json (one per run with changes)
+.devcontainer/claude/settings-backups/
+
 # Build / OS
 .env.dev
 .DS_Store
+vendor/anthropic.claude-code/
