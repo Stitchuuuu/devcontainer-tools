@@ -1,0 +1,18 @@
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+--- a/.devcontainer/devcontainer.json
++++ b/.devcontainer/devcontainer.json
+@@ -56,7 +56,13 @@
+     // (the cloud path). When uncommented, it points at ~/.claude-local for
+     // mode isolation. See knowledge/ollama-local.md § Audit & observability.
+     "GH_CONFIG_DIR": "/home/node/.claude/gh",
+-    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
++    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
++    // HOST_WORKSPACE_PATH — real host path of the workspace, injected by
++    // VS Code at parse time (${localWorkspaceFolder} is resolved before the
++    // container starts). Read by .devcontainer/skills/tokens/lib/project-id.sh
++    // so the Stop-hook logs the true host path even when running inside the
++    // container. Zero docker socket exposure, zero /proc/mountinfo parsing.
++    "HOST_WORKSPACE_PATH": "${localWorkspaceFolder}"
+   },
+   "initializeCommand": "bash .devcontainer/initialize.sh",
+   "onCreateCommand": "bash .devcontainer/on-create.sh",
