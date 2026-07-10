@@ -1,7 +1,22 @@
-// tokens skill — time-window resolvers. Pure functions returning
-// { startEpoch, endEpoch, label } in ms. All computation in UTC.
-// Anthropic weekly reset boundary: Saturday 20h UTC.
+/**
+ * tokens skill — time-window resolvers for the recap CLI.
+ *
+ * All windows are pure functions returning {@link TimeWindow}. All
+ * computation is in UTC — never local time. The Anthropic weekly reset
+ * boundary is Saturday 20h UTC.
+ *
+ * @typedef {Object} TimeWindow
+ * @property {number} startEpoch  window start (ms since epoch, inclusive)
+ * @property {number} endEpoch    window end   (ms since epoch, exclusive)
+ * @property {string} label       human-readable identifier for the header line
+ */
 
+/**
+ * Window starting at the most recent Saturday 20h UTC and ending at `now`.
+ * Handles all 4 edge cases (Sat 19:59, Sat 20:00, Sat 20:01, Sun 00:00).
+ * @param {Date} [now=new Date()]
+ * @returns {TimeWindow}
+ */
 function sinceReset(now = new Date()) {
   const nowMs = now.getTime();
   const candidate = new Date(Date.UTC(
@@ -22,6 +37,11 @@ function sinceReset(now = new Date()) {
   };
 }
 
+/**
+ * Window starting at Monday 00h UTC of the current ISO week and ending at `now`.
+ * @param {Date} [now=new Date()]
+ * @returns {TimeWindow}
+ */
 function currentWeek(now = new Date()) {
   const nowMs = now.getTime();
   const candidate = new Date(Date.UTC(
@@ -37,6 +57,11 @@ function currentWeek(now = new Date()) {
   };
 }
 
+/**
+ * Window starting at day 1, 00h UTC of the current month and ending at `now`.
+ * @param {Date} [now=new Date()]
+ * @returns {TimeWindow}
+ */
 function currentMonth(now = new Date()) {
   const nowMs = now.getTime();
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
@@ -47,6 +72,13 @@ function currentMonth(now = new Date()) {
   };
 }
 
+/**
+ * Sliding-window window over the last N days or hours.
+ * @param {string} spec  e.g. `"7d"`, `"24h"`, `"3h"`
+ * @param {Date}   [now=new Date()]
+ * @throws {Error} on invalid spec
+ * @returns {TimeWindow}
+ */
 function lastN(spec, now = new Date()) {
   const m = /^(\d+)([dh])$/.exec(spec || '');
   if (!m) throw new Error(`invalid --last spec: ${spec} (expected e.g. 7d, 24h)`);
@@ -61,6 +93,15 @@ function lastN(spec, now = new Date()) {
   };
 }
 
+/**
+ * Explicit date range. `toISO` is optional — defaults to `now`.
+ * Both bounds are ISO date strings; times default to 00:00:00Z if omitted.
+ * @param {string} fromISO
+ * @param {?string} toISO
+ * @param {Date} [now=new Date()]
+ * @throws {Error} on invalid ISO
+ * @returns {TimeWindow}
+ */
 function fromTo(fromISO, toISO, now = new Date()) {
   const start = Date.parse(fromISO);
   if (Number.isNaN(start)) throw new Error(`invalid --from: ${fromISO}`);
@@ -78,6 +119,10 @@ function fromTo(fromISO, toISO, now = new Date()) {
   };
 }
 
+/**
+ * All-time window: epoch 0 → now.
+ * @returns {TimeWindow}
+ */
 function all() {
   return { startEpoch: 0, endEpoch: Date.now(), label: 'all time' };
 }

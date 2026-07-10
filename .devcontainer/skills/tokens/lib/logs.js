@@ -1,10 +1,39 @@
-// tokens skill — local log discovery and event walking.
-// Reads from <project-root>/.claude/tokens/logs/YYYY-MM/*.jsonl.
-// Session 2 scope: current project only. Session 4 extends to cross-container.
+/**
+ * tokens skill — local log discovery and event walking.
+ *
+ * Reads from `<project-root>/.claude/tokens/logs/YYYY-MM/*.jsonl`.
+ * Session 2 scope: current project only. Session 4 extends this to
+ * cross-container aggregation via `docker volume ls`.
+ *
+ * @typedef {import('./window.js').TimeWindow} TimeWindow
+ *
+ * @typedef {Object} ProjectConfig
+ * @property {string}  project_id
+ * @property {string}  title
+ * @property {string}  [subtitle]
+ * @property {string}  [host_workspace_path]
+ * @property {string}  [container_workspace_path]
+ *
+ * @typedef {Object} Event  emitted by {@link walkEvents}
+ * @property {number} ts             ms since epoch
+ * @property {string} ts_iso         original ISO timestamp from the JSONL
+ * @property {string} session        session UUID
+ * @property {string} model          model ID (or `'unknown'`)
+ * @property {string} project_root   absolute path from the event (fallback: current root)
+ * @property {import('./pricing.js').TokenCounts} tokens  DELTA vs. previous event (never totals)
+ * @property {number} cost_usd
+ */
 
 const fs = require('node:fs');
 const path = require('node:path');
 
+/**
+ * Walk parents of `startDir` until we hit either a `.claude/tokens/` dir or
+ * a `.git/` marker. Falls back to `startDir` if neither is found. Used by
+ * recap.js to pick the log directory.
+ * @param {string} [startDir=process.cwd()]
+ * @returns {string}
+ */
 function findProjectRoot(startDir = process.cwd()) {
   let dir = path.resolve(startDir);
   while (true) {
@@ -16,6 +45,11 @@ function findProjectRoot(startDir = process.cwd()) {
   }
 }
 
+/**
+ * Read a project's `config.json`. Missing / unparseable → `null`.
+ * @param {string} projectRoot
+ * @returns {?ProjectConfig}
+ */
 function readConfig(projectRoot) {
   const p = path.join(projectRoot, '.claude', 'tokens', 'config.json');
   if (!fs.existsSync(p)) return null;
@@ -27,6 +61,13 @@ function readConfig(projectRoot) {
   }
 }
 
+/**
+ * True iff the `YYYY-MM` month directory could contain events within the
+ * given window. Used to prune log-directory scans before opening files.
+ * @param {string}      monthName  e.g. `"2026-07"`
+ * @param {TimeWindow}  window
+ * @returns {boolean}
+ */
 function monthDirInWindow(monthName, window) {
   const m = /^(\d{4})-(\d{2})$/.exec(monthName);
   if (!m) return false;
@@ -37,6 +78,14 @@ function monthDirInWindow(monthName, window) {
   return monthEnd >= window.startEpoch && monthStart <= window.endEpoch;
 }
 
+/**
+ * Yield {@link Event} objects from `<projectRoot>/.claude/tokens/logs/`
+ * whose timestamp lies inside `window`. Bad lines / bad files are skipped
+ * with a stderr warning — never crash the recap.
+ * @param {string}     projectRoot
+ * @param {TimeWindow} window
+ * @yields {Event}
+ */
 function* walkEvents(projectRoot, window) {
   const logsDir = path.join(projectRoot, '.claude', 'tokens', 'logs');
   if (!fs.existsSync(logsDir)) return;

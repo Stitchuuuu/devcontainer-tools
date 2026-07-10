@@ -1,16 +1,32 @@
-// tokens skill — SI-compact number formatter.
-// Rule: 3 significant digits, trim trailing zeros, ≤ 4 chars.
-// USD variant appends '$' (≤ 5 chars). Reclassify after rounding to
-// cross tier boundaries cleanly (999999 → 1M, not 1000K).
+/**
+ * tokens skill — SI-compact number formatter for the recap table.
+ *
+ * Rule: 3 significant digits, trim trailing zeros, ≤ 4 chars total.
+ * The USD variant appends `$` and enables 3-sig-fig rendering for values
+ * under 1000 (≤ 5 chars). Reclassifies AFTER rounding so `999999` renders
+ * `1M`, not `1000K` — the tier bump respects the 4-char cap.
+ */
 
+/** Suffix per tier (thousand, million, billion, trillion). */
 const SUFFIXES = ['', 'K', 'M', 'B', 'T'];
 
+/**
+ * Choose decimal count that keeps 3 significant digits after tier scaling.
+ * @param {number} scaled  value already divided into its tier
+ * @returns {0|1|2}
+ */
 function decimalsFor(scaled) {
   if (scaled >= 100) return 0;
   if (scaled >= 10) return 1;
   return 2;
 }
 
+/**
+ * Compute (scaled, dec, rounded) for a given absolute value + tier.
+ * @param {number} abs   `Math.abs(n)`
+ * @param {number} tier  index into {@link SUFFIXES}
+ * @returns {{scaled: number, dec: 0|1|2, rounded: number}}
+ */
 function format3sig(abs, tier) {
   const scaled = abs / Math.pow(1000, tier);
   const dec = decimalsFor(scaled);
@@ -18,6 +34,17 @@ function format3sig(abs, tier) {
   return { scaled, dec, rounded };
 }
 
+/**
+ * SI-compact render of any real number. Handles negatives, zero, cross-tier
+ * rounding (`999999 → 1M` not `1000K`).
+ *
+ * @param {number} n
+ * @param {Object} [opts]
+ * @param {boolean} [opts.sigFigsBelowK=false]
+ *        When true, values under 1000 render with 3 sig figs (e.g.
+ *        `1.23` not `1`). Enabled by {@link compactUSD}.
+ * @returns {string}  ≤ 4 chars (or ≤ 5 with the trailing `$` via compactUSD)
+ */
 function compact(n, { sigFigsBelowK = false } = {}) {
   if (n === 0) return '0';
   const neg = n < 0;
@@ -41,6 +68,12 @@ function compact(n, { sigFigsBelowK = false } = {}) {
   return sign + s + SUFFIXES[tier];
 }
 
+/**
+ * SI-compact USD render. Same rules as {@link compact} but with 3-sig-fig
+ * rendering below 1000 and a trailing `$`.
+ * @param {number} n
+ * @returns {string}
+ */
 function compactUSD(n) {
   return compact(n, { sigFigsBelowK: true }) + '$';
 }

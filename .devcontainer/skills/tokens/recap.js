@@ -1,14 +1,43 @@
 #!/usr/bin/env node
-// tokens skill — recap CLI. Args mode (cron/scripting) or interactive TTY menu.
-// Reads local <project-root>/.claude/tokens/logs/YYYY-MM/*.jsonl.
-// Node >= 18, zero deps.
+/**
+ * tokens skill — recap CLI.
+ *
+ * Two entry modes :
+ *   - **args mode** (cron / scripting) : flags parsed by `util.parseArgs`,
+ *     result printed as an SI-compact Markdown table or JSON.
+ *   - **interactive TTY menu** : opens when no args + stdin is a TTY,
+ *     unless `--no-interactive` is set.
+ *
+ * Reads local `<project-root>/.claude/tokens/logs/YYYY-MM/*.jsonl` (session
+ * 2 scope). Session 4 will add cross-container aggregation.
+ *
+ * Node ≥ 18 (relies on `util.parseArgs`). Zero npm deps, CommonJS.
+ *
+ * @typedef {import('./lib/logs.js').Event} Event
+ * @typedef {import('./lib/logs.js').ProjectConfig} ProjectConfig
+ * @typedef {import('./lib/window.js').TimeWindow} TimeWindow
+ *
+ * @typedef {'project'|'session'|'day'|'model'} GroupBy
+ *
+ * @typedef {Object} AggregateRow
+ * @property {string} label
+ * @property {number} sessions
+ * @property {string} model                    unique model if all events share one, else `'—'`
+ * @property {import('./lib/pricing.js').TokenCounts} tokens
+ * @property {number} cost_usd
+ */
+
 
 const { parseArgs } = require('node:util');
 const readline = require('node:readline');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { compact, compactUSD } = require('./lib/format.js');
 const { sinceReset, currentWeek, currentMonth, lastN, fromTo, all } = require('./lib/window.js');
 const { findProjectRoot, readConfig, walkEvents } = require('./lib/logs.js');
+const { isKnown, pricingFileInfo } = require('./lib/pricing.js');
+
+const REFRESH_PRICING_SH = path.join(__dirname, 'refresh-pricing.sh');
 
 const HELP = `
 Usage: node recap.js [flags]
@@ -35,6 +64,12 @@ Filter / group:
 Sans args + TTY: menu interactif.
 `.trim();
 
+/**
+ * Parse argv with strict `util.parseArgs`. Rejects unknown flags.
+ * @param {string[]} argv
+ * @returns {{values: Object, positionals: string[]}}
+ * @throws {Error} on unknown flags
+ */
 function parseFlags(argv) {
   return parseArgs({
     args: argv,
@@ -63,6 +98,12 @@ function parseFlags(argv) {
   });
 }
 
+/**
+ * Pick the time window based on flags. Window flags are mutually exclusive.
+ * @param {Object} v  parsed flag map
+ * @returns {TimeWindow}
+ * @throws {Error} on multiple window flags
+ */
 function resolveWindow(v) {
   const flags = ['since-reset', 'week', 'month', 'last', 'from', 'all'];
   const active = flags.filter(f => v[f]);
@@ -75,6 +116,15 @@ function resolveWindow(v) {
   return sinceReset();
 }
 
+/**
+ * Pick the aggregation dimension. Explicit `--by-*` flags are mutually exclusive.
+ * Auto-default: one project → `'session'`, multiple → `'project'`. Prints the
+ * chosen mode to stderr for transparency.
+ * @param {Object}   v
+ * @param {Event[]}  events
+ * @returns {GroupBy}
+ * @throws {Error} on multiple --by-* flags
+ */
 function resolveGrouping(v, events) {
   const explicit = ['by-project', 'by-session', 'by-day', 'by-model'].filter(f => v[f]);
   if (explicit.length > 1) throw new Error(`--by-* flags are mutually exclusive: ${explicit.join(', ')}`);
@@ -85,6 +135,13 @@ function resolveGrouping(v, events) {
   return auto;
 }
 
+/**
+ * Group events by the selected dimension and sum deltas.
+ * @param {Event[]}       events
+ * @param {GroupBy}       groupBy
+ * @param {?ProjectConfig} cfg  used to build the label when groupBy = 'project'
+ * @returns {AggregateRow[]}
+ */
 function aggregate(events, groupBy, cfg) {
   const rows = new Map();
   const emptyTokens = () => ({ in: 0, cache_read: 0, cache_create: 0, out: 0 });
@@ -130,6 +187,15 @@ function aggregate(events, groupBy, cfg) {
   }));
 }
 
+/**
+ * Build a `Total (N …)` row summing every row. Returns `null` for
+ * single-row inputs (nothing to sum). Session count logic differs by dimension:
+ *   - `groupBy === 'session'` → row count (each row is one session)
+ *   - otherwise → sum-of-uniques as a lower bound
+ * @param {AggregateRow[]} rows
+ * @param {GroupBy}        groupBy
+ * @returns {?AggregateRow}
+ */
 function totalRow(rows, groupBy) {
   if (rows.length <= 1) return null;
   const t = { in: 0, cache_read: 0, cache_create: 0, out: 0 };
@@ -158,16 +224,26 @@ function totalRow(rows, groupBy) {
   };
 }
 
+/** @param {GroupBy} groupBy @returns {string} */
 function pluralize(groupBy) {
   return { project: 'projects', session: 'sessions', day: 'days', model: 'models' }[groupBy] || groupBy;
 }
 
+/**
+ * Build the display label from a project config. Falls back to `—`.
+ * @param {?ProjectConfig} cfg
+ * @returns {string}
+ */
 function formatProjectLabel(cfg) {
   if (!cfg) return '—';
   if (cfg.subtitle) return `${cfg.title} — ${cfg.subtitle}`;
   return cfg.title;
 }
 
+/**
+ * Truncate a string to at most `w` chars, replacing the last char with `…`.
+ * @param {string} s @param {number} w @returns {string}
+ */
 function truncate(s, w) {
   if (s.length <= w) return s;
   return s.slice(0, Math.max(0, w - 1)) + '…';
@@ -183,6 +259,15 @@ const HEADERS_BY = {
 };
 const NUMERIC_COLS = new Set([1, 3, 4, 5, 6, 7]);
 
+/**
+ * Render rows as a Markdown-dialect table with SI-compact numbers,
+ * right-aligned numeric columns, ANSI bold on TTY. The `Total` row (if
+ * present) is dimmed.
+ * @param {AggregateRow[]} rows
+ * @param {GroupBy}        groupBy
+ * @param {boolean}        useColor
+ * @returns {string}
+ */
 function renderTable(rows, groupBy, useColor) {
   if (rows.length === 0) return '';
   const headers = [...HEADERS];
@@ -226,18 +311,37 @@ function renderTable(rows, groupBy, useColor) {
   return [headerRow, sepRow, ...dataLines].join('\n');
 }
 
+/**
+ * Materialize the walkEvents generator into an array for easier processing.
+ * @param {string} projectRoot @param {TimeWindow} window
+ * @returns {Event[]}
+ */
 function collectEvents(projectRoot, window) {
   const events = [];
   for (const ev of walkEvents(projectRoot, window)) events.push(ev);
   return events;
 }
 
+/**
+ * Main stats pipeline: resolve window → walk logs → warn on unknown models
+ * → filter → aggregate → render (Markdown table or JSON).
+ * @param {Object} v  parsed flag map
+ * @returns {void}
+ */
 function runStats(v) {
   const projectRoot = findProjectRoot();
   const cfg = readConfig(projectRoot);
   const window = resolveWindow(v);
 
   const events = collectEvents(projectRoot, window);
+
+  const unknownModels = new Set();
+  for (const ev of events) {
+    if (ev.model && ev.model !== 'unknown' && !isKnown(ev.model)) unknownModels.add(ev.model);
+  }
+  if (unknownModels.size > 0) {
+    process.stderr.write(`⚠ unknown model(s): ${[...unknownModels].join(', ')} — run refresh-pricing.sh --reconcile\n`);
+  }
 
   // --project filter (session 2 scope: match current cwd project's title)
   let filteredEvents = events;
@@ -279,10 +383,22 @@ function runStats(v) {
   process.stdout.write(renderTable(rows, groupBy, useColor) + '\n');
 }
 
+/**
+ * Promise-wrapped readline question.
+ * @param {import('node:readline').Interface} rl
+ * @param {string} q
+ * @returns {Promise<string>}
+ */
 function ask(rl, q) {
   return new Promise(resolve => rl.question(q, resolve));
 }
 
+/**
+ * Interactive menu loop. Runs until the user picks Quit or Ctrl-C.
+ * Menu items 3 and 4 shell out to `refresh-pricing.sh` (with `--reconcile`
+ * for item 3). Item 2 is a session-4 placeholder.
+ * @returns {Promise<void>}
+ */
 async function menuLoop() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   process.on('SIGINT', () => { rl.close(); process.exit(130); });
@@ -291,15 +407,22 @@ async function menuLoop() {
       process.stdout.write('\n=== Tokens recap ===\n');
       process.stdout.write('1. View stats\n');
       process.stdout.write('2. Manage projects (coming in session 4)\n');
-      process.stdout.write('3. Manage models (coming in session 3)\n');
-      process.stdout.write('4. Refresh pricing (coming in session 3)\n');
+      process.stdout.write('3. Manage models (refresh-pricing.sh --reconcile)\n');
+      process.stdout.write('4. Refresh pricing (refresh-pricing.sh)\n');
       process.stdout.write('5. Quit\n');
       const choice = (await ask(rl, '> ')).trim().toLowerCase();
       if (choice === '5' || choice === 'q' || choice === 'quit' || choice === '') break;
       if (choice === '2') { process.stdout.write('  « coming in session 4 »\n'); continue; }
-      if (choice === '3' || choice === '4') { process.stdout.write('  « coming in session 3 »\n'); continue; }
       if (choice === '1') {
         await viewStatsInteractive(rl);
+        continue;
+      }
+      if (choice === '3') {
+        spawnSync('bash', [REFRESH_PRICING_SH, '--reconcile'], { stdio: 'inherit' });
+        continue;
+      }
+      if (choice === '4') {
+        spawnSync('bash', [REFRESH_PRICING_SH], { stdio: 'inherit' });
         continue;
       }
       process.stdout.write(`  unknown choice: ${choice}\n`);
@@ -309,6 +432,12 @@ async function menuLoop() {
   }
 }
 
+/**
+ * Guided flow: prompt for period, grouping, and format, then delegate to
+ * {@link runStats}. Prints the equivalent CLI so users learn the flags.
+ * @param {import('node:readline').Interface} rl
+ * @returns {Promise<void>}
+ */
 async function viewStatsInteractive(rl) {
   const period = (await ask(rl, 'Period? [r]eset (Sat 20h UTC) / [w]eek / [m]onth / [d] last N days / [h] last N hours / [D] from date / [a]ll (default: r): ')).trim().toLowerCase();
   const v = {};
@@ -350,6 +479,31 @@ async function viewStatsInteractive(rl) {
   process.stdout.write(`\n« Equivalent CLI: node recap.js ${parts.join(' ')} »\n`);
 }
 
+/**
+ * Emit one stderr warning if `pricing.json` is missing, unreadable, or
+ * older than 90 days. Called once at `main()` startup.
+ * @returns {void}
+ */
+function warnPricingFile() {
+  const info = pricingFileInfo();
+  if (!info.exists) {
+    process.stderr.write(`⚠ pricing.json missing at ${info.path} — run refresh-pricing.sh\n`);
+    return;
+  }
+  if (info.fetched_at === null) {
+    process.stderr.write(`⚠ pricing.json unreadable (no fetched_at) — run refresh-pricing.sh\n`);
+    return;
+  }
+  if (info.ageDays !== null && info.ageDays > 90) {
+    process.stderr.write(`⚠ pricing.json is ${info.ageDays.toFixed(0)} days old — run refresh-pricing.sh\n`);
+  }
+}
+
+/**
+ * Entry point. Parses flags, warns on stale pricing, then either opens the
+ * interactive menu (no args + TTY) or runs `runStats` directly.
+ * @returns {Promise<void>}
+ */
 async function main() {
   const argv = process.argv.slice(2);
   let parsed;
@@ -364,6 +518,8 @@ async function main() {
     process.stdout.write(HELP + '\n');
     return;
   }
+
+  warnPricingFile();
 
   if (argv.length === 0 && process.stdin.isTTY && !v['no-interactive']) {
     await menuLoop();
