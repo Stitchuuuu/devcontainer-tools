@@ -142,7 +142,157 @@ function* walkEvents(projectRoot, window) {
   }
 }
 
-module.exports = { findProjectRoot, readConfig, walkEvents, monthDirInWindow };
+/**
+ * @typedef {Object} ProjectSource
+ * @property {string}   project_id
+ * @property {string}   [host_workspace_path]
+ * @property {string}   [project_root]
+ * @property {string}   [title]
+ * @property {string}   [ts]                first-seen timestamp
+ * @property {string[]} volumes             docker volume names where this project was seen
+ * @property {boolean}  local               true iff seen in $CLAUDE_HOME/tokens/projects.jsonl
+ */
+
+function claudeHome() {
+  return process.env.CLAUDE_HOME || path.join(process.env.HOME || '', '.claude');
+}
+
+function readJsonlSafe(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  const out = [];
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      try { out.push(JSON.parse(line)); } catch {}
+    }
+  } catch (e) {
+    process.stderr.write(`warn: cannot read ${filePath}: ${e.message}\n`);
+  }
+  return out;
+}
+
+function dockerScanScript() {
+  return path.join(__dirname, 'docker-scan.sh');
+}
+
+/**
+ * Enumerate all projects across local registry + docker-scan volumes.
+ * Dedup by `project_id` (first-seen metadata wins; volumes are unioned).
+ * @param {Object}  [opts]
+ * @param {boolean} [opts.docker=true]
+ * @returns {ProjectSource[]}
+ */
+function enumerateProjects(opts = {}) {
+  const useDocker = opts.docker !== false;
+  const home = claudeHome();
+  const localRegistry = path.join(home, 'tokens', 'projects.jsonl');
+
+  /** @type {Map<string, ProjectSource>} */
+  const byId = new Map();
+
+  const add = (row, source) => {
+    if (!row || !row.project_id) return;
+    let cur = byId.get(row.project_id);
+    if (!cur) {
+      cur = {
+        project_id: row.project_id,
+        host_workspace_path: row.host_workspace_path || '',
+        project_root: row.project_root || '',
+        title: row.title || '',
+        ts: row.ts || '',
+        volumes: [],
+        local: false,
+      };
+      byId.set(row.project_id, cur);
+    } else {
+      if (!cur.host_workspace_path && row.host_workspace_path) cur.host_workspace_path = row.host_workspace_path;
+      if (!cur.project_root && row.project_root) cur.project_root = row.project_root;
+      if (!cur.title && row.title) cur.title = row.title;
+      if (!cur.ts && row.ts) cur.ts = row.ts;
+    }
+    if (source.local) cur.local = true;
+    if (source.volume && !cur.volumes.includes(source.volume)) cur.volumes.push(source.volume);
+  };
+
+  for (const row of readJsonlSafe(localRegistry)) add(row, { local: true });
+
+  if (useDocker) {
+    let volumes = '';
+    try {
+      const { execFileSync } = require('node:child_process');
+      volumes = execFileSync('bash', [dockerScanScript(), 'list-volumes'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch { volumes = ''; }
+    for (const vol of volumes.split('\n').filter(Boolean)) {
+      let content = '';
+      try {
+        const { execFileSync } = require('node:child_process');
+        content = execFileSync('bash', [dockerScanScript(), 'read-projects', vol], {
+          encoding: 'utf8',
+          timeout: 15_000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+      } catch { content = ''; }
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        try { add(JSON.parse(line), { volume: vol }); } catch {}
+      }
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
+/**
+ * Resolve a walkable filesystem root for a project. Prefers `host_workspace_path`
+ * (recap runs on host); falls back to `project_root` (recap runs in the same
+ * container that wrote the events). Returns null if neither exists.
+ * @param {ProjectSource} proj
+ * @returns {?string}
+ */
+function walkableRootFor(proj) {
+  const candidates = [proj.host_workspace_path, proj.project_root].filter(Boolean);
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, '.claude', 'tokens'))) return c;
+  }
+  return null;
+}
+
+/**
+ * Union of {@link walkEvents} across every known project (local registry +
+ * docker-scan volumes). Yields the same {@link Event} shape as walkEvents;
+ * projects with no walkable filesystem root are skipped with one stderr warn.
+ * @param {TimeWindow} window
+ * @param {Object}     [opts]
+ * @param {boolean}    [opts.docker=true]
+ * @yields {Event}
+ */
+function* walkAllProjects(window, opts = {}) {
+  const projects = enumerateProjects(opts);
+  for (const proj of projects) {
+    const root = walkableRootFor(proj);
+    if (!root) {
+      process.stderr.write(`warn: project ${proj.title || proj.project_id} has no walkable path (host=${proj.host_workspace_path} root=${proj.project_root})\n`);
+      continue;
+    }
+    yield* walkEvents(root, window);
+  }
+}
+
+module.exports = {
+  findProjectRoot,
+  readConfig,
+  walkEvents,
+  monthDirInWindow,
+  enumerateProjects,
+  walkableRootFor,
+  walkAllProjects,
+  claudeHome,
+};
 
 if (require.main === module) {
   const assert = require('node:assert/strict');
@@ -153,5 +303,7 @@ if (require.main === module) {
   assert.equal(monthDirInWindow('bad', w), false);
   const root = findProjectRoot('/workspace');
   assert.equal(root, '/workspace', `findProjectRoot(/workspace) = ${root}`);
-  console.log('lib/logs.js: 5/5 ok');
+  const projects = enumerateProjects({ docker: false });
+  assert.ok(Array.isArray(projects), 'enumerateProjects returns array');
+  console.log(`lib/logs.js: 6/6 ok (${projects.length} local projects)`);
 }

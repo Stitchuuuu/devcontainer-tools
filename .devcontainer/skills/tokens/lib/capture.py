@@ -110,7 +110,7 @@ def write_config(project_root, project_id, host_workspace_path, now_iso):
     return cfg
 
 
-def append_project_registry(project_id, host_workspace_path, title, now_iso):
+def append_project_registry(project_id, host_workspace_path, project_root, title, now_iso):
     reg_dir = os.path.expanduser('~/.claude/tokens')
     os.makedirs(reg_dir, exist_ok=True)
     reg_path = os.path.join(reg_dir, 'projects.jsonl')
@@ -130,6 +130,7 @@ def append_project_registry(project_id, host_workspace_path, title, now_iso):
         'ts': now_iso,
         'project_id': project_id,
         'host_workspace_path': host_workspace_path or '',
+        'project_root': project_root or '',
         'title': title,
     }
     with open(reg_path, 'a') as f:
@@ -186,7 +187,7 @@ def main():
         f.write(json.dumps(event) + '\n')
 
     cfg = write_config(args.project_root, args.project_id, args.host_workspace, now_iso)
-    append_project_registry(args.project_id, args.host_workspace, cfg.get('title', ''), now_iso)
+    append_project_registry(args.project_id, args.host_workspace, args.project_root, cfg.get('title', ''), now_iso)
     return 0
 
 

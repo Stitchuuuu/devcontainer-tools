@@ -28,19 +28,22 @@
  */
 
 
+const fs = require('node:fs');
 const { parseArgs } = require('node:util');
 const readline = require('node:readline');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, execFileSync } = require('node:child_process');
 const { compact, compactUSD } = require('./lib/format.js');
 const { sinceReset, currentWeek, currentMonth, lastN, fromTo, all } = require('./lib/window.js');
-const { findProjectRoot, readConfig, walkEvents } = require('./lib/logs.js');
+const { findProjectRoot, readConfig, walkEvents, walkAllProjects } = require('./lib/logs.js');
 const { isKnown, pricingFileInfo } = require('./lib/pricing.js');
+const { listProjects, renameProject, forgetProject } = require('./lib/projects-ops.js');
 
 const REFRESH_PRICING_SH = path.join(__dirname, 'refresh-pricing.sh');
+const DOCKER_SCAN_SH = path.join(__dirname, 'lib', 'docker-scan.sh');
 
 const HELP = `
-Usage: node recap.js [flags]
+Usage: node recap.js [flags] [slug]
 
 Window (mutually exclusive; default: --since-reset):
   --since-reset          since last Saturday 20h UTC (Anthropic weekly reset)
@@ -51,8 +54,9 @@ Window (mutually exclusive; default: --since-reset):
   --all                  all-time
 
 Filter / group:
-  --project=<slug>       filter by project title (repeatable)
-  --current-project      current cwd project only (default)
+  --project=<title>      filter by project title (repeatable)
+  --current-project      current cwd project only (default: multi-project union)
+  --no-docker            skip docker-scan (local registry only)
   --by-project           aggregate per project
   --by-session           one row per session
   --by-day               one row per day (UTC)
@@ -61,7 +65,14 @@ Filter / group:
   --no-color             disable ANSI
   --no-interactive       skip menu even on a TTY
 
-Sans args + TTY: menu interactif.
+Project management:
+  --list-projects        list all known projects (local + docker volumes)
+  --rename <slug>        rename a project ; requires --title (and/or --subtitle)
+  --forget <slug>        remove a project from every registry it appears in
+  --title="…"            new title (with --rename)
+  --subtitle="…"         new subtitle (with --rename)
+
+Sans args + TTY : menu interactif.
 `.trim();
 
 /**
@@ -74,7 +85,7 @@ function parseFlags(argv) {
   return parseArgs({
     args: argv,
     strict: true,
-    allowPositionals: false,
+    allowPositionals: true,
     options: {
       'since-reset': { type: 'boolean' },
       week: { type: 'boolean' },
@@ -86,6 +97,7 @@ function parseFlags(argv) {
       project: { type: 'string', multiple: true },
       'all-projects': { type: 'boolean' },
       'current-project': { type: 'boolean' },
+      'no-docker': { type: 'boolean' },
       'by-project': { type: 'boolean' },
       'by-session': { type: 'boolean' },
       'by-day': { type: 'boolean' },
@@ -93,6 +105,11 @@ function parseFlags(argv) {
       json: { type: 'boolean' },
       'no-color': { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
+      'list-projects': { type: 'boolean' },
+      rename: { type: 'boolean' },
+      forget: { type: 'boolean' },
+      title: { type: 'string' },
+      subtitle: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -137,19 +154,19 @@ function resolveGrouping(v, events) {
 
 /**
  * Group events by the selected dimension and sum deltas.
- * @param {Event[]}       events
- * @param {GroupBy}       groupBy
- * @param {?ProjectConfig} cfg  used to build the label when groupBy = 'project'
+ * @param {Event[]}              events
+ * @param {GroupBy}              groupBy
+ * @param {Map<string,string>}   titleByRoot  project_root → display label
  * @returns {AggregateRow[]}
  */
-function aggregate(events, groupBy, cfg) {
+function aggregate(events, groupBy, titleByRoot) {
   const rows = new Map();
   const emptyTokens = () => ({ in: 0, cache_read: 0, cache_create: 0, out: 0 });
   for (const ev of events) {
     let key, label;
     if (groupBy === 'project') {
       key = ev.project_root;
-      label = cfg && cfg.title ? formatProjectLabel(cfg) : ev.project_root;
+      label = titleByRoot.get(ev.project_root) || path.basename(ev.project_root || '') || ev.project_root || '—';
     } else if (groupBy === 'session') {
       key = ev.session;
       label = ev.session;
@@ -312,28 +329,33 @@ function renderTable(rows, groupBy, useColor) {
 }
 
 /**
- * Materialize the walkEvents generator into an array for easier processing.
- * @param {string} projectRoot @param {TimeWindow} window
- * @returns {Event[]}
- */
-function collectEvents(projectRoot, window) {
-  const events = [];
-  for (const ev of walkEvents(projectRoot, window)) events.push(ev);
-  return events;
-}
-
-/**
- * Main stats pipeline: resolve window → walk logs → warn on unknown models
+ * Main stats pipeline: resolve window → walk logs (multi-project by
+ * default, or `--current-project` for cwd only) → warn on unknown models
  * → filter → aggregate → render (Markdown table or JSON).
  * @param {Object} v  parsed flag map
  * @returns {void}
  */
 function runStats(v) {
-  const projectRoot = findProjectRoot();
-  const cfg = readConfig(projectRoot);
   const window = resolveWindow(v);
+  const useDocker = !v['no-docker'];
 
-  const events = collectEvents(projectRoot, window);
+  /** @type {Map<string,string>} */
+  const titleByRoot = new Map();
+  let events = [];
+
+  if (v['current-project']) {
+    const projectRoot = findProjectRoot();
+    const cfg = readConfig(projectRoot);
+    for (const ev of walkEvents(projectRoot, window)) events.push(ev);
+    if (cfg) titleByRoot.set(projectRoot, formatProjectLabel(cfg));
+  } else {
+    for (const ev of walkAllProjects(window, { docker: useDocker })) events.push(ev);
+    for (const p of listProjects({ docker: useDocker })) {
+      const label = p.subtitle ? `${p.title} — ${p.subtitle}` : p.title;
+      if (p.host_workspace_path) titleByRoot.set(p.host_workspace_path, label);
+      if (p.project_root) titleByRoot.set(p.project_root, label);
+    }
+  }
 
   const unknownModels = new Set();
   for (const ev of events) {
@@ -343,19 +365,21 @@ function runStats(v) {
     process.stderr.write(`⚠ unknown model(s): ${[...unknownModels].join(', ')} — run refresh-pricing.sh --reconcile\n`);
   }
 
-  // --project filter (session 2 scope: match current cwd project's title)
   let filteredEvents = events;
   if (v.project && v.project.length) {
-    const title = cfg ? cfg.title : null;
-    const matches = v.project.some(p => p === title);
-    if (!matches) {
-      process.stdout.write(`No sessions matching --project=${v.project.join(',')} in this project (title=${title || '<no config>'}).\n`);
+    filteredEvents = events.filter(ev => {
+      const label = titleByRoot.get(ev.project_root);
+      const short = label ? label.split(' — ')[0] : null;
+      return v.project.some(p => p === label || p === short || p === ev.project_root);
+    });
+    if (filteredEvents.length === 0) {
+      process.stdout.write(`No sessions matching --project=${v.project.join(',')} in this window.\n`);
       return;
     }
   }
 
   const groupBy = resolveGrouping(v, filteredEvents);
-  const rows = aggregate(filteredEvents, groupBy, cfg);
+  const rows = aggregate(filteredEvents, groupBy, titleByRoot);
   rows.sort((a, b) => b.cost_usd - a.cost_usd);
   const total = totalRow(rows, groupBy);
   if (total) rows.push(total);
@@ -412,7 +436,7 @@ async function menuLoop() {
       process.stdout.write('5. Quit\n');
       const choice = (await ask(rl, '> ')).trim().toLowerCase();
       if (choice === '5' || choice === 'q' || choice === 'quit' || choice === '') break;
-      if (choice === '2') { process.stdout.write('  « coming in session 4 »\n'); continue; }
+      if (choice === '2') { await manageProjectsInteractive(rl); continue; }
       if (choice === '1') {
         await viewStatsInteractive(rl);
         continue;
@@ -480,6 +504,100 @@ async function viewStatsInteractive(rl) {
 }
 
 /**
+ * When running inside a container and docker-scan can't reach any volumes,
+ * emit one stderr line suggesting the user install tokens on the host for
+ * full cross-container aggregation. Non-blocking — recap continues.
+ * @returns {void}
+ */
+function warnIfInContainer() {
+  if (!fs.existsSync('/.dockerenv')) return;
+  let volumes = '';
+  try {
+    volumes = execFileSync('bash', [DOCKER_SCAN_SH, 'list-volumes'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch { /* docker absent */ }
+  if (volumes.trim() === '') {
+    process.stderr.write('⚠ running inside container — for full cross-container aggregation, install tokens on host (see tokens/install.sh)\n');
+  }
+}
+
+/**
+ * Print all projects (from local registry + docker volumes) as an aligned
+ * table, sorted by last_seen desc. Backs `--list-projects` and menu item 2.1.
+ * @param {Object} [opts]
+ * @param {boolean} [opts.docker=true]
+ * @returns {void}
+ */
+function printProjectsTable(opts = {}) {
+  const rows = listProjects(opts);
+  if (rows.length === 0) {
+    process.stdout.write('No projects registered yet.\n');
+    return;
+  }
+  const headers = ['Slug', 'Title', 'Host path', 'Last seen', 'Where'];
+  const data = rows.map(r => [
+    r.slug,
+    r.subtitle ? `${r.title} — ${r.subtitle}` : (r.title || '—'),
+    r.host_workspace_path || r.project_root || '—',
+    r.last_seen || '—',
+    [r.local ? 'local' : null, ...r.volumes].filter(Boolean).join(', ') || '—',
+  ]);
+  const widths = headers.map((h, i) => Math.max(h.length, ...data.map(r => r[i].length)));
+  const pad = (cell, i) => cell.padEnd(widths[i]);
+  process.stdout.write('| ' + headers.map((h, i) => pad(h, i)).join(' | ') + ' |\n');
+  process.stdout.write('|' + widths.map(w => '-'.repeat(w + 2)).join('|') + '|\n');
+  for (const row of data) process.stdout.write('| ' + row.map((c, i) => pad(c, i)).join(' | ') + ' |\n');
+}
+
+/**
+ * Interactive sub-menu for menu item 2 (Manage projects).
+ * @param {import('node:readline').Interface} rl
+ * @returns {Promise<void>}
+ */
+async function manageProjectsInteractive(rl) {
+  while (true) {
+    process.stdout.write('\n=== Manage projects ===\n');
+    process.stdout.write('1. List all\n');
+    process.stdout.write('2. Rename\n');
+    process.stdout.write('3. Forget\n');
+    process.stdout.write('4. Back\n');
+    const c = (await ask(rl, '> ')).trim().toLowerCase();
+    if (c === '4' || c === 'b' || c === 'back' || c === '') return;
+    if (c === '1') { printProjectsTable(); continue; }
+    if (c === '2' || c === '3') {
+      const rows = listProjects();
+      if (rows.length === 0) { process.stdout.write('No projects registered yet.\n'); continue; }
+      rows.forEach((r, i) => {
+        process.stdout.write(`  ${i + 1}. [${r.slug}] ${r.title || '—'}${r.subtitle ? ' — ' + r.subtitle : ''}\n`);
+      });
+      const pick = (await ask(rl, 'Pick number (or slug, blank to cancel): ')).trim();
+      if (!pick) continue;
+      const idx = parseInt(pick, 10);
+      const target = (idx >= 1 && idx <= rows.length) ? rows[idx - 1] : rows.find(r => r.slug === pick.toLowerCase());
+      if (!target) { process.stdout.write(`  no match for "${pick}"\n`); continue; }
+      if (c === '2') {
+        const title = (await ask(rl, `New title (blank keeps "${target.title}"): `)).trim();
+        const subtitle = (await ask(rl, `New subtitle (blank keeps "${target.subtitle || ''}"): `)).trim();
+        const fields = {};
+        if (title) fields.title = title;
+        if (subtitle) fields.subtitle = subtitle;
+        if (!fields.title && !fields.subtitle) { process.stdout.write('  no change.\n'); continue; }
+        const res = renameProject(target.slug, fields);
+        process.stdout.write(res.ok ? `  ✓ renamed to "${res.project.title}"\n` : `  ✗ ${res.error}\n`);
+      } else {
+        const confirm = (await ask(rl, `Forget "${target.title}" (${target.slug})? [y/N]: `)).trim().toLowerCase();
+        if (confirm !== 'y' && confirm !== 'yes') { process.stdout.write('  cancelled.\n'); continue; }
+        const res = forgetProject(target.slug);
+        process.stdout.write(res.ok ? `  ✓ forgotten\n` : `  ✗ ${res.error}\n`);
+      }
+    }
+  }
+}
+
+/**
  * Emit one stderr warning if `pricing.json` is missing, unreadable, or
  * older than 90 days. Called once at `main()` startup.
  * @returns {void}
@@ -514,12 +632,47 @@ async function main() {
     process.exit(2);
   }
   const v = parsed.values;
+  const positionals = parsed.positionals || [];
   if (v.help) {
     process.stdout.write(HELP + '\n');
     return;
   }
 
   warnPricingFile();
+  warnIfInContainer();
+
+  if (v['list-projects']) {
+    printProjectsTable({ docker: !v['no-docker'] });
+    return;
+  }
+  if (v.rename) {
+    const slug = positionals[0];
+    if (!slug) {
+      process.stderr.write('error: --rename requires <slug> positional arg\n');
+      process.exit(2);
+    }
+    const res = renameProject(slug, { title: v.title, subtitle: v.subtitle });
+    if (!res.ok) {
+      process.stderr.write(`error: ${res.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`✓ renamed "${res.project.slug}" → "${res.project.title}"${res.project.subtitle ? ' — ' + res.project.subtitle : ''}\n`);
+    return;
+  }
+  if (v.forget) {
+    const slug = positionals[0];
+    if (!slug) {
+      process.stderr.write('error: --forget requires <slug> positional arg\n');
+      process.exit(2);
+    }
+    const res = forgetProject(slug);
+    if (!res.ok) {
+      process.stderr.write(`error: ${res.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`✓ forgot "${res.project.slug}" (${res.project.title || res.project.project_id})\n`);
+    return;
+  }
 
   if (argv.length === 0 && process.stdin.isTTY && !v['no-interactive']) {
     await menuLoop();

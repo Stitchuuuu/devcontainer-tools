@@ -431,22 +431,49 @@ diff_previous() {
 
 # -------- Reconcile flow --------
 
-# Emit distinct model IDs seen in local project logs.
-# Session 3 scope: current-project only (walk-up cwd → .claude/tokens/logs).
-# projects.jsonl currently lacks project_root; cross-project scan deferred to session 4.
+# Emit distinct model IDs seen in project logs.
+# Sources (unioned):
+#   1) current-project walk (cwd walk-up → .claude/tokens/logs)
+#   2) every project listed in local $CLAUDE_HOME/tokens/projects.jsonl
+#   3) every project listed in `claude-code-config-*` docker volumes via lib/docker-scan.sh
+# Sources 2+3 use each row's host_workspace_path (preferred) or project_root
+# to find its logs. Docker absent / no matching volumes → silently skips.
 collect_seen_models() {
-  root="$(pwd)"
-  while [ "$root" != "/" ]; do
-    if [ -d "$root/.claude/tokens/logs" ] || [ -d "$root/.git" ]; then
-      break
+  {
+    # 1) Current-project walk.
+    root="$(pwd)"
+    while [ "$root" != "/" ]; do
+      if [ -d "$root/.claude/tokens/logs" ] || [ -d "$root/.git" ]; then break; fi
+      root=$(dirname "$root")
+    done
+    if [ -d "$root/.claude/tokens/logs" ]; then
+      find "$root/.claude/tokens/logs" -type f -name '*.jsonl' 2>/dev/null | while read -r f; do
+        grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | sed 's/^"model"[[:space:]]*:[[:space:]]*"//; s/"$//'
+      done
     fi
-    root=$(dirname "$root")
-  done
-  logs_dir="$root/.claude/tokens/logs"
-  [ -d "$logs_dir" ] || return 0
-  find "$logs_dir" -type f -name '*.jsonl' 2>/dev/null | while read -r f; do
-    grep -oE '"model":"[^"]*"' "$f" 2>/dev/null | sed 's/"model":"//; s/"$//'
-  done | sort -u
+
+    # 2+3) Registry union: local projects.jsonl + every docker volume's projects.jsonl.
+    scan="$(dirname "$0")/lib/docker-scan.sh"
+    ch="${CLAUDE_HOME:-$HOME/.claude}"
+    if [ -f "$scan" ]; then
+      {
+        [ -f "$ch/tokens/projects.jsonl" ] && cat "$ch/tokens/projects.jsonl"
+        bash "$scan" list-volumes 2>/dev/null | while read -r vol; do
+          [ -z "$vol" ] && continue
+          bash "$scan" read-projects "$vol"
+        done
+      } | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        p=$(printf '%s' "$line" | grep -oE '"host_workspace_path"[[:space:]]*:[[:space:]]*"[^"]+"' | sed 's/.*"[[:space:]]*:[[:space:]]*"//; s/"$//' | head -1)
+        [ -z "$p" ] && p=$(printf '%s' "$line" | grep -oE '"project_root"[[:space:]]*:[[:space:]]*"[^"]+"' | sed 's/.*"[[:space:]]*:[[:space:]]*"//; s/"$//' | head -1)
+        [ -z "$p" ] && continue
+        [ -d "$p/.claude/tokens/logs" ] || continue
+        find "$p/.claude/tokens/logs" -type f -name '*.jsonl' 2>/dev/null | while read -r f; do
+          grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | sed 's/^"model"[[:space:]]*:[[:space:]]*"//; s/"$//'
+        done
+      done
+    fi
+  } | sort -u
 }
 
 # Return the newest key of a given tier from pricing.json + hardcoded (tier ∈ opus|sonnet|haiku).
