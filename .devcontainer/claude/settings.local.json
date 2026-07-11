@@ -43,7 +43,6 @@
 			"Bash(uname *)",
 			"Bash(env *)",
 			"Bash(node -v*)",
-			"Bash(node /workspace/.devcontainer/skills/floating-perms/apply.js *)",
 			"Bash(npm list*)",
 			"Bash(gh pr view*)",
 			"Bash(gh pr list*)",
