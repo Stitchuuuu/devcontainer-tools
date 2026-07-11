@@ -48,7 +48,7 @@ const PROMPT_SUGGEST = [{
 	destination: 'localSettings'
 }]
 
-test('happy path: 2 × PermissionRequest then 1 × PreToolUse → deny', () => {
+test('happy path: 2 × PermissionRequest then 1 × PreToolUse → deny + pending token', () => {
 	// Threshold = 2 ⇒ the 3rd call that would prompt is intercepted by
 	// PreToolUse before the dialog opens.
 	const sid = uniqueSid()
@@ -82,6 +82,22 @@ test('happy path: 2 × PermissionRequest then 1 × PreToolUse → deny', () => {
 	const reason = out.hookSpecificOutput.permissionDecisionReason
 	assert.match(reason, /Bash\(curl:\*\)/)
 	assert.match(reason, /Edit\(\/tmp\/scratch\/\*\*\)/)
+
+	// Deny must reserve exactly one pending token bound to this sid + the
+	// observed patterns. The command in the reason should embed that id.
+	const st = readState()
+	const pending = Object.entries(st.pending_grants || {})
+		.filter(([, v]) => v.sid === sid)
+	assert.equal(pending.length, 1, 'expected exactly one pending grant for this sid')
+	const [pendingId, entry] = pending[0]
+	assert.deepEqual(
+		entry.patterns.sort(),
+		['Bash(curl:*)', 'Edit(/tmp/scratch/**)'].sort()
+	)
+	assert.match(reason, new RegExp(`id=${pendingId}`))
+	assert.match(reason, new RegExp(`session=${sid}`))
+	assert.match(reason, /Skill\(skill="floating-perms"/)
+	assert.match(reason, /args="allow id=/)
 })
 
 test('below threshold: 1 × PermissionRequest then 1 × PreToolUse → no deny', () => {
@@ -307,20 +323,93 @@ test('auto-allow guard: PermissionRequest with permission_suggestions is counted
 	assert.equal(st.counters[sid][0].pattern, 'Bash(python3:*)')
 })
 
-test('denyReason lists every unique pattern + the sid for apply.js batch', () => {
+test('denyReason lists every unique pattern + embeds id + session for Skill floating-perms allow', () => {
 	const reason = hook.denyReason([
 		{ ts: 1, pattern: 'Bash(curl:*)' },
 		{ ts: 2, pattern: 'Edit(/tmp/scratch/**)' },
 		{ ts: 3, pattern: 'Read(/home/node/**)' }
-	], 'abc12345-deadbeef')
+	], 'abc12345-deadbeef', '3f2a1b7c')
 
 	assert.match(reason, /^STOP — floating-perms: 3 permission prompts/)
 	assert.match(reason, /Bash\(curl:\*\)/)
 	assert.match(reason, /Edit\(\/tmp\/scratch\/\*\*\)/)
 	assert.match(reason, /Read\(\/home\/node\/\*\*\)/)
-	assert.match(reason, /sid=abc12345-deadbeef/)
+	assert.match(reason, /id=3f2a1b7c/)
+	assert.match(reason, /session=abc12345-deadbeef/)
+	// Skill dispatch is the primary path — going through the skill scopes
+	// the underlying apply.js Bash call to allowed-tools so the node
+	// invocation doesn't fire a fresh permission prompt.
+	assert.match(reason, /Skill\(skill="floating-perms"/)
+	assert.match(reason, /args="allow id=3f2a1b7c session=abc12345-deadbeef/)
 	assert.match(reason, /ANALYZE/)
 	assert.match(reason, /ASK/)
 	assert.match(reason, /EXECUTE/)
 	assert.match(reason, /RETRY/)
+})
+
+test('re-fire on same sid replaces prior pending token (single-pending policy)', () => {
+	const sid = uniqueSid()
+	const base = 1_700_000_800_000
+
+	// First spike → first token.
+	for (let i = 0; i < 2; i++) {
+		withFixedNow(base + i, () => {
+			hook.handlePermissionRequest({
+				session_id: sid, tool_name: 'Bash',
+				tool_input: { command: `cmd-a-${i}` },
+				tool_use_id: `a${i}`,
+				permission_suggestions: PROMPT_SUGGEST
+			})
+		})
+	}
+	withFixedNow(base + 100, () =>
+		hook.handlePreToolUse({ session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'x' } }))
+
+	const st1 = readState()
+	const pending1 = Object.entries(st1.pending_grants).filter(([, v]) => v.sid === sid)
+	assert.equal(pending1.length, 1, 'first spike should produce one pending token')
+	const firstId = pending1[0][0]
+
+	// Second spike (past race window) → second token replaces the first.
+	for (let i = 0; i < 2; i++) {
+		withFixedNow(base + 1000 + i, () => {
+			hook.handlePermissionRequest({
+				session_id: sid, tool_name: 'Bash',
+				tool_input: { command: `cmd-b-${i}` },
+				tool_use_id: `b${i}`,
+				permission_suggestions: PROMPT_SUGGEST
+			})
+		})
+	}
+	withFixedNow(base + 2000, () =>
+		hook.handlePreToolUse({ session_id: sid, tool_name: 'Bash',
+			tool_input: { command: 'y' } }))
+
+	const st2 = readState()
+	const pending2 = Object.entries(st2.pending_grants).filter(([, v]) => v.sid === sid)
+	assert.equal(pending2.length, 1, 'second spike should still leave one pending token')
+	assert.notEqual(pending2[0][0], firstId,
+		'the previous token id should have been replaced')
+})
+
+test('handleSessionEnd purges pending grants for the ended sid only', () => {
+	const sidA = uniqueSid()
+	const sidB = uniqueSid()
+	const now = 1_700_000_900_000
+
+	// Seed pending grants for two sessions.
+	fs.writeFileSync(STATE_PATH, JSON.stringify({
+		version: 1, grants: [], counters: {}, warned: {},
+		pending_grants: {
+			'id-a': { sid: sidA, patterns: ['Bash(curl:*)'], created_at: now },
+			'id-b': { sid: sidB, patterns: ['Bash(jq:*)'],   created_at: now }
+		}
+	}))
+
+	hook.handleSessionEnd({ session_id: sidA })
+
+	const st = readState()
+	assert.equal(st.pending_grants['id-a'], undefined, 'id-a should be gone')
+	assert.ok(st.pending_grants['id-b'], 'id-b for the other sid should survive')
 })

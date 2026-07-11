@@ -22,7 +22,7 @@ const LOCK_JITTER   = 60
 const LOCK_STALE_MS = 5000
 
 function emptyState() {
-	return { version: 1, grants: [], counters: {}, warned: {} }
+	return { version: 1, grants: [], counters: {}, warned: {}, pending_grants: {} }
 }
 
 function readStateRaw() {
@@ -30,9 +30,10 @@ function readStateRaw() {
 		const buf = fs.readFileSync(STATE_PATH, 'utf8')
 		const parsed = JSON.parse(buf)
 		if (!parsed || typeof parsed !== 'object') return emptyState()
-		parsed.grants   = Array.isArray(parsed.grants)   ? parsed.grants   : []
-		parsed.counters = parsed.counters && typeof parsed.counters === 'object' ? parsed.counters : {}
-		parsed.warned   = parsed.warned   && typeof parsed.warned   === 'object' ? parsed.warned   : {}
+		parsed.grants         = Array.isArray(parsed.grants)   ? parsed.grants   : []
+		parsed.counters       = parsed.counters       && typeof parsed.counters === 'object'       ? parsed.counters       : {}
+		parsed.warned         = parsed.warned         && typeof parsed.warned   === 'object'       ? parsed.warned         : {}
+		parsed.pending_grants = parsed.pending_grants && typeof parsed.pending_grants === 'object' ? parsed.pending_grants : {}
 		return parsed
 	} catch {
 		return emptyState()

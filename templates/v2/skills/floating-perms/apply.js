@@ -28,7 +28,10 @@ const {
 	withState, readAllow, writeAllow, audit,
 	findFloatingSection
 } = require('./lib/state')
-const { revokeManual, revokeOrphans, revokeExpired } = require('./cleanup')
+const {
+	revokeManual, revokeOrphans, revokeExpired,
+	revokeExpiredPending, PENDING_TTL_MS
+} = require('./cleanup')
 
 // Claude Code refuses file writes/reads outside the cwd + the paths
 // listed in permissions.additionalDirectories, regardless of what's in
@@ -110,20 +113,13 @@ function normalizePattern(raw) {
 	return asBash
 }
 
-function batch({ positional, opts }) {
-	const ttlSeconds = opts.ttl ? parseDuration(opts.ttl) : DEFAULT_TTL_SECONDS
-	if (opts.ttl && ttlSeconds === null) {
-		fail(`invalid ttl: "${opts.ttl}" (expected format: 15m, 2h, 1d, or seconds)`)
-	}
-	const sid = opts.sid
-	if (!sid) {
-		fail(`missing sid: pass sid=<session_id> (Claude must read it from the current hook payload)`)
-	}
-	if (positional.length === 0) {
-		fail(`no pattern provided — usage: /floating-perms batch <pattern1> [pattern2 ...] [ttl=15m] sid=<id>`)
-	}
-
-	const proposed = positional.map(p => ({ raw: p, pattern: normalizePattern(p) }))
+// Core grant routine, shared between `batch` (raw patterns from CLI args)
+// and `allow` (patterns pre-registered by the hook via the pending token).
+// Everything after argument parsing / pending consumption goes through here
+// so the two entry points share exactly one code path for the effective
+// grant, blocklist, and audit.
+function _applyBatch({ patternsRaw, sid, ttlSeconds }) {
+	const proposed = patternsRaw.map(p => ({ raw: p, pattern: normalizePattern(p) }))
 	const invalid = proposed.filter(p => !p.pattern)
 	const blocked = proposed.filter(p => p.pattern && isBlocked(p.pattern))
 	const ok      = proposed.filter(p => p.pattern && !isBlocked(p.pattern))
@@ -136,9 +132,6 @@ function batch({ positional, opts }) {
 
 	const granted   = []
 	const skipped   = []
-	// For file-tool patterns, the effective grant may require adding the
-	// bucketed dir to additionalDirectories on top of the allow entry.
-	// grantedDirs tracks the dirs we injected this call (for the report).
 	const grantedDirs = []
 	const now = Date.now()
 	const expiresAt = now + ttlSeconds * 1000
@@ -206,6 +199,112 @@ function batch({ positional, opts }) {
 	}
 
 	report({ granted, skipped, blocked, invalid, ttlSeconds, expiresAt, sid, grantedDirs })
+}
+
+function batch({ positional, opts }) {
+	const ttlSeconds = opts.ttl ? parseDuration(opts.ttl) : DEFAULT_TTL_SECONDS
+	if (opts.ttl && ttlSeconds === null) {
+		fail(`invalid ttl: "${opts.ttl}" (expected format: 15m, 2h, 1d, or seconds)`)
+	}
+	const sid = opts.sid
+	if (!sid) {
+		fail(`missing sid: pass sid=<session_id> (Claude must read it from the current hook payload)`)
+	}
+	if (positional.length === 0) {
+		fail(`no pattern provided — usage: /floating-perms batch <pattern1> [pattern2 ...] [ttl=15m] sid=<id>`)
+	}
+
+	_applyBatch({ patternsRaw: positional, sid, ttlSeconds })
+}
+
+// `allow id=<id> session=<sid> [ttl=<duration>]`
+//
+// Consume a single-use pending grant reserved by the hook at deny time.
+// The token binds patterns to a sid: even a widened / hand-crafted apply.js
+// invocation cannot grant a scope the hook didn't pre-register, so writing
+// `Bash(node .../apply.js:*)` to the local settings mirror is safe — the
+// real gate is the pending map, not the allow-list.
+//
+// Refusal cases (each writes an audit line and exits non-zero):
+//   - id/session param missing
+//   - id absent from pending_grants (unknown, expired-cleaned, or consumed)
+//   - session mismatch (id belongs to a different sid)
+//   - id expired (created_at + PENDING_TTL_MS < now)
+//
+// Concurrent double-consume is prevented by doing the lookup + delete in
+// one withState mutation under the state lock.
+function allow({ opts }) {
+	const id = opts.id
+	const sid = opts.session
+	if (!id) {
+		fail(`missing id: pass id=<token-from-hook-deny> session=<sid>`)
+	}
+	if (!sid) {
+		fail(`missing session: pass id=<token> session=<sid-from-hook-deny>`)
+	}
+	const ttlSeconds = opts.ttl ? parseDuration(opts.ttl) : DEFAULT_TTL_SECONDS
+	if (opts.ttl && ttlSeconds === null) {
+		fail(`invalid ttl: "${opts.ttl}" (expected format: 15m, 2h, 1d, or seconds)`)
+	}
+
+	// Sweep expired pending tokens before we look ours up. If a fresh
+	// spike happened but the user never consumed the id inside 5min,
+	// this drops it — the subsequent lookup will fail with a clean
+	// "unknown id" message instead of returning a stale entry.
+	revokeExpiredPending()
+
+	let consumed = null
+	let refusal = null
+	const now = Date.now()
+
+	withState((state) => {
+		const entry = state.pending_grants && state.pending_grants[id]
+		if (!entry) {
+			refusal = 'unknown_or_consumed'
+			return undefined
+		}
+		if (entry.sid !== sid) {
+			refusal = 'session_mismatch'
+			return undefined
+		}
+		if (now - entry.created_at > PENDING_TTL_MS) {
+			// Race: expired between the sweep above and this lookup, or
+			// the sweep didn't run (lock contention fallback). Drop and
+			// refuse for consistency.
+			delete state.pending_grants[id]
+			refusal = 'expired'
+			return { state }
+		}
+		consumed = {
+			sid: entry.sid,
+			patterns: (entry.patterns || []).slice(),
+			created_at: entry.created_at
+		}
+		delete state.pending_grants[id]
+		return { state }
+	})
+
+	if (refusal) {
+		audit('allow_refused', { id, session: sid, reason: refusal })
+		if (refusal === 'unknown_or_consumed') {
+			fail(`unknown or already-consumed id: ${id}. Grant tokens are single-use — get a fresh one from the next hook deny, or fall back to \`apply.js batch <patterns> sid=${sid}\` if you need to grant patterns the hook hasn't pre-registered.`)
+		}
+		if (refusal === 'session_mismatch') {
+			fail(`id ${id} belongs to a different session. Refuse to cross-consume tokens.`)
+		}
+		if (refusal === 'expired') {
+			fail(`id ${id} expired (max age ${Math.round(PENDING_TTL_MS / 1000)}s). Re-trigger a spike to get a fresh token.`)
+		}
+	}
+
+	audit('allow_consumed', {
+		id, sid,
+		patterns: consumed.patterns,
+		age_ms: now - consumed.created_at,
+		ttl_seconds: ttlSeconds
+	})
+
+	_applyBatch({ patternsRaw: consumed.patterns, sid, ttlSeconds })
 }
 
 function list({ opts }) {
@@ -379,12 +478,15 @@ function fail(msg) { process.stderr.write(`floating-perms: ${msg}\n`); process.e
 function main() {
 	const sub = process.argv[2]
 	const parsed = parseArgs(process.argv.slice(3))
-	if (sub === 'batch')          batch(parsed)
+	if (sub === 'allow')          allow(parsed)
+	else if (sub === 'batch')     batch(parsed)
 	else if (sub === 'list')      list(parsed)
 	else if (sub === 'revoke')    revoke(parsed)
 	else if (sub === 'gc')        gc(parsed)
 	else if (sub === 'reconcile') reconcile(parsed)
-	else fail(`unknown subcommand: "${sub}" (expected: batch | list | revoke | gc | reconcile)`)
+	else fail(`unknown subcommand: "${sub}" (expected: allow | batch | list | revoke | gc | reconcile)`)
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = { allow, batch, list, revoke, gc, reconcile }

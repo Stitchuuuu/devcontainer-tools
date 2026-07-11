@@ -25,6 +25,18 @@ test('emptyState returns the expected schema', () => {
 	assert.deepEqual(s.grants, [])
 	assert.deepEqual(s.counters, {})
 	assert.deepEqual(s.warned, {})
+	assert.deepEqual(s.pending_grants, {})
+})
+
+test('readStateRaw hydrates pending_grants on legacy state (missing key)', () => {
+	// Legacy pre-single-use-token state file has no pending_grants field.
+	// readStateRaw must add an empty object so callers don't hit undefined.
+	fs.writeFileSync(state.STATE_PATH, JSON.stringify({
+		version: 1, grants: [], counters: {}, warned: {}
+	}))
+	let seen = null
+	state.withState((s) => { seen = s.pending_grants; return undefined })
+	assert.deepEqual(seen, {})
 })
 
 test('withState writes back when mutator returns { state }', () => {

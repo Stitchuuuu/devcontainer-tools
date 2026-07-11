@@ -16,9 +16,13 @@
 //                     and /floating-perms reconcile.
 
 const fs = require('fs')
+const crypto = require('crypto')
 const { canonicalize } = require('./lib/pattern')
 const { withState, readAllow, audit, findFloatingSection } = require('./lib/state')
-const { revokeForSession, revokeExpired } = require('./cleanup')
+const {
+	revokeForSession, revokeExpired,
+	revokeExpiredPending, PENDING_TTL_MS
+} = require('./cleanup')
 
 const BASELINE_PATH = '/workspace/.devcontainer/claude/settings.local.json'
 
@@ -80,7 +84,7 @@ function uniquePatterns(entries) {
 	return out
 }
 
-function denyReason(recentEntries, sid) {
+function denyReason(recentEntries, sid, pendingId) {
 	const patterns = uniquePatterns(recentEntries)
 	const list = patterns.map(p => `  - \`${p}\``).join('\n')
 	return [
@@ -89,15 +93,18 @@ function denyReason(recentEntries, sid) {
 		`Patterns seen in the recent window:`,
 		list,
 		``,
+		`A single-use grant token has been reserved for this spike:`,
+		`  id=${pendingId}   session=${sid}   patterns=${patterns.length}   valid_for=${Math.round(PENDING_TTL_MS / 1000)}s`,
+		``,
 		`Mandatory workflow before any further tool call:`,
-		`1. ANALYZE — re-read the current task, enumerate EVERY Bash command and file path you expect to need to finish it (the patterns above PLUS everything you anticipate for the rest of the task).`,
-		`2. ASK — call the \`AskUserQuestion\` tool with a SPECIFIC question that lists the exact patterns you want granted. Example option labels: "Allow all of <pat1>, <pat2>, <pat3> (default TTL 30m)", "Allow all, longer TTL (e.g. ttl=2h)", "Subset (specify which)", "Refuse — I'll change approach". Never call apply.js without this explicit confirmation step.`,
-		`3. EXECUTE — based on the user's answer, run: \`node /workspace/.devcontainer/skills/floating-perms/apply.js batch <pat1> <pat2> ... sid=${sid} [ttl=<duration>]\` (default TTL 30m; script handles blocklist, idempotence, audit, auto-cleanup).`,
+		`1. ANALYZE — re-read the current task, then check that the patterns listed above cover what's left. If some anticipated tool call is missing, mention it in the ASK step so the user can decide whether to re-trigger with a wider batch.`,
+		`2. ASK — call the \`AskUserQuestion\` tool with a SPECIFIC question that lists the exact patterns above (verbatim). Example option labels: "Authorize all (default TTL 30m) — Recommended", "Authorize all, longer TTL (e.g. ttl=2h)", "Refuse — I'll change approach". Never consume the grant token without this explicit confirmation.`,
+		`3. EXECUTE — based on the user's answer, invoke the skill via the \`Skill\` tool: \`Skill(skill="floating-perms", args="allow id=${pendingId} session=${sid} [ttl=<duration>]")\`. Going through the skill scopes the apply.js Bash call to the floating-perms context (allowed-tools) — no separate permission prompt for the node invocation, and the single-use token still gates the actual grant on the apply.js side. Default TTL 30m; script handles blocklist, audit, cleanup.`,
 		`4. RETRY — once the grant lands, re-run the tool call that was just denied.`,
 		``,
 		`Do NOT try an alternative tool (wget instead of curl, etc.) before the ASK step — plan first.`,
-		`Do NOT call apply.js silently — every grant goes through an explicit AskUserQuestion confirmation.`,
-		`Pattern shapes: \`Bash(curl:*)\`, \`Edit(/some/dir/**)\`, \`Read(/tmp/scratch/**)\`, etc.`
+		`Do NOT consume the token silently — every grant goes through an explicit AskUserQuestion confirmation.`,
+		`Do NOT hand-craft an id — only ids emitted by this hook are valid. If the reserved scope is insufficient, use the manual fallback \`Skill(skill="floating-perms", args="batch <patterns...> sid=${sid}")\` (ASK step still mandatory).`
 	].join('\n')
 }
 
@@ -142,6 +149,7 @@ function handlePermissionRequest(payload) {
 
 function handlePreToolUse(payload) {
 	revokeExpired()
+	revokeExpiredPending()
 
 	const sid = payload.session_id
 	if (!sid) return null
@@ -165,14 +173,31 @@ function handlePreToolUse(payload) {
 		state.counters[sid] = []
 
 		const patterns = uniquePatterns(recent)
+
+		// Single-use grant token: reserve a nano-UUID that only apply.js
+		// `allow` will accept. Ties the eventual grant to the exact patterns
+		// the hook observed — Claude can't widen the scope by hand-crafting
+		// a batch call, because `allow` refuses anything not pre-registered.
+		// Single-pending-per-sid policy: any prior pending for this sid is
+		// dropped, so a fresh spike always overrides a stale token.
+		for (const [k, v] of Object.entries(state.pending_grants)) {
+			if (v && v.sid === sid) delete state.pending_grants[k]
+		}
+		const pendingId = crypto.randomUUID().slice(0, 8)
+		state.pending_grants[pendingId] = {
+			sid, patterns, created_at: now
+		}
+
 		denyOutput = {
 			hookSpecificOutput: {
 				hookEventName: 'PreToolUse',
 				permissionDecision: 'deny',
-				permissionDecisionReason: denyReason(recent, sid)
+				permissionDecisionReason: denyReason(recent, sid, pendingId)
 			}
 		}
-		audit('spike_detected', { sid, count: recent.length, patterns })
+		audit('spike_detected', {
+			sid, count: recent.length, patterns, pending_id: pendingId
+		})
 		return { state }
 	})
 
@@ -186,6 +211,9 @@ function handleSessionEnd(payload) {
 	withState((state) => {
 		if (state.counters[sid]) delete state.counters[sid]
 		if (state.warned[sid])   delete state.warned[sid]
+		for (const [k, v] of Object.entries(state.pending_grants || {})) {
+			if (v && v.sid === sid) delete state.pending_grants[k]
+		}
 		return { state }
 	})
 	return null
@@ -292,7 +320,8 @@ module.exports = {
 	handlePermissionRequest, handlePreToolUse,
 	handleSessionEnd, handleSessionStart,
 	pruneWindow, uniquePatterns, denyReason,
-	WINDOW_MS, SPIKE_THRESHOLD, RACE_WINDOW_MS
+	WINDOW_MS, SPIKE_THRESHOLD, RACE_WINDOW_MS,
+	PENDING_TTL_MS
 }
 
 if (require.main === module) main()

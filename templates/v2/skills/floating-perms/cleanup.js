@@ -11,6 +11,13 @@
 
 const { withState, readAllow, writeAllow, audit } = require('./lib/state')
 
+// Pending-grant TTL. A pending grant is the reservation the hook writes at
+// deny time so apply.js `allow id=... session=...` has something to consume.
+// 5 minutes keeps the attack window on a leaked id small — if the user
+// hasn't authorized within that budget, a new spike regenerates a fresh
+// token anyway.
+const PENDING_TTL_MS = 5 * 60 * 1000
+
 function patternsStillReferenced(remainingGrants, pattern) {
 	return remainingGrants.some(g => g.pattern === pattern)
 }
@@ -93,4 +100,31 @@ function revokeOrphans(currentSid) {
 	) || []
 }
 
-module.exports = { revokeForSession, revokeExpired, revokeManual, revokeOrphans }
+// Drop pending grants whose created_at is older than PENDING_TTL_MS. Called
+// opportunistically from PreToolUse and apply.js so the pending map never
+// accumulates dead reservations. Returns the array of {id, sid} removed.
+function revokeExpiredPending(now) {
+	const t = now || Date.now()
+	const cutoff = t - PENDING_TTL_MS
+	const removed = []
+	withState((state) => {
+		if (!state.pending_grants) return undefined
+		for (const [id, entry] of Object.entries(state.pending_grants)) {
+			if (!entry || typeof entry.created_at !== 'number' || entry.created_at < cutoff) {
+				removed.push({ id, sid: entry && entry.sid })
+				delete state.pending_grants[id]
+			}
+		}
+		if (removed.length === 0) return undefined
+		return { state, result: removed }
+	})
+	if (removed.length > 0) {
+		audit('pending_expired', { count: removed.length, ids: removed })
+	}
+	return removed
+}
+
+module.exports = {
+	revokeForSession, revokeExpired, revokeManual, revokeOrphans,
+	revokeExpiredPending, PENDING_TTL_MS
+}
