@@ -1,0 +1,64 @@
+diff --git a/.devcontainer/zshrc-base b/.devcontainer/zshrc-base
+index 91b66a4..689c1ae 100644
+--- a/.devcontainer/zshrc-base
++++ b/.devcontainer/zshrc-base
+@@ -45,3 +45,27 @@ if [ -f "$__zshrc_base_wtf_completion" ]; then
+   source "$__zshrc_base_wtf_completion"
+ fi
+ unset __zshrc_base_wtf_completion
++
++# scan-deps — one-shot deterministic allowlist refresh (npm + composer).
++# Thin wrapper over .devcontainer/skills/scan-deps/extract-auto-dependencies.
++# Positional ecosystem shortcut: `scan-deps npm` -> `--ecosystem npm`.
++# Layer 2 (AI review) stays gated behind /scan-deps in Claude.
++# Usage:
++#   scan-deps                    # all ecosystems (default)
++#   scan-deps npm                # limit to npm
++#   scan-deps composer --offline # skip online HEAD (renamed-repo redirects)
++#   scan-deps --dry-run          # preview only
++scan-deps() {
++  local first="${1:-}"
++  case "$first" in
++    npm|composer|all|python|cargo|go)
++      shift
++      bash /workspace/.devcontainer/skills/scan-deps/extract-auto-dependencies \
++        --ecosystem "$first" "$@"
++      ;;
++    *)
++      bash /workspace/.devcontainer/skills/scan-deps/extract-auto-dependencies \
++        --ecosystem all "$@"
++      ;;
++  esac
++}
+diff --git a/templates/v2/zshrc-base b/templates/v2/zshrc-base
+index 91b66a4..689c1ae 100644
+--- a/templates/v2/zshrc-base
++++ b/templates/v2/zshrc-base
+@@ -45,3 +45,27 @@ if [ -f "$__zshrc_base_wtf_completion" ]; then
+   source "$__zshrc_base_wtf_completion"
+ fi
+ unset __zshrc_base_wtf_completion
++
++# scan-deps — one-shot deterministic allowlist refresh (npm + composer).
++# Thin wrapper over .devcontainer/skills/scan-deps/extract-auto-dependencies.
++# Positional ecosystem shortcut: `scan-deps npm` -> `--ecosystem npm`.
++# Layer 2 (AI review) stays gated behind /scan-deps in Claude.
++# Usage:
++#   scan-deps                    # all ecosystems (default)
++#   scan-deps npm                # limit to npm
++#   scan-deps composer --offline # skip online HEAD (renamed-repo redirects)
++#   scan-deps --dry-run          # preview only
++scan-deps() {
++  local first="${1:-}"
++  case "$first" in
++    npm|composer|all|python|cargo|go)
++      shift
++      bash /workspace/.devcontainer/skills/scan-deps/extract-auto-dependencies \
++        --ecosystem "$first" "$@"
++      ;;
++    *)
++      bash /workspace/.devcontainer/skills/scan-deps/extract-auto-dependencies \
++        --ecosystem all "$@"
++      ;;
++  esac
++}
