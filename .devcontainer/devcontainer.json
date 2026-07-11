@@ -39,7 +39,9 @@
           }
         },
         "window.title": "Devcontainer Tools [${localWorkspaceFolderBasename}] - Claude Code Sandbox - ${activeEditorShort}",
-        "claudeCode.preferredLocation": "primary"
+        "claudeCode.preferredLocation": "primary",
+        "claudeCode.disableLoginPrompt": false,
+        "claudeCode.disableWebviewAuthRedirect": true
       }
     }
   },

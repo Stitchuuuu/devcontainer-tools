@@ -40,7 +40,8 @@
         },
         "window.title": "{{PROJECT_DISPLAY_NAME}} [${localWorkspaceFolderBasename}] - Claude Code Sandbox - ${activeEditorShort}",
         "claudeCode.preferredLocation": "primary",
-        "claudeCode.disableLoginPrompt": true
+        "claudeCode.disableLoginPrompt": true,
+        "claudeCode.disableWebviewAuthRedirect": true
       }
     }
   },

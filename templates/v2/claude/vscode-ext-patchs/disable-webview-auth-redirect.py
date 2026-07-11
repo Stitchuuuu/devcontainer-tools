@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""
+Adds the `claudeCode.disableWebviewAuthRedirect` setting to the Claude Code
+VS Code extension. When true, the chat webview no longer redirects to the
+login screen on `authentication_failed` errors — the error surfaces inline
+via the existing `#claude-error` sentinel and the panel stays on the chat
+view.
+
+Why
+---
+The existing `claudeCode.disableLoginPrompt` setting only gates the
+extension-side login modal. It is never plumbed to the webview. On a 401,
+the webview receives an assistant message tagged `error:"authentication_failed"`
+and unconditionally calls `this.context.showLogin()` — which flips
+`forceLogin.value=true` and re-renders the chat panel as the login screen.
+
+Users authenticating externally (devcontainer bearer token, host-side
+OAuth flow, ...) want the hijack gone while keeping user-initiated login
+paths intact.
+
+Strategy
+--------
+Three coordinated edits :
+
+  1. `package.json` — declare the new boolean setting so it shows up in
+     the VS Code Settings UI (default `false`, unchanged behavior).
+
+  2. `extension.js` — inject a `window.__CC_disableWebviewAuthRedirect__`
+     global into the pre-bundle `<script nonce="${…}">` block of the
+     webview HTML. Materialised at panel creation, synchronous — no race
+     with a boot-time 401. Mirrors the existing `window.IS_SIDEBAR`
+     exposure pattern. The config-getter helper is renamed by the
+     minifier between versions (`E1` on v2.1.145 / `Pn` on v2.1.202) —
+     resolved at patch time from the existing `<helper>("disableLoginPrompt")`
+     call.
+
+  3. `webview/index.js` — rewrite the single buggy call site :
+
+        if(<var>.error==="authentication_failed")<var>.context.showLogin();
+
+     into :
+
+        if(<var>.error==="authentication_failed"&&!window.__CC_disableWebviewAuthRedirect__)<var>.context.showLogin();
+
+     The other 3 `showLogin()` sites (user-initiated : sidebar login
+     button, 2 command-palette « Log in with a different account »
+     entries) stay untouched — clicking login is supposed to open login.
+
+Anchors
+-------
+- `authentication_failed` — public webview protocol identifier, unlikely
+  to change (single match in the webview bundle, in `processMessage`).
+- `IS_SIDEBAR = ${…}` — inside `getHtmlForWebview` in ext.js. The
+  minifier renames the surrounding variable (`N`, `i`, …) but the
+  string literal stays.
+- `<helper>("disableLoginPrompt")` — helper name floats, string
+  argument is stable.
+
+Markers
+-------
+- `claude-code-disable-webview-auth-redirect-inject-v1` — extension-side
+  global injection.
+- `claude-code-disable-webview-auth-redirect-gate-v1` — webview call-site
+  gate.
+- `"claudeCode.disableWebviewAuthRedirect"` — string presence guard in
+  `package.json` (no comment marker possible in JSON).
+
+Idempotence : each patch function checks for its marker before applying.
+Re-run on an already-patched extension is a no-op.
+
+Exit codes
+----------
+- 0 : all steps applied or already patched
+- 1 : any regex miss / file missing / JSON shape broken (red banner via
+      _common.banner + IMPACT_LINES). run-all.sh absorbs the 1 so the
+      container build stays green ; the diagnostic surfaces in the
+      per-script exit code visible in build logs.
+
+Usage
+-----
+    disable-webview-auth-redirect.py [EXT_DIR]
+
+If EXT_DIR is omitted, auto-discovers the latest
+~/.vscode-server/extensions/anthropic.claude-code-*-{arch} directory.
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_files
+
+
+SETTING_KEY = "claudeCode.disableWebviewAuthRedirect"
+MARKER_INJECT = "claude-code-disable-webview-auth-redirect-inject-v1"
+MARKER_GATE = "claude-code-disable-webview-auth-redirect-gate-v1"
+
+IMPACT_LINES = [
+    "→ The 'claudeCode.disableWebviewAuthRedirect' setting will be",
+    "  UNAVAILABLE (or partially applied). The Claude chat webview will",
+    "  continue to redirect to the login screen on authentication_failed",
+    "  errors even when external auth is in use.",
+    "Likely cause: CLAUDE_CODE_VERSION was bumped and the minified",
+    "  shape drifted. Re-anchor from these pretty locations :",
+    "  - pretty/extension.js — getHtmlForWebview, around the",
+    "    <script nonce=...> block that exposes window.IS_SIDEBAR",
+    "  - pretty/webview-index.js — processMessage, the",
+    "    `authentication_failed` branch (single call site)",
+    "  Then update regexes in",
+    "  .devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py.",
+]
+
+
+def patch_package_json(pkg_path):
+    p = json.loads(pkg_path.read_text())
+    try:
+        props = p["contributes"]["configuration"]["properties"]
+    except KeyError as e:
+        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH FAILED",
+               f"package.json: schema path missing ({e})",
+               IMPACT_LINES)
+        sys.exit(1)
+    if SETTING_KEY in props:
+        print(f"{YELLOW}[1/3]{RESET} package.json — {SETTING_KEY!r} already declared")
+        return
+    props[SETTING_KEY] = {
+        "type": "boolean",
+        "default": False,
+        "description": (
+            "When true, the chat webview will NOT redirect to the login "
+            "screen on authentication_failed errors. Use when "
+            "authentication is handled externally."
+        ),
+    }
+    pkg_path.write_text(json.dumps(p, indent=2))
+    print(f"{GREEN}[1/3]{RESET} package.json — added {SETTING_KEY!r}")
+
+
+def patch_extension_bridge(content):
+    """Inject the `window.__CC_disableWebviewAuthRedirect__` global into
+    the webview HTML template literal, right after the existing
+    `window.IS_SIDEBAR = ${…}` line inside the `<script nonce>` block.
+    """
+    if MARKER_INJECT in content:
+        n = content.count(MARKER_INJECT)
+        print(f"{YELLOW}[2/3]{RESET} extension.js bridge — already patched ({n} site(s))")
+        return content
+
+    helper_match = re.search(r'([\w$]+)\("disableLoginPrompt"\)', content)
+    if not helper_match:
+        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH FAILED",
+               'extension.js: <helper>("disableLoginPrompt") call not found — '
+               "cannot resolve config-getter name",
+               IMPACT_LINES)
+        sys.exit(1)
+    helper = helper_match.group(1)
+
+    # Anchors on the raw template-literal source. Both min and pretty share
+    # the same template-literal bytes (js-beautify preserves them). The
+    # ternary variable (`N`, `i`, ...) floats — captured as `[^}]+`.
+    pat = re.compile(
+        r'(window\.IS_SIDEBAR\s*=\s*\$\{[^}]+\?"true":"false"\})'
+        r'(\s+window\.IS_FULL_EDITOR)'
+    )
+    m = pat.search(content)
+    if not m:
+        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH FAILED",
+               "extension.js: IS_SIDEBAR anchor in getHtmlForWebview not found",
+               IMPACT_LINES)
+        sys.exit(1)
+
+    inject = (
+        f'\n          /*{MARKER_INJECT}*/'
+        f'window.__CC_disableWebviewAuthRedirect__='
+        f'{helper}("disableWebviewAuthRedirect")===!0;'
+    )
+    new_content = content[:m.end(1)] + inject + content[m.end(1):]
+    print(f"{GREEN}[2/3]{RESET} extension.js bridge — injected global (helper={helper})")
+    return new_content
+
+
+def patch_webview_gate(content):
+    """Gate the single buggy `showLogin()` call site on the new global."""
+    if MARKER_GATE in content:
+        n = content.count(MARKER_GATE)
+        print(f"{YELLOW}[3/3]{RESET} webview/index.js gate — already patched ({n} site(s))")
+        return content
+
+    pat = re.compile(
+        r'if\(([\w$]+)\.error==="authentication_failed"\)'
+        r'([\w$]+)\.context\.showLogin\(\);'
+    )
+    matches = list(pat.finditer(content))
+    if len(matches) == 0:
+        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH FAILED",
+               "webview/index.js: authentication_failed → showLogin call site not found",
+               IMPACT_LINES)
+        sys.exit(1)
+    if len(matches) > 1:
+        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH AMBIGUOUS",
+               f"webview/index.js: authentication_failed call site matched {len(matches)} times (expected 1)",
+               IMPACT_LINES)
+        sys.exit(1)
+
+    m = matches[0]
+    e_var, ctx_var = m.group(1), m.group(2)
+    replacement = (
+        f'/*{MARKER_GATE}*/'
+        f'if({e_var}.error==="authentication_failed"'
+        f'&&!window.__CC_disableWebviewAuthRedirect__)'
+        f'{ctx_var}.context.showLogin();'
+    )
+    new_content = content[:m.start()] + replacement + content[m.end():]
+    print(f"{GREEN}[3/3]{RESET} webview/index.js gate — applied (e={e_var}, ctx={ctx_var})")
+    return new_content
+
+
+def main():
+    ext_dir = resolve_ext_dir(sys.argv)
+    check_files(ext_dir, ["package.json", "extension.js", "webview/index.js"])
+    pkg = ext_dir / "package.json"
+    ext = ext_dir / "extension.js"
+    wv = ext_dir / "webview" / "index.js"
+
+    print(f"Patching Claude Code extension at: {ext_dir}")
+
+    patch_package_json(pkg)
+
+    ext_content = ext.read_text()
+    ext_new = patch_extension_bridge(ext_content)
+    if ext_new != ext_content:
+        ext.write_text(ext_new)
+
+    wv_content = wv.read_text()
+    wv_new = patch_webview_gate(wv_content)
+    if wv_new != wv_content:
+        wv.write_text(wv_new)
+
+    print(f"{GREEN}{BOLD}✓ disable-webview-auth-redirect patch complete{RESET}")
+
+
+if __name__ == "__main__":
+    main()
