@@ -1,15 +1,18 @@
 ---
-description: Spawn a scoped research devcontainer with an expanded firewall allowlist. Use when the user asks for web research, up-to-date docs, library/package evaluation, third-party API integration, or any query needing sources outside the strict Niveau 1 baseline (17 hosts). The main firewall blocks most outbound — don't WebFetch/WebSearch silently and fail; propose this skill or a targeted firewall/domains.local.txt addition.
+description: Spawn a scoped research devcontainer with an expanded firewall allowlist. Use ONLY in `strict` firewall mode AND for genuine deep-scope work (third-party POST/DELETE, multi-host package evaluation, isolated experimentation). For lighter needs — reading docs on allowlisted hosts, or adding 1–2 read-only domains — prefer a `firewall/domains.local.txt` patch. In `basic` mode the L7 layer is off, allowlisted hosts accept all paths, so try the call before proposing anything.
 argument-hint: "<description> | <template> <description>"
 ---
 
 # /prepare-research — generate a self-contained research bundle
 
-The main devcontainer runs the Level 1 strict firewall : 17 hosts allowlisted
-(Claude-only baseline), all third-party POST blocked. The **only** sanctioned
-way to extend the network scope (new API integration, doc research, package
-evaluation) is to spawn a **research devcontainer** in a sibling folder with
-its own scoped firewall. No temporary grants in the main.
+The main devcontainer runs the Level 1 firewall — 17 hosts allowlisted
+(Claude-only baseline). Two enforcement modes matter here : `strict` (L7
+mitmproxy + DNS) restricts both hosts AND paths ; `basic` (DNS + ipset only)
+restricts hosts but lets every path through on allowlisted hosts. This skill
+spawns a **research devcontainer** with its own scoped firewall — a
+sanctioned path for genuine scope extension. Reserve it for `strict` mode
+AND for deep-scope work ; for lighter needs see «Cheaper alternatives»
+below.
 
 This skill produces a self-contained **research bundle** under
 `/workspace/.devcontainer/research-bundles/<bundle-id>/`. The bundle is
@@ -18,32 +21,51 @@ a ready-to-open VS Code project that spawns the research container with the
 expanded allowlist. (`<bundle-id>` = `<main-{{PROJECT_ID}}>-research-<task-slug>` —
 see §"Bundle identity" below.)
 
-## When to use
+## Decision tree — three routes, weigh before proposing
 
-- The user asks for **web research, up-to-date docs, or sources** that go
-  beyond the 17-host Niveau 1 baseline (e.g. "recherche-moi X", "explore
-  Workflows", "read the latest about Y"). The main `WebFetch`/`WebSearch`
-  will silently fail on non-allowlisted hosts in both `strict` and `basic`
-  modes — don't try and fail, propose this skill instead.
-- The user wants to **read a third-party library / API** whose domain is not
-  in `firewall/domains.txt`.
-- The user says : "prépare une recherche", "intègre Stripe", "explore l'API
-  Linear", "évalue le package X", or anything that requires POST / GET on a
-  domain outside the baseline.
-- The user wants a clean, isolated workspace to experiment with a third-party
-  API or library without touching the main project state.
+`/prepare-research` is the heaviest route. Try cheaper ones first. Claude
+picks the route that fits the request ; don't default to the bundle.
 
-**Pivot vs targeted allowlist** : if the user only needs 1–2 read-only
-domains for a single-session lookup, propose adding them to
-`firewall/domains.local.txt` (+ `policy.local.d/<host>.yaml` if POST) and
-Rebuild Container. Reserve `/prepare-research` for multi-host, multi-session,
-or any POST to a third-party — it's the sanctioned, audited path and avoids
-polluting the main `domains.local.txt`. When in doubt, default to
-`/prepare-research`.
+**Step 0 — check the mode.** `cat .devcontainer/.configured-firewall-mode`
+(empty file ⇒ `default-mode`). Mode gates everything below.
 
-If the user only needs to read more docs from already-allowlisted hosts, do
-NOT spawn a research bundle — answer directly. The bundle exists for genuine
-scope extension.
+| Situation | Route |
+|---|---|
+| Mode = `basic`, ANY need | **Route 2 (temp) or Route 3 (permanent)**. `/prepare-research` is off the table — basic already grants full path access on allowlisted hosts, so the scoped bundle brings nothing. Default to Route 2 for one-off, Route 3 if you already know it's long-term. |
+| Mode = `strict`, host already allowlisted, only path/method needs widening | **Route 2 or 3** via `policy.local.d/<host>.yaml` (+ `domains.local.txt` line if the host root isn't listed yet). |
+| Mode = `strict`, genuine deep-scope work (third-party POST/DELETE integration, multi-host package evaluation across many sub-domains, or clean isolated workspace to experiment without touching main state) | **Route 1** — `/prepare-research`. |
+| Docs on already-allowlisted hosts, no path issue | Nothing to do — answer directly. In `basic`, allowlisted host = all paths reachable. |
+
+### Route 1 — `/prepare-research` (heavy, `strict` only)
+
+Signals : "intègre Stripe en profondeur", "évalue le package X", "prépare-moi
+un bundle de recherche", multi-host + POST + isolated workspace all combined.
+**Never in `basic`** (no added value) and **not for simple lookups** (Route 2
+is cheaper).
+
+### Route 2 — temporary `domains.local.txt` modification
+
+Signals : one-off lookup, ad-hoc need, unsure if the host will be needed
+again, "recherche-moi X", "read the latest about Y".
+Add to `firewall/domains.local.txt` (+ `policy.local.d/<host>.yaml` if
+`strict` needs POST or path scoping) then Rebuild Container. Gitignored,
+revert-friendly.
+
+### Route 3 — permanent modification
+
+Signals : the host will be needed regularly, or the need is shared with the
+team.
+- **Personal permanent** → same `firewall/domains.local.txt` addition, kept
+  in place (gitignored so it stays local across rebuilds).
+- **Team permanent** → add to committed `firewall/domains.txt` (+
+  `policy.d/<host>.yaml` if `strict` POST / path scoping) so every dev on
+  the project inherits it. Standard commit + review flow.
+
+### Default when unsure
+
+**Route 2** (temporary `domains.local.txt`) — cheapest, safest, easiest to
+revert. Escalate to Route 1 only when the deep-scope signals above stack
+up ; escalate to Route 3 only when persistence is clearly warranted.
 
 ## Bundle identity — `bundle_id`
 
