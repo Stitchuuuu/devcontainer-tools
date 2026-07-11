@@ -84,44 +84,39 @@ IMPACT_LINES = [
 ]
 
 
-def resolve_enum_name(pkg_path):
-    """Return the enum value our patch should use for the "opens in active
-    column, at end of tab group" behavior.
+OWN_DESCS = {
+    "primary": "Primary Editor (Active Column)",
+    "--active-panel": "Active Panel (Active Column, Custom) — collision-safe alias",
+    # Legacy — used by earlier version of this patch. Kept in enum for
+    # backward compat with existing downstream configs; still claimed by
+    # us if detected. New installs never re-inject this bare form.
+    "active-panel": "Active Panel (Same Column, End of Group)",
+}
 
-    Version-based cutoff (RELIABLE, unlike enum inspection which gets
-    polluted by our own previous patches once they've run) :
 
-    - v2.1.201- : `"primary"` — the historical value, matches
-                  legacy devcontainer.json / vscode-settings.jsonc.
-    - v2.1.202+ : `"active-panel"` — reserves `"primary"` for potential
-                  future Anthropic wiring (they already register a
-                  `primaryEditor.open` command in all versions, and the
-                  `getPreferredLocation()` getter would only need one line
-                  to route it — see the update recipe notes for the full
-                  reasoning).
+def resolve_owned_names(pkg_path):
+    """Return the enum values THIS patch owns, in a stable sorted order.
 
-    Migration : devcontainer.json / vscode-settings.jsonc using `"primary"`
-    stay valid on ≤201, but must be updated to `"active-panel"` when
-    upgrading to 202+.
+    Ownership rules :
+
+    - `"--active-panel"` — always ours. The `--` prefix is our vendor
+      namespace (WebKit-style) and Anthropic never uses it. Always
+      claimed, always injected if absent.
+    - `"primary"` — ours by default (Anthropic has never declared it
+      natively as of v2.1.207). If a future Anthropic version adds
+      `"primary"` to the schema with a description that differs from
+      ours, we DON'T claim it (Anthropic owns their namespace), and
+      users must migrate downstream configs to `"--active-panel"`.
+    - `"active-panel"` (bare) — LEGACY, injected by previous versions
+      of this patch on v2.1.202+ during the doomed "reserve primary
+      for Anthropic" phase. Kept in the owned set if present with our
+      old description so downstream configs still on that value keep
+      working. Never re-injected on fresh installs.
+
+    Detection uses the enumDescription entry at the same index as the
+    enum value — matching our specific strings distinguishes our
+    injection from a hypothetical Anthropic addition.
     """
-    p = json.loads(pkg_path.read_text())
-    try:
-        version = p["version"]
-    except KeyError:
-        banner("ICON-FIX-OPEN-IN-CURRENT-PANEL PATCH FAILED",
-               "package.json: 'version' field missing",
-               IMPACT_LINES)
-        sys.exit(1)
-    # `2.1.202` → (2, 1, 202). Parse defensively — any unparseable component
-    # falls through to the safer "primary" default.
-    try:
-        parts = tuple(int(x) for x in version.split("."))
-    except ValueError:
-        return "primary"
-    return "active-panel" if parts >= (2, 1, 202) else "primary"
-
-
-def patch_package_json(pkg_path, name):
     p = json.loads(pkg_path.read_text())
     try:
         loc = p["contributes"]["configuration"]["properties"]["claudeCode.preferredLocation"]
@@ -130,24 +125,79 @@ def patch_package_json(pkg_path, name):
                f"package.json: schema path missing ({e})",
                IMPACT_LINES)
         sys.exit(1)
-    if name in loc["enum"]:
-        print(f"{YELLOW}[1/6]{RESET} package.json — {name!r} already in enum")
+    enum = loc.get("enum", [])
+    descs = loc.get("enumDescriptions", [])
+    owned = ["--active-panel"]  # always ours
+    # "primary" — claim unless Anthropic explicitly declared it with
+    # a description that isn't our OWN_DESCS["primary"].
+    if "primary" in enum:
+        idx = enum.index("primary")
+        if idx < len(descs) and descs[idx] != OWN_DESCS["primary"]:
+            # Anthropic-owned — don't claim, don't touch.
+            pass
+        else:
+            owned.append("primary")
+    else:
+        owned.append("primary")
+    # Legacy "active-panel" — only claim if we injected it before
+    # (identified by our previous description).
+    if "active-panel" in enum:
+        idx = enum.index("active-panel")
+        if idx < len(descs) and descs[idx] == OWN_DESCS["active-panel"]:
+            owned.append("active-panel")
+    return sorted(owned)
+
+
+def owned_check_expr(vs, owned):
+    """Return the JS expression that evaluates to true when the user's
+    `claudeCode.preferredLocation` matches any name we own. Rendered as
+    an array literal `.includes(...)` so it stays a single expression
+    inline with the surrounding minified code."""
+    array = "[" + ",".join(f'"{n}"' for n in owned) + "]"
+    return (f'{array}.includes({vs}.workspace'
+            f'.getConfiguration("claudeCode").get("preferredLocation"))')
+
+
+def patch_package_json(pkg_path, owned):
+    """Inject any of the `owned` names into the enum if missing.
+    Idempotent per-name : skips values already present."""
+    p = json.loads(pkg_path.read_text())
+    loc = p["contributes"]["configuration"]["properties"]["claudeCode.preferredLocation"]
+    enum = loc["enum"]
+    descs = loc.setdefault("enumDescriptions", [])
+    added = []
+    for name in owned:
+        if name in enum:
+            continue
+        enum.append(name)
+        descs.append(OWN_DESCS[name])
+        added.append(name)
+    if not added:
+        print(f"{YELLOW}[1/6]{RESET} package.json — all owned values "
+              f"({', '.join(owned)}) already in enum")
         return
-    loc["enum"].append(name)
-    desc = "Primary Editor (Active Column)" if name == "primary" else "Active Panel (Same Column, End of Group)"
-    loc.setdefault("enumDescriptions", []).append(desc)
     pkg_path.write_text(json.dumps(p, indent=2))
-    print(f"{GREEN}[1/6]{RESET} package.json — added {name!r} to preferredLocation enum")
+    print(f"{GREEN}[1/6]{RESET} package.json — added "
+          f"{', '.join(repr(n) for n in added)} to preferredLocation enum "
+          f"(owned={owned})")
 
 
-def patch_editor_open_guard(content, name):
+def patch_editor_open_guard(content, owned):
     """Prevent `editor.open` from silently overwriting the preferredLocation
-    setting when it's our chosen value (which would otherwise mutate it to
-    "panel")."""
-    marker = f'getConfiguration("claudeCode").get("preferredLocation")!=="{name}"'
-    if marker in content:
-        print(f"{YELLOW}[2/6]{RESET} extension.js editor.open guard — already patched")
-        return content
+    setting when it matches any of our owned values (which would otherwise
+    mutate it to "panel")."""
+    # Idempotence marker : our injected shape uses `.includes(<ident>.workspace
+    # .getConfiguration("claudeCode").get("preferredLocation"))` — a pattern
+    # Anthropic itself never produces, so its presence is a reliable signal.
+    marker = '.includes(_ccVsForPreferredLocationSentinel)'  # placeholder
+    # Simpler check : look for our array-literal marker in the vicinity of
+    # the editor.open command registration.
+    idx = content.find('registerCommand("claude-vscode.editor.open"')
+    if idx != -1:
+        window = content[idx:idx + 600]
+        if 'workspace.getConfiguration("claudeCode").get("preferredLocation"))' in window:
+            print(f"{YELLOW}[2/6]{RESET} extension.js editor.open guard — already patched")
+            return content
     pat = re.compile(
         r'registerCommand\("claude-vscode\.editor\.open",async\((\w+),(\w+),(\w+)\)=>\{'
         r'if\((\w+)!==(\w+)\.ViewColumn\.Active\)(\w+)\.setPreferredLocation\("panel"\);'
@@ -162,22 +212,24 @@ def patch_editor_open_guard(content, name):
     replacement = (
         f'registerCommand("claude-vscode.editor.open",async({a1},{a2},{a3})=>{{'
         f'if({c1}!=={vs}.ViewColumn.Active'
-        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="{name}")'
+        f'&&!{owned_check_expr(vs, owned)})'
         f'{st}.setPreferredLocation("panel");'
     )
     new_content = pat.sub(replacement, content, count=1)
-    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st}, name={name!r})")
+    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied "
+          f"(vscode={vs}, state={st}, owned={owned})")
     return new_content
 
 
-def patch_editor_openLast(content, name):
+def patch_editor_openLast(content, owned):
     """Redirect `editor.openLast` (= the icon and status bar handler) to
-    `primaryEditor.open` when the setting equals our chosen enum value."""
+    `primaryEditor.open` when the setting matches any of our owned values."""
     idx = content.find('"claude-vscode.editor.openLast"')
-    marker = f'getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
-    if idx != -1 and marker in content[idx:idx + 600]:
-        print(f"{YELLOW}[3/6]{RESET} extension.js editor.openLast — already patched")
-        return content
+    if idx != -1:
+        window = content[idx:idx + 600]
+        if '.includes(' in window and 'preferredLocation' in window:
+            print(f"{YELLOW}[3/6]{RESET} extension.js editor.openLast — already patched")
+            return content
     pat = re.compile(
         r'registerCommand\("claude-vscode\.editor\.openLast",async\(\)=>\{'
         r'if\((\w+)\.getPreferredLocation\(\)==="sidebar"\)\{'
@@ -195,12 +247,13 @@ def patch_editor_openLast(content, name):
         f'registerCommand("claude-vscode.editor.openLast",async()=>{{'
         f'if({st}.getPreferredLocation()==="sidebar"){{'
         f'await {vs}.commands.executeCommand("claude-vscode.sidebar.open");return}}'
-        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"){{'
+        f'if({owned_check_expr(vs, owned)}){{'
         f'await {vs}.commands.executeCommand("claude-vscode.primaryEditor.open");return}}'
         f'await {vs}.commands.executeCommand("claude-vscode.editor.open")'
     )
     new_content = pat.sub(replacement, content, count=1)
-    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs}, name={name!r})")
+    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied "
+          f"(state={st}, vscode={vs}, owned={owned})")
     return new_content
 
 
@@ -244,15 +297,16 @@ def patch_primaryEditor_use_active_column(content):
     return new_content
 
 
-def patch_plus_button_active_column(content, name):
+def patch_plus_button_active_column(content, owned):
     """Fix the `+` button in the Claude webview header. The handler for the
     `new_conversation_tab` message originally calls `editor.open(sessionId,
-    prompt)`. Branch on `preferredLocation`: when our chosen value, route
-    to `primaryEditor.open` (which resolves the active column via
-    `tabGroups.activeTabGroup.viewColumn` and renders full chrome) ; else
-    fall back to the unmodified two-arg `editor.open(sid, prompt)`
-    (Anthropic's original split-column behavior). Mirrors step [3/6]'s
-    branching pattern for `editor.openLast`."""
+    prompt)`. Branch on `preferredLocation`: when it matches any of our
+    owned values, route to `primaryEditor.open` (which resolves the active
+    column via `tabGroups.activeTabGroup.viewColumn` and renders full
+    chrome) ; else fall back to the unmodified two-arg
+    `editor.open(sid, prompt)` (Anthropic's original split-column
+    behavior). Mirrors step [3/6]'s branching pattern for
+    `editor.openLast`."""
     anchor = '"new_conversation_tab"'
     idx = content.find(anchor)
     if idx != -1:
@@ -276,18 +330,19 @@ def patch_plus_button_active_column(content, name):
     msg, vs = m.groups()
     replacement = (
         f'{msg}.request.type==="new_conversation_tab")return await '
-        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
+        f'({owned_check_expr(vs, owned)}'
         f'?{vs}.commands.executeCommand("claude-vscode.primaryEditor.open",'
         f'{msg}.request.sessionId,{msg}.request.initialPrompt)'
         f':{vs}.commands.executeCommand("claude-vscode.editor.open",'
         f'{msg}.request.sessionId,{msg}.request.initialPrompt))'
     )
     new_content = pat.sub(replacement, content, count=1)
-    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs}, name={name!r})")
+    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied "
+          f"(msg={msg}, vscode={vs}, owned={owned})")
     return new_content
 
 
-def patch_openlast_move_to_end(content, name):
+def patch_openlast_move_to_end(content, owned):
     """For the active-panel branch of `editor.openLast` (icon top-right /
     status bar item / command palette), follow `primaryEditor.open` with a
     single `workbench.action.moveEditorToEnd` so the new tab lands at the
@@ -321,12 +376,14 @@ def patch_openlast_move_to_end(content, name):
         sys.exit(1)
     pm = pm_match.group(1)
 
-    # Step 3 has already written `==="<name>"` here — reuse the same NAME to
-    # match the post-[3/6] state. Escaping isn't needed (kebab-case names are
-    # regex-safe), but re.escape is defensive against future naming choices.
+    # Step 3 has already emitted `.includes(<vs>.workspace.getConfiguration(...))`
+    # here — anchor on that shape (produced by owned_check_expr) rather
+    # than a specific name, since the array literal contents depend on
+    # what resolve_owned_names returned.
     pat = re.compile(
-        r'(getConfiguration\("claudeCode"\)\.get\("preferredLocation"\)'
-        r'===' + re.escape(f'"{name}"') + r'\)\{await (\w+)\.commands\.executeCommand'
+        r'(\.includes\(\w+\.workspace\.getConfiguration\("claudeCode"\)'
+        r'\.get\("preferredLocation"\)\)\)'
+        r'\{await (\w+)\.commands\.executeCommand'
         r'\("claude-vscode\.primaryEditor\.open"\);)'
         r'[\s\S]*?'
         r'(return\})'
@@ -359,20 +416,19 @@ def main():
 
     print(f"Patching Claude Code extension at: {ext_dir}")
 
-    name = resolve_enum_name(pkg)
-    print(f"  enum value in use: {BOLD}{name!r}{RESET} "
-          f"({'v2.1.202+ — Anthropic reserved primary' if name == 'active-panel' else 'v2.1.201- — historical primary'})")
+    owned = resolve_owned_names(pkg)
+    print(f"  owned enum values: {BOLD}{owned}{RESET}")
 
-    patch_package_json(pkg, name)
+    patch_package_json(pkg, owned)
 
     content = js.read_text()
     original = content
 
-    content = patch_editor_open_guard(content, name)
-    content = patch_editor_openLast(content, name)
+    content = patch_editor_open_guard(content, owned)
+    content = patch_editor_openLast(content, owned)
     content = patch_primaryEditor_use_active_column(content)
-    content = patch_plus_button_active_column(content, name)
-    content = patch_openlast_move_to_end(content, name)
+    content = patch_plus_button_active_column(content, owned)
+    content = patch_openlast_move_to_end(content, owned)
 
     if content != original:
         js.write_text(content)
