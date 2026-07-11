@@ -41,6 +41,13 @@ const { getHostKind } = require('../host')
 const CLAUDE_CODE_SENDER = 'claude-code'
 const CLAUDE_CODE_NAME   = 'Claude Code'
 const CLAUDE_CODE_ICON   = path.join(__dirname, '..', '..', 'vendor', 'senders', 'claude-code.icns')
+// LaunchServices display name of VS Code, used as the `<APP>` slug in the
+// `focus:open-a://<APP>/<launchUrl>` DSL target we pass as `--on-click`.
+// Kept as a module const rather than inlined because this consumer only
+// targets VS Code today ; future callers (Slack, Terminal.app, custom
+// electron apps) build their own DSL string with their own slug — the DSL
+// itself in notif-core stays generic (see `focus:open` in callback.rs).
+const VSCODE_APP_SLUG = 'Visual Studio Code'
 // First-boot register requires the user to click Allow on the OS permission
 // dialog — 90 s window. Anything faster (e.g. the previous 5 s) killed the
 // dialog before the user could see it, which macOS then treated as a
@@ -64,6 +71,13 @@ const DISPATCHED_TTL_MS = 10 * 60 * 1000
 // session-8 hook.js (no `notif_id`). Prevents daemon.log flooding when an
 // upgrade lands mid-session and older lines are still being replayed.
 let notifIdFallbackLogged = false
+
+// One-shot flag — logs at most one warning per boot when a queue line has
+// no `launchUrl` (session-1 producer contract : hook.js omits the field when
+// history is empty, e.g. fresh container before VS Code writes anything).
+// Body-click on such notifs is a no-op, and one line per boot is enough to
+// diagnose silent no-ops without flooding daemon.log.
+let launchUrlMissingLogged = false
 
 // -----------------------------------------------------------------------------
 // PUBLIC ENTRY POINT
@@ -295,6 +309,24 @@ function send(payload) {
 	]
 	if (rendered.subtitle) args.push('--subtitle', rendered.subtitle)
 	if (priority)          args.push('--priority', priority)
+
+	// Body-click routing : bind `focus:open-a://Visual Studio Code/<launchUrl>`
+	// so clicking the notif switches to (and cross-Space focuses) the emitting
+	// devcontainer window. See notif-core::callback::CallbackKind::FocusOpen
+	// for the DSL. When `launchUrl` is missing (session-1 producer contract),
+	// no `--on-click` is passed and click is a silent no-op.
+	//
+	// Validation defends against a mis-scavenged history entry sneaking
+	// whitespace / NULs into the URL — malformed inputs would fail at the
+	// inner `parse_target` boundary and the whole `notif send` would exit
+	// non-zero, so we reject here at the source with a warning.
+	const url = line.launchUrl
+	if (typeof url === 'string' && url && !/[\s\0]/.test(url)) {
+		args.push('--on-click', `focus:open-a://${VSCODE_APP_SLUG}/${url}`)
+	} else if (!launchUrlMissingLogged) {
+		log.warn('[notify-app] event has no valid launchUrl — body-click is a no-op (session-1 producer contract ; further occurrences squelched)')
+		launchUrlMissingLogged = true
+	}
 
 	log.info(`[notify-app] DISPATCH ${payload.eventType} ${sid8} — id=${notifId} sender=${sender}`)
 	// Enforce the "1 delivered banner per sid" invariant : dismiss any prior

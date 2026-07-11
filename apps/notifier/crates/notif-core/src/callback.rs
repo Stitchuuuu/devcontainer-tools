@@ -5,29 +5,47 @@
 //! click a custom action ([`CallbackEvent::Action`]), dismiss the banner
 //! ([`CallbackEvent::Dismiss`]), or let it time out
 //! ([`CallbackEvent::Timeout`]). Each event is bound to a
-//! [`CallbackTarget`] which selects one of three dispatch mechanisms:
+//! [`CallbackTarget`] which selects one of four dispatch mechanisms:
 //!
 //! - **`hook:<path> [args…]`** — exec a subprocess with the payload on
 //!   stdin (JSON).
 //! - **`url:<https?://…>`** — HTTP POST the payload as JSON.
 //! - **`file:<abs-path>`** — append the payload as one JSONL line.
+//! - **`focus:open://<URL>` / `focus:open-a://<APP>/<URL>`** — shell out to
+//!   the macOS `open` binary (bare or `-a`) so a delivered notification
+//!   can focus its emitting app without the caller knowing anything about
+//!   LaunchServices. macOS-only; on other platforms `Command::spawn`
+//!   fails and the dispatcher logs a single warning (`open` isn't in the
+//!   PATH). Payload is opaque after the sub-scheme prefix — arbitrary
+//!   URL schemes (`vscode://…`, `https://…`, custom app URLs) survive.
 //!
 //! Prefix-less targets auto-detect (URL scheme → [`Url`][CallbackKind::Url];
 //! absolute path → [`File`][CallbackKind::File]; else
 //! [`Hook`][CallbackKind::Hook]) so callers can pass a bare `/tmp/log.jsonl`
-//! or `https://cb.example.com/x`.
+//! or `https://cb.example.com/x`. `focus:` targets are always explicit —
+//! no auto-detect, since the DSL's whole point is unambiguous routing to
+//! [`dispatch_focus_open`].
 //!
 //! [`fire`] routes on `target.kind` to the matching dispatcher:
 //! [`dispatch_hook`] spawns a subprocess (argv split via `shell-words`, JSON
 //! on stdin, fire-and-forget), [`dispatch_url`] POSTs the JSON body over
 //! HTTP via `ureq 3`, [`dispatch_file`] appends one `\n`-terminated JSONL
-//! line. All three swallow their own failures (logged via [`crate::warn::emit`])
-//! — a single failing callback must not cascade into the delegate's next
-//! response handling.
+//! line, [`dispatch_focus_open`] spawns `open` / `open -a` with the URL
+//! payload. All four swallow their own failures (logged via
+//! [`crate::warn::emit`]) — a single failing callback must not cascade
+//! into the delegate's next response handling.
+//!
+//! Failure model split : malformed DSL is a **caller bug** and surfaces
+//! at parse time ([`parse_target`] returns `Err`, `notif send --on-click
+//! <bad>` fails loudly). Runtime dispatch failures (missing binary,
+//! endpoint down, disk full, LaunchServices refusal) are **operator
+//! infra** — one `warn::emit` line and the notification stays delivered,
+//! the click is a no-op. Same contract across all four kinds.
 //!
 //! [`Url`]: CallbackKind::Url
 //! [`File`]: CallbackKind::File
 //! [`Hook`]: CallbackKind::Hook
+//! [`FocusOpen`]: CallbackKind::FocusOpen
 
 use std::fmt;
 use std::fs::OpenOptions;
@@ -48,16 +66,22 @@ pub enum CallbackKind {
     Url,
     /// Append the payload as one JSONL line (`file:<abs-path>`).
     File,
+    /// Shell out to macOS `open` (`focus:open://<URL>` — LaunchServices
+    /// picks the handler) or `open -a` (`focus:open-a://<APP>/<URL>` —
+    /// forces the target app). macOS-only; other platforms fail-warn
+    /// silently on spawn.
+    FocusOpen,
 }
 
 impl CallbackKind {
-    /// Wire-format prefix (`hook`, `url`, `file`).
+    /// Wire-format prefix (`hook`, `url`, `file`, `focus`).
     #[must_use]
     pub const fn wire_prefix(self) -> &'static str {
         match self {
             Self::Hook => "hook",
             Self::Url => "url",
             Self::File => "file",
+            Self::FocusOpen => "focus",
         }
     }
 }
@@ -99,6 +123,17 @@ pub enum CallbackParseError {
     UrlBadScheme(String),
     /// `file:<x>` where `<x>` is not an absolute path.
     FileNotAbsolute(String),
+    /// `focus:<x>` where `<x>` is not `open://…` / `open-a://…`.
+    FocusBadSubscheme(String),
+    /// `focus:open://` with an empty URL after the prefix.
+    FocusOpenEmptyUrl,
+    /// `focus:open-a://<APP>/<URL>` with an empty app slug (e.g.
+    /// `focus:open-a:///vscode://x` or no `/` after `open-a://` at all).
+    FocusOpenAMissingApp,
+    /// `focus:open-a://<APP>/<URL>` with an empty URL after the app slug
+    /// (either no `/` at all — `focus:open-a://Foo` — or nothing after
+    /// the split slash — `focus:open-a://Foo/`).
+    FocusOpenAMissingUrl,
 }
 
 impl fmt::Display for CallbackParseError {
@@ -113,6 +148,19 @@ impl fmt::Display for CallbackParseError {
             Self::FileNotAbsolute(v) => write!(
                 f,
                 "`file:` requires an absolute path (got {v:?})",
+            ),
+            Self::FocusBadSubscheme(v) => write!(
+                f,
+                "`focus:` requires `open://` or `open-a://` sub-scheme (got {v:?})",
+            ),
+            Self::FocusOpenEmptyUrl => {
+                f.write_str("`focus:open://` requires a non-empty URL after the prefix")
+            }
+            Self::FocusOpenAMissingApp => f.write_str(
+                "`focus:open-a://` requires a non-empty app slug before the first `/`",
+            ),
+            Self::FocusOpenAMissingUrl => f.write_str(
+                "`focus:open-a://<APP>/` requires a non-empty URL after the app slug",
             ),
         }
     }
@@ -163,6 +211,43 @@ pub fn parse_target(raw: &str) -> Result<CallbackTarget, CallbackParseError> {
             return Err(CallbackParseError::FileNotAbsolute(rest.to_string()));
         }
         return Ok(CallbackTarget { kind: CallbackKind::File, payload: rest.to_string() });
+    }
+    if let Some(rest) = raw.strip_prefix("focus:") {
+        // `focus:open://<URL>` — bare `open`, LaunchServices decides the handler.
+        if let Some(url) = rest.strip_prefix("open://") {
+            if url.is_empty() {
+                return Err(CallbackParseError::FocusOpenEmptyUrl);
+            }
+            return Ok(CallbackTarget {
+                kind: CallbackKind::FocusOpen,
+                payload: rest.to_string(),
+            });
+        }
+        // `focus:open-a://<APP>/<URL>` — force app via `open -a`. App slug is a
+        // literal run of non-`/` chars; the first `/` after the prefix splits
+        // it from the URL tail (which is opaque — may contain any scheme,
+        // path, query, fragment).
+        if let Some(app_and_url) = rest.strip_prefix("open-a://") {
+            let Some(slash) = app_and_url.find('/') else {
+                // No `/` at all after the prefix — either everything is an
+                // app slug (missing URL) or everything is empty (missing app).
+                // The URL is unambiguously absent; report that.
+                return Err(CallbackParseError::FocusOpenAMissingUrl);
+            };
+            let (app, url_with_slash) = app_and_url.split_at(slash);
+            let url = &url_with_slash[1..];
+            if app.is_empty() {
+                return Err(CallbackParseError::FocusOpenAMissingApp);
+            }
+            if url.is_empty() {
+                return Err(CallbackParseError::FocusOpenAMissingUrl);
+            }
+            return Ok(CallbackTarget {
+                kind: CallbackKind::FocusOpen,
+                payload: rest.to_string(),
+            });
+        }
+        return Err(CallbackParseError::FocusBadSubscheme(rest.to_string()));
     }
 
     let kind = if raw.starts_with("http://") || raw.starts_with("https://") {
@@ -289,6 +374,11 @@ pub fn fire(target: &CallbackTarget, payload: &CallbackPayload) -> std::io::Resu
         CallbackKind::Hook => dispatch_hook(&target.payload, &json),
         CallbackKind::Url => dispatch_url(&target.payload, &json),
         CallbackKind::File => dispatch_file(&target.payload, &json),
+        // `focus:open` targets don't consume the JSON payload — the click's
+        // "what happened" is baked into which URL LaunchServices opens.
+        // Callers who need payload delivery too bind a separate `hook:` /
+        // `url:` / `file:` target on the same event.
+        CallbackKind::FocusOpen => dispatch_focus_open(&target.payload),
     }
     Ok(())
 }
@@ -393,6 +483,58 @@ fn dispatch_file(path: &str, json: &str) {
     }
 }
 
+/// Shell out to macOS `open` — bare (`open://<URL>`) or with an app slug
+/// (`open-a://<APP>/<URL>`). Fire-and-forget: stdio nulled, no `wait()`.
+///
+/// Payload was validated by [`parse_target`], so branches that miss a
+/// prefix here indicate a bug (e.g. someone constructed a
+/// `CallbackTarget { kind: FocusOpen, payload: … }` bypassing the parser).
+/// The "unexpected payload" branch surfaces that as a warning instead of
+/// panicking — a broken callback must not crash the delegate.
+///
+/// macOS-only in practice: on Linux / Windows `open` isn't in the PATH,
+/// so `Command::spawn` errors with `ENOENT` and we emit one warning
+/// (dedup by category, so a hot loop can't flood stderr). Cross-platform
+/// dispatch is a future session's concern.
+fn dispatch_focus_open(payload: &str) {
+    if let Some(url) = payload.strip_prefix("open://") {
+        spawn_focus_open(&["open", url]);
+        return;
+    }
+    if let Some(app_and_url) = payload.strip_prefix("open-a://") {
+        if let Some(slash) = app_and_url.find('/') {
+            let (app, url_with_slash) = app_and_url.split_at(slash);
+            let url = &url_with_slash[1..];
+            spawn_focus_open(&["open", "-a", app, url]);
+            return;
+        }
+    }
+    warn::emit(
+        "callback_focus_open_bad_payload",
+        &format!(
+            "focus:open dispatcher received unexpected payload {payload:?}; \
+             this is a bug (parse_target should have caught it)"
+        ),
+    );
+}
+
+/// Fire-and-forget spawn helper for [`dispatch_focus_open`]. Nulls stdio
+/// so the child can't back-pressure the delegate. Spawn errors get a
+/// single dedup'd warning.
+fn spawn_focus_open(argv: &[&str]) {
+    let mut cmd = Command::new(argv[0]);
+    cmd.args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Err(e) = cmd.spawn() {
+        warn::emit(
+            "callback_focus_open_spawn_failed",
+            &format!("focus:open spawn {:?} failed: {e}", argv.join(" ")),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +629,88 @@ mod tests {
         assert_eq!(t.payload, "/bin/echo");
     }
 
+    // ---- parse_target: focus:open family --------------------------------
+
+    #[test]
+    fn parse_focus_open_url() {
+        let t = parse_target("focus:open://vscode://x").unwrap();
+        assert_eq!(t.kind, CallbackKind::FocusOpen);
+        assert_eq!(t.payload, "open://vscode://x");
+    }
+
+    #[test]
+    fn parse_focus_open_a_bare() {
+        let t =
+            parse_target("focus:open-a://Visual Studio Code/vscode://x").unwrap();
+        assert_eq!(t.kind, CallbackKind::FocusOpen);
+        assert_eq!(t.payload, "open-a://Visual Studio Code/vscode://x");
+    }
+
+    #[test]
+    fn parse_focus_open_a_preserves_trailing_slashes_in_url() {
+        // The URL after the first-slash split is opaque — extra `/`s (path
+        // components) survive verbatim. Locks the "first `/` after app slug
+        // is the ONLY split point" contract.
+        let raw = "focus:open-a://Visual Studio Code/vscode://vscode-remote/dev-container+abc/workspace/subdir";
+        let t = parse_target(raw).unwrap();
+        assert_eq!(t.kind, CallbackKind::FocusOpen);
+        assert_eq!(
+            t.payload,
+            "open-a://Visual Studio Code/vscode://vscode-remote/dev-container+abc/workspace/subdir",
+        );
+        assert_eq!(t.to_wire(), raw);
+    }
+
+    #[test]
+    fn parse_focus_open_a_preserves_query_and_fragment() {
+        // Locks the opaque-tail contract for `#` / `?` — these are common
+        // in HTTP URLs and would break if the parser accidentally called
+        // any URL-parser on the payload.
+        let raw = "focus:open-a://App/https://example.com/path?q=1#frag";
+        let t = parse_target(raw).unwrap();
+        assert_eq!(t.payload, "open-a://App/https://example.com/path?q=1#frag");
+        assert_eq!(t.to_wire(), raw);
+    }
+
+    #[test]
+    fn parse_focus_bad_subscheme_rejected() {
+        assert!(matches!(
+            parse_target("focus:zap://x"),
+            Err(CallbackParseError::FocusBadSubscheme(_)),
+        ));
+    }
+
+    #[test]
+    fn parse_focus_open_empty_url_rejected() {
+        assert_eq!(
+            parse_target("focus:open://"),
+            Err(CallbackParseError::FocusOpenEmptyUrl),
+        );
+    }
+
+    #[test]
+    fn parse_focus_open_a_missing_app_rejected() {
+        // `focus:open-a:///vscode://x` — leading `/` means empty app slug.
+        assert_eq!(
+            parse_target("focus:open-a:///vscode://x"),
+            Err(CallbackParseError::FocusOpenAMissingApp),
+        );
+    }
+
+    #[test]
+    fn parse_focus_open_a_missing_url_rejected() {
+        // No `/` at all after `open-a://` — URL is unambiguously absent.
+        assert_eq!(
+            parse_target("focus:open-a://AppOnly"),
+            Err(CallbackParseError::FocusOpenAMissingUrl),
+        );
+        // Slash split but empty tail.
+        assert_eq!(
+            parse_target("focus:open-a://App/"),
+            Err(CallbackParseError::FocusOpenAMissingUrl),
+        );
+    }
+
     // ---- Round-trip via to_wire ------------------------------------------
 
     #[test]
@@ -511,6 +735,21 @@ mod tests {
         assert_eq!(t.to_wire(), "file:/tmp/x.jsonl");
         let round = parse_target(&t.to_wire()).unwrap();
         assert_eq!(t, round);
+    }
+
+    #[test]
+    fn wire_roundtrip_focus_open_variants() {
+        for raw in [
+            "focus:open://vscode://vscode-remote/dev-container+abc/workspace",
+            "focus:open-a://Visual Studio Code/vscode://vscode-remote/dev-container+abc/workspace",
+            "focus:open-a://App/https://example.com/path?q=1#frag",
+        ] {
+            let t = parse_target(raw).unwrap();
+            assert_eq!(t.kind, CallbackKind::FocusOpen);
+            assert_eq!(t.to_wire(), raw, "roundtrip failed for {raw:?}");
+            let round = parse_target(&t.to_wire()).unwrap();
+            assert_eq!(t, round);
+        }
     }
 
     // ---- CallbackEvent wire format ---------------------------------------
