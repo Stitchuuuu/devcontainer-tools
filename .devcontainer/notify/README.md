@@ -24,6 +24,7 @@ auto-discovers from cwd).
 - [Run](#run)
 - [Add a consumer](#add-a-consumer)
 - [Architecture](#architecture)
+- [Outbound control channel](#outbound-control-channel) — external auto-answer for permission prompts
 - [OS setup](#os-setup)
 - [Channels](#channels)
 - [Troubleshooting](#troubleshooting)
@@ -512,6 +513,45 @@ If the file is absent at startup, `inbound-watch` logs a clear fallback
 message and stays in standby ; the container-side hooks alone keep the
 daemon working.
 
+### Sibling logs — outbound control channel
+
+The extension patches co-write three other JSONL files under
+[../logs/](../logs/), not consumed by notify but useful to know about
+when debugging permission flow :
+
+| File | Producer | Consumer | Purpose |
+|---|---|---|---|
+| `claude-code-vscode-ext-inbound.jsonl` | `user-action-observer.py` patch (webview→ext chokepoint) | `notify` inbound-watch, `outbound-tester` | Every webview→ext message with `{ts, source:"user-action", sessionId, channelId, pid, type, payload}`. Records user clicks (allow/deny), typed messages, session state transitions. |
+| `claude-code-vscode-ext-pending-perms.jsonl` | `outbound-action-injector.py` patch (Comms.sendRequest instrumentation) | `outbound-tester list`, external controllers | Perm requests tracker : `{ts, sessionId, channelId, requestId, toolName, inputs, focused, active, settled:false}` on request ; `{ts, sessionId, channelId, requestId, focused, active, settled:true, outcome}` on resolve. `focused` / `active` are `vscode.window.state` snapshots at record time — proxied from the client GUI so they reflect actual host-side window focus (external controller can use them to decide whether to auto-answer or wait for a human). Also `{ts, ev:"session_boot"}` at each extension host init — the tester uses that as cutoff for stale entries from crashed/reloaded sessions. |
+| `claude-code-vscode-ext-outbound.jsonl` | External controller (usually [../claude/outbound-tester.js](../claude/outbound-tester.js)) | Extension host file-watcher (200 ms poll) | Command line per JSONL entry, e.g. `{cmd:"tool_permission_response", sessionId, requestId, behavior:"allow", updatedInput, updatedPermissions}`. Watcher looks up the target panel via `sessionPanels.get(sessionId)` and postMessages a `simulated_click` to the webview, which resolves the pending Gn via `Q.accept()`/`Q.reject()` (see [../claude/vscode-ext-patchs/webview-simulated-click.py](../claude/vscode-ext-patchs/webview-simulated-click.py) for the webview side). |
+| `claude-code-vscode-ext-watcher-debug.jsonl` | Same watcher, gated by `DEBUG=1` (or `CLAUDE_OUTBOUND_DEBUG`) | Manual `tail -f` during troubleshooting | Granular flow tracing : `watcher_started`, `change`, `parsed`, `lookup_hit`, `lookup_miss` (with `knownSids`), `post`, `parse_fail`, etc. No-op when the env flag is off. |
+
+The extension is patched by `run-all.sh` at container build. Detailed
+workflow + failure modes for these patches live in
+[../../vendor/anthropic.claude-code/CLAUDE.md](../../vendor/anthropic.claude-code/CLAUDE.md).
+
+**Managing the logs.** All four files are append-only, no rotation :
+
+- **Boot wipe** — `post-start.sh` truncates the four `.jsonl` at each
+  container start. Fresh sessions start empty.
+- **Reset mid-session** — `> .devcontainer/logs/<file>.jsonl` from
+  terminal. Safe : the extension holds no fd on the debug/outbound
+  files (opens per-write) ; inbound + pending-perms handle truncation
+  gracefully (the watcher resets `pos` when `sz < pos`).
+- **`session_boot` cutoff** — `pending-perms.jsonl` gets a
+  `{ev:"session_boot", ts}` line at each extension host init.
+  `outbound-tester list` filters records before the latest boot ; you
+  don't have to wipe manually just because you reloaded. Fallback : if
+  no boot marker present, records older than 30 min are treated as
+  fossilized.
+- **`watcher-debug.jsonl` opt-in** — writer is a no-op unless
+  `DEBUG=1` (or `CLAUDE_OUTBOUND_DEBUG`) is set in the extension
+  host's env. Set it in [../devcontainer.json](../devcontainer.json)'s
+  `remoteEnv` or [../.env](../.env) if the file exists.
+- **Growth watch** — `inbound.jsonl` is the noisy one (~1 line per
+  webview interaction). Typical session : a few MB. If it starts
+  eating disk, wipe it — nothing downstream depends on old history.
+
 ### Lifecycle + healthcheck
 
 [lib/lockfile.js](lib/lockfile.js) owns `queue/.daemon.pid`. One file,
@@ -570,6 +610,259 @@ context. Three rules ([lib/locate.js:30-48](lib/locate.js#L30-L48)) :
 3. cwd contains `.devcontainer/` → `cwd/.devcontainer/notify/queue`.
 
 Anything else throws with an actionable message — no silent guessing.
+
+---
+
+## Outbound control channel
+
+Reciprocal to the inbound observation stream : a way for an **external
+controller** (host script, agent, MCP tool) to inject responses into
+Claude Code permission prompts as if the user had clicked — bypassing
+the modal UI when auto-answering is safe. Runs entirely inside the same
+`.devcontainer/logs/` directory as the notify inbound / desktop-toast
+pipeline ; not consumed by the notify daemon itself, but sits in the
+same infrastructure and shares the extension-patch machinery.
+
+The channel handles `tool_permission_response` today. Extending it to
+other webview widgets (AskUserQuestion single-select / multi-select,
+ExitPlanMode, etc.) follows the same pattern — see
+[Adding a new outbound cmd](#adding-a-new-outbound-cmd) below.
+
+### Data flow
+
+```
+                        writes                       polls, 200 ms
+  external controller ────────► outbound.jsonl ──────────────► extension host
+    (outbound-tester.js                                        (setupPanel
+     or any tool)                                               file-watcher)
+                                                                     │
+                                                                     │ this.sessionPanels.get(sessionId)
+                                                                     ▼
+                                                                  target panel
+                                                                     │
+                                                                     │ panel.webview.postMessage(
+                                                                     │   {type:"from-extension",
+                                                                     │    message:{type:"simulated_click",
+                                                                     │             requestId, result}})
+                                                                     ▼
+                                                                webview intercept
+                                                                     │
+                                                                     │ this.permissionRequests.value
+                                                                     │   .find(q => q._reqId === requestId)
+                                                                     │ Q.accept(input, perms)  or  Q.reject(msg, false)
+                                                                     ▼
+                                                              Q.onResolved fires
+                                                                     │
+                                                                     │ send({type:"tool_permission_response", result})
+                                                                     │ + drop Q from permissionRequests signal
+                                                                     ▼
+                                                          extension receives response
+                                                          via the standard chokepoint
+                                                          → inbound.jsonl gets a
+                                                            `source:"user-action"`
+                                                            line indistinguishable
+                                                            from a real click
+```
+
+The extension-side promise for the perm request resolves, the tool runs,
+the UI prompt dismisses atomically. Zero orphan states.
+
+### Cmd protocol
+
+Every outbound line is a single JSON object with a `cmd` discriminator.
+Extra fields per cmd type.
+
+**`tool_permission_response`** — currently the only cmd type.
+
+```json
+{
+  "cmd": "tool_permission_response",
+  "sessionId": "effef380-59b1-4018-af95-8d8beb88e7f2",
+  "requestId": "826f7870b1c2542f308c08f21d35ff8e",
+  "behavior": "allow",
+  "updatedInput":  { … },
+  "updatedPermissions": []
+}
+```
+
+- `sessionId` — the **SDK session UUID** (stable, matches
+  `PanelManager.sessionPanels` key). Do NOT put the channelId here —
+  the extension watcher's `sessionPanels.get(sessionId)` would miss.
+- `requestId` — the wire perm request id (32 hex chars). Matched inside
+  the webview against `Gn._reqId` (stashed by the injection patches on
+  each new Gn). `channelId` on Gn is a different id space and cannot
+  be used for lookup.
+- `behavior` — `"allow"` | `"deny"`.
+- `updatedInput` — for `allow`, the actual input the tool will run with
+  (echo the pending record's `inputs` unless you're rewriting).
+- `updatedPermissions` — for `allow`, typically `[]` (grants that would
+  update the workspace allowlist ; leave empty for one-off answers).
+- For `deny`, add `"message": "…"` and optionally `"interrupt": true`
+  (rejects with an abort signal). Default message is `"denied"`.
+
+Unknown `cmd` values are logged as `unknown_cmd` and dropped ; adding a
+new cmd type is a code change (see below).
+
+### Extension-side implementation
+
+Three injection functions in
+[../claude/vscode-ext-patchs/outbound-action-injector.py](../claude/vscode-ext-patchs/outbound-action-injector.py) :
+
+- **`patch_watcher`** — anchors at the top of `PanelManager.setupPanel(z,K,V,N){`.
+  Singleton-guarded by `this._outboundStarted` (one interval per PanelManager
+  instance, per window session). 200 ms poll on `outbound.jsonl` starting
+  at `pos = 0` (reads any lines the writer put down before the watcher
+  came up ; on truncate resets to 0). Each parsed cmd walks
+  `this.sessionPanels.get(cmd.sessionId)` to find the target
+  panel, then `panel.webview.postMessage({type:"from-extension",
+  message:{type:"simulated_click", requestId, result}})`.
+- **`patch_sendrequest`** — anchors inside `Comms.sendRequest(z,K,V)`.
+  Two spots : right after `let N=fn()` (writes the pending record) and
+  inside the `outstandingRequests.set(N,{resolve:(Z)=>{x(Z)})` callback
+  (writes the settle record). Records include `focused` + `active`
+  from `vscode.window.state` — proxied from the client GUI, so consumers
+  see actual host-side window focus.
+- **`patch_track_session_id`** — anchors at
+  `else if(z.request.type==="update_session_state")return this.onSessionStateChanged?.(…)`
+  in `Comms.fromClient`. Stores `this._currentSessionId = <msg>.request.sessionId || this._currentSessionId`
+  via comma-operator (no control flow change). Ensures the SDK UUID is
+  available to the pending / settle log injections — the sendRequest's
+  first arg is the chat channelId, NOT the sessionId, so we can't get
+  the UUID from there.
+
+Debug tracing via `DEBUG=1` or `CLAUDE_OUTBOUND_DEBUG` env var — writes
+per-event lines to `watcher-debug.jsonl` (see [Sibling logs](#cancel-paths)
+above). No-op when unset ; safe to leave the flag on for extended debug
+sessions.
+
+### Webview-side implementation
+
+Three injection functions in
+[../claude/vscode-ext-patchs/webview-simulated-click.py](../claude/vscode-ext-patchs/webview-simulated-click.py).
+The core mechanic : tag each Gn permission-request instance with its
+wire requestId at creation time, then have the message intercept look up
+by that requestId.
+
+- **`patch_perm_request_id_callsite`** — inside
+  `processRequestInner`, the `case "tool_permission_request"` arm calls
+  `handleToolPermissionRequest($.channelId, $.request, Z)`. We inject a
+  4th arg `$.requestId`.
+- **`patch_perm_request_id_tag`** — inside `handleToolPermissionRequest`,
+  right after `let Q=new Gn($,eV(Z.toolName),…)`, we splice
+  `Q._reqId=arguments[3];`. Uses `arguments[3]` rather than a formal
+  param so nothing else calling this method with 3 args breaks.
+- **`patch_message_intercept`** — inside the top-level
+  `window.addEventListener("message",(G)=>{…})` in class `Xz1 extends zn`.
+  Handles `_m?.type==="simulated_click"` : walks
+  `this.permissionRequests.value.find(q => q?._reqId === _rid)`, calls
+  `Q.accept(updatedInput, updatedPermissions)` or `Q.reject(message, false)`.
+  `console.log` traces are always on (webview devtools only, opt-in
+  via `Cmd+Shift+P → Developer: Open Webview Developer Tools`).
+
+Why not match by `Q.channelId` : Gn's `channelId` is the chat channel
+id (per-panel), NOT the wire request id. Multiple simultaneous prompts
+would collide.
+
+### CLI
+
+[../claude/outbound-tester.js](../claude/outbound-tester.js) — pure
+Node, zero deps. Subcommands :
+
+- **`list [--json]`** — reads pending-perms.jsonl, filters records
+  before the latest `session_boot` marker (or older than 30 min if no
+  marker), groups by requestId (last-write-wins), returns those still
+  `settled:false`. Tabular : `sid8 | chan | rid8 | foc | tool | inputs | age`.
+  `foc` = `F` (focused), `A` (active but not focused), `-` (neither),
+  `?` (pre-focus-patch record).
+- **`send <token> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sid>]`** —
+  writes a `tool_permission_response` line to outbound.jsonl. `token`
+  can be a full 32-hex requestId (bypasses lookup) or any prefix of
+  requestId / sessionId / channelId. Unique-match required — ambiguity
+  fails loud with the candidate list. `--input` overrides `updatedInput`
+  (JSON), `--message` overrides the deny message.
+
+Examples :
+
+```
+node .devcontainer/claude/outbound-tester.js list
+node .devcontainer/claude/outbound-tester.js send effef380 allow
+node .devcontainer/claude/outbound-tester.js send 826f allow --input '{"command":"ls"}'
+node .devcontainer/claude/outbound-tester.js send effef380 deny --message "not now"
+```
+
+### Adding a new outbound cmd
+
+Say you want to auto-answer `AskUserQuestion` prompts (single-select
+radio, multi-select checkbox). Full checklist :
+
+1. **Recon.** Grep
+   `vendor/anthropic.claude-code/v<VER>/pretty/webview-index.js` +
+   `.../extension.js` for the class that owns the pending prompt.
+   Identify :
+   - The instance class (analog of `Gn`).
+   - The wire request id (which arg gets passed to the constructor).
+   - The terminal method (`.accept()` / `.reject()` analog).
+   - The array signal holding pending instances (analog of
+     `this.permissionRequests`).
+2. **Extension-side.** No new injection needed — the existing watcher
+   dispatches on `cmd.cmd` and forwards `simulated_click` messages with
+   any `cmd.data`. Just extend the JSON shape :
+   ```
+   {cmd: "ask_user_response", sessionId, requestId, answer: {…}}
+   ```
+   Encode single-select as `{pick: "label"}`, multi-select as
+   `{pick: ["a","b"]}`, text as `{text: "…"}`. Keep it simple ; the
+   webview intercept validates.
+3. **Webview-side, three patches (mirror of perm-request) :**
+   a. **Tag** — after the pending instance is created, splice
+   `instance._reqId = arguments[<N>];`.
+   b. **Callsite** — pass `$.requestId` as the extra arg into the
+   handler that creates the instance.
+   c. **Intercept branch** — inside the existing
+   `if(_m?.type==="simulated_click")` block, add another
+   `else if(_m?.type==="ask_user_response")` branch that walks the
+   right array signal by `_reqId` and calls the terminal method.
+4. **Marker discipline.** Bump to a new
+   `notify-queue-webview-<name>-v1` marker for each patch. Never
+   overload existing markers (idempotence check would misfire).
+5. **CLI.** Add a subcommand or flag to
+   [../claude/outbound-tester.js](../claude/outbound-tester.js) :
+   ```
+   node outbound-tester.js answer <token> --pick "option-label"
+   ```
+   Reuse `resolvePending()` for the token → record match ;
+   compose the new cmd JSON ; append.
+6. **Test.** Reload window, trigger the new prompt type, use the CLI,
+   watch `watcher-debug.jsonl` (`DEBUG=1`) for `parsed` / `lookup_hit`
+   / `post` events, watch webview devtools for
+   `[webview-…] received / matched / fired` traces.
+7. **Docs.** Update the Cmd protocol section above with the new shape.
+   Update the Extension / Webview implementation subsections with the
+   new injection anchors. Update this checklist if you find a new
+   pattern worth codifying.
+
+### Adding a new consumer
+
+Not related to the outbound channel — the outbound channel is
+**push-only** (outside → extension). If you want to react in-container
+to inbound events (user clicks, session state changes), write a notify
+consumer that subscribes to the shared bus (see
+[Add a consumer](#add-a-consumer)) and reads
+`.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl` via
+[lib/inbound-watch.js](lib/inbound-watch.js).
+
+### Troubleshooting
+
+Symptom → probe → likely cause. Runs on the state visible via
+`.devcontainer/logs/` alone ; no live extension inspection needed.
+
+| Symptom | Probe | Likely cause |
+|---|---|---|
+| `outbound-tester send` succeeds but click doesn't fire | Enable `DEBUG=1`, reload window, retry, `tail watcher-debug.jsonl`. Look for `lookup_miss` with `knownSids`. | If miss : `sessionId` in outbound.jsonl doesn't match a `sessionPanels` key. Usually means the tester read a stale `pending-perms.jsonl` (pre-boot marker) or the `_currentSessionId` tracker missed an `update_session_state`. Trigger a new perm request, retry with the fresh rid. |
+| Debug shows `lookup_hit` + `post posted:true` but click still absent | Open webview devtools on target panel. Look for `[webview-sim-click] received` / `no pending Gn for requestId=…` | If `received` but `no pending Gn` : webview intercept ran but the Gn tag injection is missing (marker not present in installed `webview/index.js`). Re-run `run-all.sh`. If neither log appears : intercept regex didn't match after a version bump ; check the `patch_message_intercept` anchor in [../claude/vscode-ext-patchs/webview-simulated-click.py](../claude/vscode-ext-patchs/webview-simulated-click.py). |
+| `list` shows stale entries with `age > 30m` | `grep session_boot pending-perms.jsonl` | If no marker : the extension host didn't restart since the last patch bump, OR the `pending-perms.jsonl` was manually appended to and the marker was stripped. Reload window, the watcher writes a fresh marker on init. |
+| Records missing `focused` / `active` | Check the file's marker : `grep notify-queue-outbound-perm-log pending-perms.jsonl`'s producer (`.js`, not `.jsonl`) | If the record is pre-focus-patch (before this section landed), it just doesn't have those fields — `list` shows `?`. New records after reload get them. |
+| `node --check` fails on the installed `extension.js` after a patch bump | Check for LF-inside-string : `python3 -c "import re; c=open('/home/node/.vscode-server/…/extension.js').read(); print(len(list(re.finditer(r'\n\"', c))))"` | Almost always the `\n` → LF corruption trap documented in [../../vendor/anthropic.claude-code/CLAUDE.md](../../vendor/anthropic.claude-code/CLAUDE.md) piège #1. Re-deploy from `v<VER>-pristine` and re-run patches. |
 
 ---
 
