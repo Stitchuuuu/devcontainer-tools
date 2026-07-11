@@ -159,6 +159,67 @@ function lastMatch(text, re) {
 	return last
 }
 
+// Resolve the container's `vscode-remote://` launch URL, so downstream
+// consumers can `open` it without any cross-container authority
+// lookup. The authority string (`dev-container+<hex>`) encodes the
+// host workspace path + Docker context — the container can scavenge
+// it from VS Code's own local history instead of recomputing it (it
+// doesn't know `localDocker` / `settings.context` first-hand).
+//
+// Two layers :
+//   1. Cache — /tmp/notify-queue-authority (plain text, single line).
+//      Container-lifetime TTL ; wiped on recreate = matches authority
+//      stability.
+//   2. Scan — enumerate ~/.vscode-server/data/User/History/*/entries.json
+//      for `dev-container%2B[0-9a-f]+`. All entries in one session
+//      share the authority — first match wins.
+//
+// Returns full URL (`vscode://vscode-remote/<authority>/workspace`) or
+// null. No JSON-payload fallback : an empty history means the daemon
+// gets no launchUrl, and the body-click becomes a no-op (session 2's
+// contract). Guessing `localDocker` / `settings.context` would open a
+// wrong-authority window on non-Docker-Desktop hosts.
+const AUTHORITY_CACHE = '/tmp/notify-queue-authority'
+const AUTHORITY_PREFIX = 'dev-container+'
+const HISTORY_DIR = process.env.HOME
+	? path.join(process.env.HOME, '.vscode-server/data/User/History')
+	: null
+
+function resolveLaunchUrl(historyDir = HISTORY_DIR, cachePath = AUTHORITY_CACHE) {
+	try {
+		const authority = resolveAuthority(historyDir, cachePath)
+		return authority ? `vscode://vscode-remote/${authority}/workspace` : null
+	} catch { return null }
+}
+
+function resolveAuthority(historyDir, cachePath) {
+	// Cache hit — must start with the prefix and carry hex payload.
+	try {
+		const cached = fs.readFileSync(cachePath, 'utf8').trim()
+		if (cached.startsWith(AUTHORITY_PREFIX) &&
+			/^[0-9a-fA-F]+$/.test(cached.slice(AUTHORITY_PREFIX.length))) {
+			return cached
+		}
+	} catch { /* miss — fall through to scan */ }
+
+	if (!historyDir) return null
+	let entries
+	try { entries = fs.readdirSync(historyDir) } catch { return null }
+
+	const rx = /dev-container%2B([0-9a-fA-F]+)/
+	for (const dir of entries) {
+		const p = path.join(historyDir, dir, 'entries.json')
+		let content
+		try { content = fs.readFileSync(p, 'utf8') } catch { continue }
+		const m = content.match(rx)
+		if (!m) continue
+		const authority = AUTHORITY_PREFIX + m[1].toLowerCase()
+		try { fs.writeFileSync(cachePath, authority) } catch { /* best-effort */ }
+		return authority
+	}
+	return null
+}
+
 function buildLine(eventName, payload) {
 	const sid = payload.session_id
 	if (!sid) return null
@@ -183,6 +244,13 @@ function buildLine(eventName, payload) {
 	// falls back to the auto-generated slug). Absent when no transcript.
 	const name = readSessionName(payload.transcript_path)
 	if (name) line.session_name = name
+
+	// Attach the container's vscode-remote launch URL when resolvable
+	// (see resolveLaunchUrl). Absent on fresh boot before VS Code has
+	// written any history file — daemon body-click no-ops in that
+	// window (session 2 contract).
+	const launchUrl = resolveLaunchUrl()
+	if (launchUrl) line.launchUrl = launchUrl
 
 	if (eventName === 'stop') {
 		line.last_message_excerpt = excerptV2(payload.last_assistant_message)
@@ -249,4 +317,4 @@ function main() {
 
 if (require.main === module) main()
 
-module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine }
+module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, AUTHORITY_CACHE }

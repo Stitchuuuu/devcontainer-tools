@@ -5,7 +5,10 @@
 // Exits 0 on success, throws + non-zero on failure.
 
 const assert = require('assert')
-const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine } = require('./hook')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl } = require('./hook')
 
 // 1. The reported mojibake : `\uXXXX` literals in a Recap line.
 const reported =
@@ -84,5 +87,113 @@ const t0 = Date.now()
 while (Date.now() === t0) { /* spin briefly */ }
 const b = buildLine('stop', { session_id: SID, last_assistant_message: 'x' })
 assert.notStrictEqual(a.notif_id, b.notif_id, 'notif_id must be unique per invocation')
+
+// --- resolveLaunchUrl — session-1 producer-launchurl ---
+//
+// Tested end-to-end via injectable historyDir + cachePath so we don't
+// touch the real /tmp cache or ~/.vscode-server state. Each subtest
+// gets its own tmpdir + tmpcache.
+
+const REAL_HEX = '7b22686f737450617468223a222f566f6c756d65732f446174612f6465762f64' // truncated but valid hex
+const REAL_AUTHORITY = 'dev-container+' + REAL_HEX
+const ENTRIES_JSON = JSON.stringify({
+	version: 1,
+	resource: `vscode-remote://dev-container%2B${REAL_HEX}/workspace/foo.txt`,
+	entries: [{ id: 'a.txt', timestamp: 123 }],
+})
+
+function tmpDir() {
+	return fs.mkdtempSync(path.join(os.tmpdir(), 'notify-queue-test-'))
+}
+
+// 7. Cache hit → returns cached authority as-is, no scan needed.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	fs.writeFileSync(cache, REAL_AUTHORITY)
+	const emptyHistory = path.join(dir, 'empty-history')
+	fs.mkdirSync(emptyHistory)
+	const url = resolveLaunchUrl(emptyHistory, cache)
+	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
+		`cache hit expected — got: ${url}`)
+}
+
+// 8. Cache miss + populated history → extracts authority, writes cache.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	const history = path.join(dir, 'history')
+	fs.mkdirSync(path.join(history, '-abcdef01'), { recursive: true })
+	fs.writeFileSync(path.join(history, '-abcdef01', 'entries.json'), ENTRIES_JSON)
+	const url = resolveLaunchUrl(history, cache)
+	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
+		`scan expected — got: ${url}`)
+	assert.strictEqual(fs.readFileSync(cache, 'utf8'), REAL_AUTHORITY,
+		'cache should be written on successful scan')
+}
+
+// 9. Cache miss + empty history → null (no fallback).
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	const history = path.join(dir, 'history')
+	fs.mkdirSync(history)
+	const url = resolveLaunchUrl(history, cache)
+	assert.strictEqual(url, null, `empty history should return null — got: ${url}`)
+	assert.strictEqual(fs.existsSync(cache), false,
+		'cache should not be written on scan miss')
+}
+
+// 10. Cache miss + non-existent history dir → null.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	const url = resolveLaunchUrl(path.join(dir, 'does-not-exist'), cache)
+	assert.strictEqual(url, null, `missing history dir should return null — got: ${url}`)
+}
+
+// 11. Malformed cache → falls through to scan.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	fs.writeFileSync(cache, 'garbage-not-an-authority')
+	const history = path.join(dir, 'history')
+	fs.mkdirSync(path.join(history, '-abcdef01'), { recursive: true })
+	fs.writeFileSync(path.join(history, '-abcdef01', 'entries.json'), ENTRIES_JSON)
+	const url = resolveLaunchUrl(history, cache)
+	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
+		`malformed cache should re-scan — got: ${url}`)
+	assert.strictEqual(fs.readFileSync(cache, 'utf8'), REAL_AUTHORITY,
+		'cache should be overwritten with valid authority')
+}
+
+// 12. Empty cache file → falls through to scan.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	fs.writeFileSync(cache, '')
+	const history = path.join(dir, 'history')
+	fs.mkdirSync(path.join(history, '-abcdef01'), { recursive: true })
+	fs.writeFileSync(path.join(history, '-abcdef01', 'entries.json'), ENTRIES_JSON)
+	const url = resolveLaunchUrl(history, cache)
+	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
+		`empty cache should re-scan — got: ${url}`)
+}
+
+// 13. Subdir with entries.json that has no authority is skipped ;
+//     scan continues into the next subdir.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	const history = path.join(dir, 'history')
+	fs.mkdirSync(path.join(history, '-00000001'), { recursive: true })
+	fs.mkdirSync(path.join(history, '-00000002'), { recursive: true })
+	fs.writeFileSync(path.join(history, '-00000001', 'entries.json'),
+		JSON.stringify({ version: 1, resource: 'file:///tmp/x' }))
+	fs.writeFileSync(path.join(history, '-00000002', 'entries.json'), ENTRIES_JSON)
+	const url = resolveLaunchUrl(history, cache)
+	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
+		`should skip non-matching entries.json — got: ${url}`)
+}
 
 console.log('test-excerpt.js — all assertions passed')
