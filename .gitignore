@@ -20,6 +20,25 @@
 # sync-skills — timestamped backups of ~/.claude/settings.json (one per run with changes)
 .devcontainer/claude/settings-backups/
 
+# Notify queue rotations — same rationale as queue/ above (per-session runtime)
+.devcontainer/notify/queue-*/
+
+# Rust — build artefacts (keep .cargo/config.toml, which is source)
+apps/*/target/
+
+# VS Code extensions (host-side) — build/packaging output, keep sources
+extensions/*/node_modules/
+extensions/*/out/
+extensions/*/prebuilds/
+extensions/*/*.vsix
+
+# Scratch / experimentation
+.tmp/
+.vscode-id
+
+# Host-side stack snapshots
+/*.tar.gz
+
 # Build / OS
 .env.dev
 .DS_Store
