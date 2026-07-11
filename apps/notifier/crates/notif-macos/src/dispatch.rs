@@ -264,6 +264,42 @@ fn run_inner(mut cmd: Command) -> Result<(), MacosError> {
     }
 }
 
+/// Deterministic `UNNotificationCategory` identifier for a given ordered
+/// tuple of action labels. Same labels in the same order → same ID.
+/// Different labels or a different order → different ID.
+///
+/// Rationale: previously the ID was `notif-cat-<notif.id>`, which minted
+/// a fresh category per send. Since a notif's Allow/Deny labels almost
+/// never change from send to send, keying on the labels lets the OS
+/// dedup the registration across repeat sends.
+fn category_id_for(labels: &[String]) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    labels.hash(&mut h);
+    format!("notif-cat-{:016x}", h.finish())
+}
+
+#[cfg(test)]
+mod category_id_tests {
+    use super::category_id_for;
+
+    #[test]
+    fn deterministic_per_label_tuple() {
+        let a = category_id_for(&["Allow".into(), "Deny".into()]);
+        let b = category_id_for(&["Allow".into(), "Deny".into()]);
+        assert_eq!(a, b, "same labels must yield the same category id");
+    }
+
+    #[test]
+    fn changes_with_labels_and_order() {
+        let a = category_id_for(&["Allow".into(), "Deny".into()]);
+        let b = category_id_for(&["Approve".into(), "Reject".into()]);
+        assert_ne!(a, b, "different labels must yield different category ids");
+        let c = category_id_for(&["Deny".into(), "Allow".into()]);
+        assert_ne!(a, c, "label order must affect the category id");
+    }
+}
+
 // -----------------------------------------------------------------------
 // Inner-mode (objc2 / UN center) — gated behind macOS, otherwise no-op.
 // -----------------------------------------------------------------------
@@ -496,10 +532,17 @@ mod inner {
             || callbacks.on_dismiss.is_some();
         let effective_category_id = overrides.category_identifier.clone().or_else(|| {
             if needs_category {
-                Some(format!(
-                    "notif-cat-{}",
-                    notif.id.as_deref().unwrap_or("auto"),
-                ))
+                // Deterministic ID keyed on the ordered action labels — same
+                // labels (e.g. every Allow/Deny permission_request notif)
+                // reuse the same category identifier across sends, so the
+                // per-send `setNotificationCategories` call is idempotent
+                // in the steady state.
+                let labels: Vec<String> = callbacks
+                    .on_actions
+                    .iter()
+                    .map(|(l, _)| l.clone())
+                    .collect();
+                Some(super::category_id_for(&labels))
             } else {
                 None
             }
@@ -553,9 +596,15 @@ mod inner {
             let categories: Retained<NSSet<UNNotificationCategory>> =
                 NSSet::from_slice(&[cat_ref]);
             // `setNotificationCategories` REPLACES the registered set on
-            // the UN center. Fire-and-forget CLI invocations are fine
-            // with that — the daemon (`notif listen`) merges sets
-            // implicitly by re-registering per send.
+            // the UN center. Since the identifier is derived from the
+            // ordered label tuple (see `category_id_for` at file scope),
+            // repeat sends with the same buttons — the common case for
+            // Claude Code Allow/Deny permission notifs — re-register the
+            // same category ID and macOS treats the call as a no-op.
+            // Distinct label tuples still mint distinct categories per
+            // send, so this is not yet a persistent registration story
+            // across heterogeneous callers ; see the notif-outbound-actions
+            // rollout for the follow-up if we ever need one.
             center.setNotificationCategories(&categories);
 
             let action_labels: Vec<&str> = callbacks
