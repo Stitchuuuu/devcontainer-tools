@@ -59,20 +59,57 @@ function readJsonl(file) {
 }
 
 function aggregatePending() {
-    // pending-perms.jsonl is append-only : the first record for a requestId
-    // has settled:false + full metadata (toolName, inputs) ; the second has
-    // settled:true + outcome. We fold by requestId, last-write-wins.
+    // pending-perms.jsonl is append-only :
+    //   - perm records: {ts, sessionId, channelId, requestId, ...}
+    //     first has settled:false + full metadata ; second has settled:true.
+    //   - boot markers: {ts, ev:"session_boot"} written by the ext watcher
+    //     at each extension host init. On reload, the SDK aborts pending
+    //     Gn instances but our settle-log injection only hooks resolve —
+    //     reject/abort never writes settled:true, so pre-boot records
+    //     would linger as ghosts. We use the latest boot marker's ts as
+    //     the cutoff.
+    const records = readJsonl(PENDING);
+    let bootTs = null;
+    for (const rec of records) {
+        if (rec.ev === "session_boot" && rec.ts && (!bootTs || rec.ts > bootTs)) {
+            bootTs = rec.ts;
+        }
+    }
+    // Fallback if no boot marker (fresh file, log rotation) : records
+    // older than 30 min are treated as fossilized.
+    const fallbackCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const cutoff = bootTs || fallbackCutoff;
+
     const byRid = {};
-    for (const rec of readJsonl(PENDING)) {
-        const rid = rec.requestId;
-        if (!rid) continue;
-        byRid[rid] = { ...byRid[rid], ...rec };
+    for (const rec of records) {
+        if (rec.ev) continue;                    // skip boundary markers
+        if (!rec.requestId) continue;
+        if (rec.ts && rec.ts < cutoff) continue; // stale — skip
+        byRid[rec.requestId] = { ...byRid[rec.requestId], ...rec };
     }
     const pending = [];
     for (const rid in byRid) {
         if (byRid[rid].settled === false) pending.push(byRid[rid]);
     }
     return pending;
+}
+
+function resolvePending(token) {
+    // Resolve a positional token to a single pending record.
+    //   - Exact match on requestId (full 32-char hex) wins immediately.
+    //   - Otherwise prefix-match against requestId, sessionId, and
+    //     channelId across all pending. Unique hit required — ambiguity
+    //     is a fail-loud condition (user must disambiguate).
+    const pending = aggregatePending();
+    if (pending.length === 0) return { pending, matches: [] };
+    const exact = pending.find(p => p.requestId === token);
+    if (exact) return { pending, matches: [exact] };
+    const matches = pending.filter(p =>
+        (p.requestId && p.requestId.startsWith(token)) ||
+        (p.sessionId && p.sessionId.startsWith(token)) ||
+        (p.channelId && p.channelId.startsWith(token))
+    );
+    return { pending, matches };
 }
 
 function fmtAge(iso) {
@@ -100,16 +137,23 @@ function cmdList(args) {
         console.log("(no pending perm requests)");
         return 0;
     }
-    // Tabular : sid8  requestId  tool  inputs  age
-    console.log(`${"sid8".padEnd(9)}${"requestId".padEnd(14)}${"tool".padEnd(14)}${"inputs".padEnd(52)}age`);
-    console.log("─".repeat(94));
+    // Tabular : sid8  chan   rid8  focus  tool  inputs  age
+    // `focus` = one of "F" (focused), "A" (active but not focused), "-" (neither),
+    // "?" (unknown / pre-boot record with no focus data).
+    console.log(`${"sid8".padEnd(9)}${"chan".padEnd(8)}${"rid8".padEnd(10)}${"foc".padEnd(5)}${"tool".padEnd(14)}${"inputs".padEnd(43)}age`);
+    console.log("─".repeat(96));
     for (const p of pending) {
         const sid8 = (p.sessionId || "").slice(0, 8);
-        const rid = truncate(p.requestId || "", 12);
+        const chan = (p.channelId || "").slice(0, 6);
+        const rid8 = (p.requestId || "").slice(0, 8);
+        const foc = p.focused === true ? "F"
+                  : p.focused === false && p.active === true ? "A"
+                  : p.focused === false ? "-"
+                  : "?";
         const tool = truncate(p.toolName || "", 12);
-        const inputs = truncate(JSON.stringify(p.inputs ?? {}), 50);
+        const inputs = truncate(JSON.stringify(p.inputs ?? {}), 41);
         const age = fmtAge(p.ts);
-        console.log(`${sid8.padEnd(9)}${rid.padEnd(14)}${tool.padEnd(14)}${inputs.padEnd(52)}${age}`);
+        console.log(`${sid8.padEnd(9)}${chan.padEnd(8)}${rid8.padEnd(10)}${foc.padEnd(5)}${tool.padEnd(14)}${inputs.padEnd(43)}${age}`);
     }
     return 0;
 }
@@ -139,22 +183,42 @@ function parseFlags(argv) {
 
 function cmdSend(args) {
     const { positional, flags } = parseFlags(args);
-    if (positional.length < 2) die(1, "usage: send <requestId> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sessionId>]");
-    const [requestId, behavior] = positional;
+    if (positional.length < 2) die(1, "usage: send <sid8|chan|rid8|full-rid> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sessionId>]");
+    const [token, behavior] = positional;
     if (behavior !== "allow" && behavior !== "deny") die(1, `behavior must be 'allow' or 'deny' (got ${behavior})`);
 
-    // Resolve sessionId : explicit --sid > lookup in pending-perms
+    // Prefix-match the positional against pending (rid/sid/chan). Bypass
+    // when --sid is passed AND the token looks like a full requestId — user
+    // knows what they're doing.
     let sessionId = flags.sid;
+    let requestId;
     let inputsFromPending;
-    if (!sessionId || behavior === "allow") {
-        // We need pending metadata either for sid or to echo back inputs
-        const pending = aggregatePending().find(p => p.requestId === requestId);
-        if (!sessionId) {
-            if (!pending) die(1, `no pending request with requestId=${requestId} — pass --sid <sessionId> to force`);
-            sessionId = pending.sessionId;
+
+    const fullRid = /^[0-9a-f]{32}$/i.test(token);
+    if (sessionId && fullRid) {
+        // Force path — treat token as a full requestId, don't try to
+        // resolve. Still try to echo inputs from pending if present.
+        requestId = token;
+        inputsFromPending = aggregatePending().find(p => p.requestId === token)?.inputs;
+    } else {
+        const { pending, matches } = resolvePending(token);
+        if (matches.length === 0) {
+            const hint = pending.length
+                ? `pending: ${pending.map(p => `${(p.sessionId||"").slice(0,8)}/${(p.requestId||"").slice(0,8)}`).join(", ")}`
+                : "(list is empty)";
+            die(1, `no pending match for "${token}" — ${hint}`);
         }
-        inputsFromPending = pending?.inputs;
+        if (matches.length > 1) {
+            const listed = matches.map(p => `sid8=${(p.sessionId||"").slice(0,8)} rid=${p.requestId}`).join("\n  ");
+            die(1, `ambiguous token "${token}" — ${matches.length} matches:\n  ${listed}`);
+        }
+        const hit = matches[0];
+        requestId = hit.requestId;
+        if (!sessionId) sessionId = hit.sessionId;
+        inputsFromPending = hit.inputs;
     }
+
+    if (!sessionId) die(1, `sessionId could not be resolved and --sid was not provided`);
 
     const cmd = { cmd: "tool_permission_response", sessionId, requestId, behavior };
 

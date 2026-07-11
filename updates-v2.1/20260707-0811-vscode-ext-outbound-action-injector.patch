@@ -1,0 +1,2677 @@
+diff --git a/.devcontainer/claude/outbound-tester.js b/.devcontainer/claude/outbound-tester.js
+new file mode 100755
+index 0000000..b572b4b
+--- /dev/null
++++ b/.devcontainer/claude/outbound-tester.js
+@@ -0,0 +1,206 @@
++#!/usr/bin/env node
++/**
++ * outbound-tester — CLI for driving the outbound control channel from the
++ * host / a script. Companion to the vscode-ext-patchs/{outbound-action-injector,
++ * webview-simulated-click}.py patches.
++ *
++ * Reads .devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl (written
++ * by the extension's instrumented sendRequest) to discover the requestId of
++ * each currently-pending tool_permission_request. Writes injection commands
++ * to .devcontainer/logs/claude-code-vscode-ext-outbound.jsonl for the
++ * extension's file watcher to pick up (200 ms poll).
++ *
++ * Subcommands
++ * -----------
++ *   list [--json]
++ *       Print unsettled perm requests (grouped by requestId, latest state
++ *       wins). Default: tabular. --json: machine-readable.
++ *
++ *   send <requestId> allow [--input '<json>'] [--sid <sessionId>]
++ *   send <requestId> deny  [--message '<text>']  [--sid <sessionId>]
++ *       Append a tool_permission_response line to outbound.jsonl. Auto-
++ *       resolves sessionId from pending-perms.jsonl unless --sid is given.
++ *       --input overrides the inputs to send (deep merge preserves fields
++ *       not specified). If omitted, echoes back the original inputs.
++ *
++ * Exit codes
++ * ----------
++ *   0 : success
++ *   1 : argparse error / requestId not found (for `send`)
++ *   2 : IO error
++ */
++
++"use strict";
++const fs = require("fs");
++const path = require("path");
++
++const LOGS_DIR = path.resolve(__dirname, "..", "logs");
++const PENDING = path.join(LOGS_DIR, "claude-code-vscode-ext-pending-perms.jsonl");
++const OUTBOUND = path.join(LOGS_DIR, "claude-code-vscode-ext-outbound.jsonl");
++
++function die(code, msg) {
++    console.error(msg);
++    process.exit(code);
++}
++
++function readJsonl(file) {
++    // Missing file is not fatal — treat as empty. This is the boot state
++    // before any perm request has been sent.
++    if (!fs.existsSync(file)) return [];
++    const raw = fs.readFileSync(file, "utf8");
++    const records = [];
++    for (const line of raw.split("\n")) {
++        const t = line.trim();
++        if (!t) continue;
++        try { records.push(JSON.parse(t)); }
++        catch (e) { console.warn(`[outbound-tester] skip bad line in ${path.basename(file)}: ${e.message}`); }
++    }
++    return records;
++}
++
++function aggregatePending() {
++    // pending-perms.jsonl is append-only : the first record for a requestId
++    // has settled:false + full metadata (toolName, inputs) ; the second has
++    // settled:true + outcome. We fold by requestId, last-write-wins.
++    const byRid = {};
++    for (const rec of readJsonl(PENDING)) {
++        const rid = rec.requestId;
++        if (!rid) continue;
++        byRid[rid] = { ...byRid[rid], ...rec };
++    }
++    const pending = [];
++    for (const rid in byRid) {
++        if (byRid[rid].settled === false) pending.push(byRid[rid]);
++    }
++    return pending;
++}
++
++function fmtAge(iso) {
++    const ms = Date.now() - new Date(iso).getTime();
++    if (!isFinite(ms)) return "?";
++    const s = Math.round(ms / 1000);
++    if (s < 60) return `${s}s`;
++    if (s < 3600) return `${Math.round(s / 60)}m`;
++    return `${Math.round(s / 3600)}h`;
++}
++
++function truncate(s, n) {
++    if (typeof s !== "string") s = JSON.stringify(s ?? "");
++    return s.length > n ? s.slice(0, n - 1) + "…" : s;
++}
++
++function cmdList(args) {
++    const asJson = args.includes("--json");
++    const pending = aggregatePending();
++    if (asJson) {
++        console.log(JSON.stringify(pending, null, 2));
++        return 0;
++    }
++    if (pending.length === 0) {
++        console.log("(no pending perm requests)");
++        return 0;
++    }
++    // Tabular : sid8  requestId  tool  inputs  age
++    console.log(`${"sid8".padEnd(9)}${"requestId".padEnd(14)}${"tool".padEnd(14)}${"inputs".padEnd(52)}age`);
++    console.log("─".repeat(94));
++    for (const p of pending) {
++        const sid8 = (p.sessionId || "").slice(0, 8);
++        const rid = truncate(p.requestId || "", 12);
++        const tool = truncate(p.toolName || "", 12);
++        const inputs = truncate(JSON.stringify(p.inputs ?? {}), 50);
++        const age = fmtAge(p.ts);
++        console.log(`${sid8.padEnd(9)}${rid.padEnd(14)}${tool.padEnd(14)}${inputs.padEnd(52)}${age}`);
++    }
++    return 0;
++}
++
++function parseFlags(argv) {
++    // Strip and collect --flag <value> pairs into a plain object ; return
++    // (positional, flags). Bare --json is treated as {json:true}.
++    const flags = {};
++    const positional = [];
++    for (let i = 0; i < argv.length; i++) {
++        const a = argv[i];
++        if (a.startsWith("--")) {
++            const key = a.slice(2);
++            const next = argv[i + 1];
++            if (next !== undefined && !next.startsWith("--")) {
++                flags[key] = next;
++                i++;
++            } else {
++                flags[key] = true;
++            }
++        } else {
++            positional.push(a);
++        }
++    }
++    return { positional, flags };
++}
++
++function cmdSend(args) {
++    const { positional, flags } = parseFlags(args);
++    if (positional.length < 2) die(1, "usage: send <requestId> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sessionId>]");
++    const [requestId, behavior] = positional;
++    if (behavior !== "allow" && behavior !== "deny") die(1, `behavior must be 'allow' or 'deny' (got ${behavior})`);
++
++    // Resolve sessionId : explicit --sid > lookup in pending-perms
++    let sessionId = flags.sid;
++    let inputsFromPending;
++    if (!sessionId || behavior === "allow") {
++        // We need pending metadata either for sid or to echo back inputs
++        const pending = aggregatePending().find(p => p.requestId === requestId);
++        if (!sessionId) {
++            if (!pending) die(1, `no pending request with requestId=${requestId} — pass --sid <sessionId> to force`);
++            sessionId = pending.sessionId;
++        }
++        inputsFromPending = pending?.inputs;
++    }
++
++    const cmd = { cmd: "tool_permission_response", sessionId, requestId, behavior };
++
++    if (behavior === "allow") {
++        if (flags.input) {
++            try { cmd.updatedInput = JSON.parse(flags.input); }
++            catch (e) { die(1, `--input must be valid JSON: ${e.message}`); }
++        } else {
++            cmd.updatedInput = inputsFromPending ?? {};
++        }
++        cmd.updatedPermissions = [];
++    } else {
++        cmd.message = flags.message ?? "denied";
++    }
++
++    // Ensure the directory + file exist ; extension.js also creates them
++    // defensively, but we may run before the ext has started.
++    try { fs.mkdirSync(LOGS_DIR, { recursive: true }); } catch (_) {}
++    fs.appendFileSync(OUTBOUND, JSON.stringify(cmd) + "\n");
++    console.log(`✓ appended to ${path.relative(process.cwd(), OUTBOUND)}: ${behavior} sid=${sessionId.slice(0, 8)} rid=${requestId}`);
++    return 0;
++}
++
++function main() {
++    const argv = process.argv.slice(2);
++    const [subcmd, ...rest] = argv;
++    switch (subcmd) {
++        case "list":
++            process.exit(cmdList(rest));
++        case "send":
++            process.exit(cmdSend(rest));
++        default:
++            console.error(
++`outbound-tester — drive Claude Code perm requests from CLI
++
++Usage :
++  outbound-tester.js list [--json]
++  outbound-tester.js send <requestId> allow [--input '<json>'] [--sid <sessionId>]
++  outbound-tester.js send <requestId> deny  [--message '<text>']  [--sid <sessionId>]
++
++Files :
++  ${path.relative(process.cwd(), PENDING)}   (read — populated by ext.js instrumented sendRequest)
++  ${path.relative(process.cwd(), OUTBOUND)}  (write — polled by ext.js watcher, 200 ms)
++`);
++            process.exit(subcmd ? 1 : 0);
++    }
++}
++
++main();
+diff --git a/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py b/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
+index f14af18..0271f6f 100755
+--- a/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
++++ b/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
+@@ -84,7 +84,44 @@ IMPACT_LINES = [
+ ]
+ 
+ 
+-def patch_package_json(pkg_path):
++def resolve_enum_name(pkg_path):
++    """Return the enum value our patch should use for the "opens in active
++    column, at end of tab group" behavior.
++
++    Version-based cutoff (RELIABLE, unlike enum inspection which gets
++    polluted by our own previous patches once they've run) :
++
++    - v2.1.201- : `"primary"` — the historical value, matches
++                  legacy devcontainer.json / vscode-settings.jsonc.
++    - v2.1.202+ : `"active-panel"` — reserves `"primary"` for potential
++                  future Anthropic wiring (they already register a
++                  `primaryEditor.open` command in all versions, and the
++                  `getPreferredLocation()` getter would only need one line
++                  to route it — see the update recipe notes for the full
++                  reasoning).
++
++    Migration : devcontainer.json / vscode-settings.jsonc using `"primary"`
++    stay valid on ≤201, but must be updated to `"active-panel"` when
++    upgrading to 202+.
++    """
++    p = json.loads(pkg_path.read_text())
++    try:
++        version = p["version"]
++    except KeyError:
++        banner("ICON-FIX-OPEN-IN-CURRENT-PANEL PATCH FAILED",
++               "package.json: 'version' field missing",
++               IMPACT_LINES)
++        sys.exit(1)
++    # `2.1.202` → (2, 1, 202). Parse defensively — any unparseable component
++    # falls through to the safer "primary" default.
++    try:
++        parts = tuple(int(x) for x in version.split("."))
++    except ValueError:
++        return "primary"
++    return "active-panel" if parts >= (2, 1, 202) else "primary"
++
++
++def patch_package_json(pkg_path, name):
+     p = json.loads(pkg_path.read_text())
+     try:
+         loc = p["contributes"]["configuration"]["properties"]["claudeCode.preferredLocation"]
+@@ -93,19 +130,21 @@ def patch_package_json(pkg_path):
+                f"package.json: schema path missing ({e})",
+                IMPACT_LINES)
+         sys.exit(1)
+-    if "primary" in loc["enum"]:
+-        print(f"{YELLOW}[1/6]{RESET} package.json — already patched")
++    if name in loc["enum"]:
++        print(f"{YELLOW}[1/6]{RESET} package.json — {name!r} already in enum")
+         return
+-    loc["enum"].append("primary")
+-    loc.setdefault("enumDescriptions", []).append("Primary Editor (Active Column)")
++    loc["enum"].append(name)
++    desc = "Primary Editor (Active Column)" if name == "primary" else "Active Panel (Same Column, End of Group)"
++    loc.setdefault("enumDescriptions", []).append(desc)
+     pkg_path.write_text(json.dumps(p, indent=2))
+-    print(f"{GREEN}[1/6]{RESET} package.json — added 'primary' to preferredLocation enum")
++    print(f"{GREEN}[1/6]{RESET} package.json — added {name!r} to preferredLocation enum")
+ 
+ 
+-def patch_editor_open_guard(content):
++def patch_editor_open_guard(content, name):
+     """Prevent `editor.open` from silently overwriting the preferredLocation
+-    setting when it's "primary" (which would otherwise mutate it to "panel")."""
+-    marker = 'getConfiguration("claudeCode").get("preferredLocation")!=="primary"'
++    setting when it's our chosen value (which would otherwise mutate it to
++    "panel")."""
++    marker = f'getConfiguration("claudeCode").get("preferredLocation")!=="{name}"'
+     if marker in content:
+         print(f"{YELLOW}[2/6]{RESET} extension.js editor.open guard — already patched")
+         return content
+@@ -123,19 +162,19 @@ def patch_editor_open_guard(content):
+     replacement = (
+         f'registerCommand("claude-vscode.editor.open",async({a1},{a2},{a3})=>{{'
+         f'if({c1}!=={vs}.ViewColumn.Active'
+-        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="primary")'
++        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="{name}")'
+         f'{st}.setPreferredLocation("panel");'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st})")
++    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st}, name={name!r})")
+     return new_content
+ 
+ 
+-def patch_editor_openLast(content):
++def patch_editor_openLast(content, name):
+     """Redirect `editor.openLast` (= the icon and status bar handler) to
+-    `primaryEditor.open` when the setting is "primary"."""
++    `primaryEditor.open` when the setting equals our chosen enum value."""
+     idx = content.find('"claude-vscode.editor.openLast"')
+-    marker = 'getConfiguration("claudeCode").get("preferredLocation")==="primary"'
++    marker = f'getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
+     if idx != -1 and marker in content[idx:idx + 600]:
+         print(f"{YELLOW}[3/6]{RESET} extension.js editor.openLast — already patched")
+         return content
+@@ -156,12 +195,12 @@ def patch_editor_openLast(content):
+         f'registerCommand("claude-vscode.editor.openLast",async()=>{{'
+         f'if({st}.getPreferredLocation()==="sidebar"){{'
+         f'await {vs}.commands.executeCommand("claude-vscode.sidebar.open");return}}'
+-        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"){{'
++        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"){{'
+         f'await {vs}.commands.executeCommand("claude-vscode.primaryEditor.open");return}}'
+         f'await {vs}.commands.executeCommand("claude-vscode.editor.open")'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs})")
++    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs}, name={name!r})")
+     return new_content
+ 
+ 
+@@ -189,21 +228,27 @@ def patch_primaryEditor_use_active_column(content):
+                IMPACT_LINES)
+         sys.exit(1)
+     a, r, pm, vs = m.groups()
++    # `_tg` (underscore-prefixed) avoids shadow-collision when the captured
++    # arrow params happen to include a bare `g` — the minifier assigned
++    # `(g,b)` to primaryEditor.open on 2.1.202, which turned the previous
++    # `let g=...` injection into `async(g,b)=>{let g=...}` (duplicate
++    # declaration, SyntaxError). Minified names are one-lowercase-letter, so
++    # any underscore prefix guarantees no future collision.
+     replacement = (
+         f'registerCommand("claude-vscode.primaryEditor.open",async({a},{r})=>{{'
+-        f'let g={vs}.window.tabGroups.activeTabGroup;'
+-        f'{pm}.createPanel({a},{r},g&&g.viewColumn?g.viewColumn:{vs}.ViewColumn.Active)}})'
++        f'let _tg={vs}.window.tabGroups.activeTabGroup;'
++        f'{pm}.createPanel({a},{r},_tg&&_tg.viewColumn?_tg.viewColumn:{vs}.ViewColumn.Active)}})'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+     print(f"{GREEN}[4/6]{RESET} extension.js primaryEditor.open active column — applied (panelMgr={pm}, vscode={vs})")
+     return new_content
+ 
+ 
+-def patch_plus_button_active_column(content):
++def patch_plus_button_active_column(content, name):
+     """Fix the `+` button in the Claude webview header. The handler for the
+     `new_conversation_tab` message originally calls `editor.open(sessionId,
+-    prompt)`. Branch on `preferredLocation`: when "primary", route to
+-    `primaryEditor.open` (which resolves the active column via
++    prompt)`. Branch on `preferredLocation`: when our chosen value, route
++    to `primaryEditor.open` (which resolves the active column via
+     `tabGroups.activeTabGroup.viewColumn` and renders full chrome) ; else
+     fall back to the unmodified two-arg `editor.open(sid, prompt)`
+     (Anthropic's original split-column behavior). Mirrors step [3/6]'s
+@@ -231,23 +276,23 @@ def patch_plus_button_active_column(content):
+     msg, vs = m.groups()
+     replacement = (
+         f'{msg}.request.type==="new_conversation_tab")return await '
+-        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"'
++        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
+         f'?{vs}.commands.executeCommand("claude-vscode.primaryEditor.open",'
+         f'{msg}.request.sessionId,{msg}.request.initialPrompt)'
+         f':{vs}.commands.executeCommand("claude-vscode.editor.open",'
+         f'{msg}.request.sessionId,{msg}.request.initialPrompt))'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs})")
++    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs}, name={name!r})")
+     return new_content
+ 
+ 
+-def patch_openlast_move_to_end(content):
+-    """For the primary branch of `editor.openLast` (icon top-right / status
+-    bar item / command palette), follow `primaryEditor.open` with a single
+-    `workbench.action.moveEditorToEnd` so the new tab lands at the end of
+-    the active tab group. Wrapped in `try/catch` ; failures log to the
+-    « Claude VSCode » output channel via the PanelManager singleton's
++def patch_openlast_move_to_end(content, name):
++    """For the active-panel branch of `editor.openLast` (icon top-right /
++    status bar item / command palette), follow `primaryEditor.open` with a
++    single `workbench.action.moveEditorToEnd` so the new tab lands at the
++    end of the active tab group. Wrapped in `try/catch` ; failures log to
++    the « Claude VSCode » output channel via the PanelManager singleton's
+     `.output` field.
+ 
+     Why this command : `vscode.window.tabGroups` has no `move()` method
+@@ -276,9 +321,12 @@ def patch_openlast_move_to_end(content):
+         sys.exit(1)
+     pm = pm_match.group(1)
+ 
++    # Step 3 has already written `==="<name>"` here — reuse the same NAME to
++    # match the post-[3/6] state. Escaping isn't needed (kebab-case names are
++    # regex-safe), but re.escape is defensive against future naming choices.
+     pat = re.compile(
+         r'(getConfiguration\("claudeCode"\)\.get\("preferredLocation"\)'
+-        r'==="primary"\)\{await (\w+)\.commands\.executeCommand'
++        r'===' + re.escape(f'"{name}"') + r'\)\{await (\w+)\.commands\.executeCommand'
+         r'\("claude-vscode\.primaryEditor\.open"\);)'
+         r'[\s\S]*?'
+         r'(return\})'
+@@ -311,16 +359,20 @@ def main():
+ 
+     print(f"Patching Claude Code extension at: {ext_dir}")
+ 
+-    patch_package_json(pkg)
++    name = resolve_enum_name(pkg)
++    print(f"  enum value in use: {BOLD}{name!r}{RESET} "
++          f"({'v2.1.202+ — Anthropic reserved primary' if name == 'active-panel' else 'v2.1.201- — historical primary'})")
++
++    patch_package_json(pkg, name)
+ 
+     content = js.read_text()
+     original = content
+ 
+-    content = patch_editor_open_guard(content)
+-    content = patch_editor_openLast(content)
++    content = patch_editor_open_guard(content, name)
++    content = patch_editor_openLast(content, name)
+     content = patch_primaryEditor_use_active_column(content)
+-    content = patch_plus_button_active_column(content)
+-    content = patch_openlast_move_to_end(content)
++    content = patch_plus_button_active_column(content, name)
++    content = patch_openlast_move_to_end(content, name)
+ 
+     if content != original:
+         js.write_text(content)
+diff --git a/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py b/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
+new file mode 100755
+index 0000000..859289c
+--- /dev/null
++++ b/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
+@@ -0,0 +1,274 @@
++#!/usr/bin/env python3
++"""
++Injects a reciprocal control channel into the Claude Code VS Code extension.
++
++Two patches applied to `extension.js`:
++
++1. **Outbound file watcher** — singleton, injected at the top of
++   `PanelManager.setupPanel()`. Guarded by `this._outboundStarted` so only
++   the first panel to open kicks it off. Polls `.devcontainer/logs/
++   claude-code-vscode-ext-outbound.jsonl` every 200 ms; for each new line
++   `{"cmd":"tool_permission_response","sessionId","requestId","behavior",
++   "updatedInput","updatedPermissions"}` it looks up the target panel in
++   `this.sessionPanels`, then posts `{type:"simulated_click", requestId,
++   result:{...}}` to the webview via `panel.webview.postMessage`. The
++   webview-side patch (`webview-simulated-click.py`) intercepts the
++   `simulated_click`, finds the pending Gn permission-request instance
++   by `channelId === requestId`, and calls `Q.accept(...)` / `Q.reject(...)` —
++   which is exactly what a real Allow / Deny button click does. The response
++   round-trips back to the ext through the canonical `onDidReceiveMessage`
++   chokepoint (already logged by `user-action-observer.py`), so
++   `inbound.jsonl` gets a `source:"user-action"` entry indistinguishable
++   from a human click.
++
++2. **sendRequest instrumentation** — Comms.sendRequest is patched to
++   append pending / settled markers to `pending-perms.jsonl` whenever the
++   request is a `tool_permission_request`. This makes outstanding
++   permission requests observable to an external controller (which
++   otherwise has no visibility into the ext→webview direction — the
++   existing user-action-observer only captures webview→ext). The pending
++   record shape is `{ts, sessionId, requestId, toolName, inputs, settled:
++   false}`; the settle record is `{ts, sessionId, requestId, settled:true,
++   outcome:"allow|deny"}`.
++
++Anchor choice — why setupPanel top rather than the onDidReceiveMessage
++site: user-action-observer.py already patches the onDidReceiveMessage
++callback body. Patching the same site here would create a subtle
++ordering dependency (alphabetical order puts outbound-* before user-*,
++so we'd invalidate user-action-observer's regex). Injecting at the
++opening brace of setupPanel is fully independent and survives
++user-action-observer's own patch.
++
++MARKER: `notify-queue-outbound-inject-v1`.
++
++Exit codes
++----------
++- 0 : applied or already patched
++- 1 : any regex miss (red banner + IMPACT_LINES)
++
++Usage
++-----
++    outbound-action-injector.py [EXT_DIR]
++
++If EXT_DIR omitted, autodiscovers the latest
++~/.vscode-server/extensions/anthropic.claude-code-*.
++"""
++
++import os
++import re
++import sys
++from pathlib import Path
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_files
++
++
++MARKER_WATCHER = 'notify-queue-outbound-inject-v1'
++MARKER_PENDING = 'notify-queue-outbound-perm-log-v1'
++MARKER_SETTLE = 'notify-queue-outbound-perm-settle-v1'
++
++IMPACT_LINES = [
++    "→ The outbound control channel will NOT be wired up.",
++    "  External writes to claude-code-vscode-ext-outbound.jsonl will be",
++    "  ignored; automated permission response injection will not work.",
++    "  Pending permission tracking (pending-perms.jsonl) also lost.",
++    "Likely cause: CLAUDE_CODE_VERSION was bumped and either the",
++    "  setupPanel() signature or the sendRequest() shape drifted.",
++    "  Inspect vendor/anthropic.claude-code/v<VER>/pretty/extension.js",
++    "  around setupPanel and Comms.sendRequest, then update the regexes",
++    "  in .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py.",
++]
++
++
++WATCHER_BLOCK = (
++    '/*' + MARKER_WATCHER + '*/'
++    'if(!this._outboundStarted){'
++      'this._outboundStarted=true;'
++      'try{'
++        'const vscode=require("vscode");'
++        'const wf=vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
++        'if(wf){'
++          'const path=require("path"),fs=require("fs");'
++          'const dir=path.join(wf,".devcontainer","logs");'
++          'const file=path.join(dir,"claude-code-vscode-ext-outbound.jsonl");'
++          'try{fs.mkdirSync(dir,{recursive:true});fs.closeSync(fs.openSync(file,"a"));}catch(_){}'
++          'let pos=0;try{pos=fs.statSync(file).size;}catch(_){}'
++          'let carry="";'
++          'this._outboundTimer=setInterval(()=>{'
++            'let sz;try{sz=fs.statSync(file).size;}catch(_){return;}'
++            'if(sz<pos){pos=0;carry="";}'
++            'if(sz<=pos)return;'
++            'const buf=Buffer.alloc(sz-pos);let fd;'
++            'try{fd=fs.openSync(file,"r");fs.readSync(fd,buf,0,buf.length,pos);}catch(_){return;}'
++            'finally{if(fd!==undefined){try{fs.closeSync(fd);}catch(_){}}}'
++            'pos=sz;'
++            'const chunk=carry+buf.toString("utf8");'
++            'const lines=chunk.split("\\n");'
++            'carry=lines.pop()||"";'
++            'for(const line of lines){'
++              'const t=line.trim();if(!t)continue;'
++              'try{'
++                'const cmd=JSON.parse(t);'
++                'if(cmd.cmd==="tool_permission_response"){'
++                  'const p=this.sessionPanels?.get(cmd.sessionId);'
++                  'if(!p){this.output.warn(`[outbound-inject] no panel for sid=${cmd.sessionId}`);continue;}'
++                  'const result={behavior:cmd.behavior,updatedInput:cmd.updatedInput??{},updatedPermissions:cmd.updatedPermissions??[]};'
++                  'if(cmd.behavior==="deny")result.message=cmd.message??"denied";'
++                  'p.webview.postMessage({type:"from-extension",message:{type:"simulated_click",requestId:cmd.requestId,result}});'
++                  'this.output.info(`[outbound-inject] posted simulated_click sid=${cmd.sessionId} rid=${cmd.requestId} behavior=${cmd.behavior}`);'
++                '}else{'
++                  'this.output.warn(`[outbound-inject] unknown cmd: ${cmd.cmd}`);'
++                '}'
++              '}catch(e){this.output.warn(`[outbound-inject] parse failed: ${e?.message??e}`);}'
++            '}'
++          '},200);'
++          'this.output.info(`[outbound-inject] watcher started on ${file}`);'
++        '}'
++      '}catch(e){this.output?.warn?.(`[outbound-inject] init failed: ${e?.message??e}`);}'
++    '}'
++)
++
++
++def patch_watcher(content):
++    """Inject the singleton file-watcher at the top of setupPanel(z,K,V,N){.
++    Independent of user-action-observer.py which patches the onDidReceiveMessage
++    call inside the method body.
++    """
++    if MARKER_WATCHER in content:
++        n = content.count(MARKER_WATCHER)
++        print(f"{YELLOW}[outbound-watcher]{RESET} extension.js — already patched ({n} site(s))")
++        return content
++
++    pat = re.compile(r'(setupPanel\(\w+,\w+,\w+,\w+\)\{)')
++    matches = list(pat.finditer(content))
++    if not matches:
++        banner("OUTBOUND WATCHER PATCH FAILED",
++               "extension.js: setupPanel(z,K,V,N){ signature not found",
++               IMPACT_LINES)
++        sys.exit(1)
++    if len(matches) > 1:
++        # setupPanel appears exactly once as a method definition ; if we see
++        # multiple, the regex is too permissive — abort loudly.
++        banner("OUTBOUND WATCHER PATCH AMBIGUOUS",
++               f"extension.js: setupPanel signature matched {len(matches)} times (expected 1)",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    # Direct char-index splice — re.sub would treat backslash escapes in
++    # WATCHER_BLOCK as replacement escapes (`\n` → real newline mid-string,
++    # breaking the JS). Same trap as user-action-observer.py documents.
++    m = matches[0]
++    new_content = content[:m.end()] + WATCHER_BLOCK + content[m.end():]
++    print(f"{GREEN}[outbound-watcher]{RESET} extension.js — injected at setupPanel top")
++    return new_content
++
++
++def patch_sendrequest(content):
++    """Instrument Comms.sendRequest to log tool_permission_request pending +
++    settled events to pending-perms.jsonl. Two injections:
++      A. Right after `let N=Y3();` → append pending record.
++      B. Inside `{resolve:(Z)=>{...x(Z)...}` → append settled record.
++    """
++    if MARKER_PENDING in content and MARKER_SETTLE in content:
++        print(f"{YELLOW}[outbound-perm-log]{RESET} extension.js — already patched")
++        return content
++
++    # A. Pending log injection — match the sendRequest signature + `let N=Y3();`
++    #    Captures: (1) full prefix, (2) sid var (z), (3) req obj var (K),
++    #    (4) abort var (V), (5) requestId var (N).
++    # `\w+\(\)` matches whichever minified name the requestId generator has
++    # (Y3() on 2.1.145, Hs() on 2.1.202, likely to keep drifting) — the
++    # surrounding sendRequest(...) { let ID = <fn>(); shape is the true anchor.
++    pat_pending = re.compile(
++        r'(sendRequest\((\w+),(\w+),(\w+)\)\{let (\w+)=\w+\(\);)'
++    )
++    m_pending = pat_pending.search(content)
++    if not m_pending:
++        banner("OUTBOUND PENDING-LOG PATCH FAILED",
++               "extension.js: sendRequest(<sid>,<req>,<abort>){let <rid>=<fn>();...} not found",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    sid_var = m_pending.group(2)
++    req_var = m_pending.group(3)
++    rid_var = m_pending.group(5)
++
++    pending_inject = (
++        '/*' + MARKER_PENDING + '*/'
++        'try{'
++          f'if({req_var}?.type==="tool_permission_request"){{'
++            'const vs=require("vscode");'
++            'const wf=vs.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
++            'if(wf){'
++              'const path=require("path"),fs=require("fs");'
++              'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
++              f'const rec={{ts:new Date().toISOString(),sessionId:{sid_var},requestId:{rid_var},toolName:{req_var}.toolName,inputs:{req_var}.inputs,settled:false}};'
++              'try{fs.mkdirSync(path.dirname(file),{recursive:true});}catch(_){}'
++              'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'
++            '}'
++          '}'
++        '}catch(_){};'
++    )
++    content = content[:m_pending.end()] + pending_inject + content[m_pending.end():]
++
++    # B. Settle log injection — match the resolve callback inside the same
++    #    sendRequest promise body. Anchor: `this.outstandingRequests.set(N,{resolve:(Z)=>{x(Z)}`
++    #    where N is the requestId var captured in A.
++    pat_settle = re.compile(
++        r'(this\.outstandingRequests\.set\(' + re.escape(rid_var) + r',\{resolve:\((\w+)\)=>\{)(' + r'\w+\(\2\))(\})'
++    )
++    m_settle = pat_settle.search(content)
++    if not m_settle:
++        banner("OUTBOUND SETTLE-LOG PATCH FAILED",
++               f"extension.js: outstandingRequests.set({rid_var},{{resolve:...}}) not found",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    resolve_arg = m_settle.group(2)   # Z
++    resolve_call = m_settle.group(3)  # x(Z)
++
++    settle_inject = (
++        '/*' + MARKER_SETTLE + '*/'
++        'try{'
++          f'if({req_var}?.type==="tool_permission_request"){{'
++            'const vs=require("vscode");'
++            'const wf=vs.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
++            'if(wf){'
++              'const path=require("path"),fs=require("fs");'
++              'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
++              f'const rec={{ts:new Date().toISOString(),sessionId:{sid_var},requestId:{rid_var},settled:true,outcome:{resolve_arg}?.result?.behavior??"unknown"}};'
++              'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'
++            '}'
++          '}'
++        '}catch(_){};'
++    )
++    # Direct char-index splice — same re.sub escape-processing trap as the
++    # watcher injection above. Splice at m_settle.start(1) end (right after
++    # the resolve callback opening brace).
++    inject_at = m_settle.start(3)  # start of `x(Z)`
++    content = content[:inject_at] + settle_inject + content[inject_at:]
++
++    print(f"{GREEN}[outbound-perm-log]{RESET} extension.js — instrumented sendRequest (sid={sid_var}, rid={rid_var})")
++    return content
++
++
++def main():
++    ext_dir = resolve_ext_dir(sys.argv)
++    check_files(ext_dir, ["extension.js"])
++    js = ext_dir / "extension.js"
++
++    print(f"Patching Claude Code extension at: {ext_dir}")
++
++    content = js.read_text()
++    original = content
++    content = patch_watcher(content)
++    content = patch_sendrequest(content)
++
++    if content != original:
++        js.write_text(content)
++
++    print(f"{GREEN}{BOLD}✓ outbound-action-injector patches complete{RESET}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/.devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py b/.devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py
+new file mode 100755
+index 0000000..50a652d
+--- /dev/null
++++ b/.devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py
+@@ -0,0 +1,159 @@
++#!/usr/bin/env python3
++"""
++Injects a `simulated_click` interceptor into the Claude Code VS Code webview
++bundle (`webview/index.js`). Companion to `outbound-action-injector.py`.
++
++The extension-side watcher posts `{type:"from-extension", message:{type:
++"simulated_click", requestId, result:{behavior, updatedInput,
++updatedPermissions}}}` to `panel.webview.postMessage()` whenever an entry
++lands in `.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl`. This
++patch intercepts that message on the WEBVIEW side (before the normal
++message dispatcher runs) and calls `Q.accept(...)` / `Q.reject(...)` on the
++matching pending `Gn` permission-request instance — which is the SAME
++method the Allow/Deny button click handler invokes.
++
++Why this is the right abstraction: `handleToolPermissionRequest` builds
++a `Q = new Gn($, ...)` (where $ is the requestId, stored as `Q.channelId`
++inside Gn — misleadingly named). `Q.accept(input, perms)` fires
++`Q.resolved.emit({behavior:"allow", updatedInput, updatedPermissions})`.
++That triggers the `onResolved` callback registered inside
++handleToolPermissionRequest:
++  ```
++  Q.onResolved((result) => {
++    X({type:"tool_permission_response", result});      // (a) postMessage to ext
++    this.permissionRequests.value =
++      this.permissionRequests.value.filter(z => z !== Q);  // (b) UI dismiss
++  });
++  ```
++So (a) sends the canonical response through the standard webview→ext
++channel — captured by `user-action-observer.py` into `inbound.jsonl` with
++`source:"user-action"`, indistinguishable from a real click. And (b)
++drops Q from the reactive `permissionRequests` signal — dismissing the
++prompt UI atomically. Zero orphan.
++
++Anchor: the top-level `window.addEventListener("message",(G)=>{...})` in
++the connection provider class. The `this` in the arrow function is
++already the `zn` instance (which owns both `fromHost` — the message queue
++— and `permissionRequests`). No global exposure needed.
++
++MARKER: `notify-queue-webview-sim-click-v1`.
++
++Exit codes
++----------
++- 0 : applied or already patched
++- 1 : regex miss (red banner + IMPACT_LINES)
++
++Usage
++-----
++    webview-simulated-click.py [EXT_DIR]
++"""
++
++import os
++import re
++import sys
++from pathlib import Path
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_files
++
++
++MARKER = 'notify-queue-webview-sim-click-v1'
++
++IMPACT_LINES = [
++    "→ The webview will NOT intercept simulated_click messages from the",
++    "  extension. External permission-response injection via outbound.jsonl",
++    "  will still resolve ext-side promises (the tool runs), but the",
++    "  webview UI prompt will not dismiss — orphaned Allow/Deny buttons.",
++    "Likely cause: CLAUDE_CODE_VERSION was bumped and the",
++    "  window.addEventListener('message', ...) shape drifted, OR the",
++    "  connection provider class no longer stores permissionRequests on",
++    "  `this` in the listener's scope.",
++    "Inspect vendor/anthropic.claude-code/v<VER>/pretty/webview-index.js",
++    "  around the addEventListener('message', ...) call and update the",
++    "  regex in .devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py.",
++]
++
++
++def patch_message_intercept(content):
++    """Rewrite:
++        window.addEventListener("message",(G)=>{
++          if(G.data.type==="from-extension")this.fromHost.enqueue(G.data.message)
++        })
++    into:
++        window.addEventListener("message",(G)=>{
++          if(G.data.type==="from-extension"){
++            /*marker*/
++            const m = G.data.message;
++            if (m?.type === "simulated_click") { ...resolve pending Gn...; return; }
++            this.fromHost.enqueue(m);
++          }
++        })
++    """
++    if MARKER in content:
++        n = content.count(MARKER)
++        print(f"{YELLOW}[webview-sim-click]{RESET} webview/index.js — already patched ({n} site(s))")
++        return content
++
++    # Groups:
++    #   1: full prefix ending at the closing paren of the from-extension cond
++    #   2: event param var (G) — used in backrefs
++    #   3: the closing `})` of the addEventListener call
++    pat = re.compile(
++        r'(window\.addEventListener\("message",\((\w+)\)=>\{'
++        r'if\(\2\.data\.type==="from-extension"\))'
++        r'this\.fromHost\.enqueue\(\2\.data\.message\)'
++        r'(\}\))'
++    )
++    m = pat.search(content)
++    if not m:
++        banner("WEBVIEW SIMULATED-CLICK PATCH FAILED",
++               'webview/index.js: window.addEventListener("message",...) shape not found',
++               IMPACT_LINES)
++        sys.exit(1)
++
++    ev_var = m.group(2)
++
++    replacement = (
++        m.group(1) + '{'
++        '/*' + MARKER + '*/'
++        f'const _m={ev_var}.data.message;'
++        'if(_m?.type==="simulated_click"){'
++          'try{'
++            'const _rid=_m.requestId;'
++            'const _Q=this.permissionRequests?.value?.find(q=>q?.channelId===_rid);'
++            'if(_Q){'
++              'const _r=_m.result;'
++              'if(_r?.behavior==="allow")_Q.accept(_r.updatedInput??{},_r.updatedPermissions??[]);'
++              'else _Q.reject(_r?.message??"denied",false);'
++            '}else{console.warn("[webview-sim-click] no pending Gn for requestId="+_rid);}'
++          '}catch(e){console.warn("[webview-sim-click] failed:",e);}'
++          'return;'
++        '}'
++        f'this.fromHost.enqueue(_m);'
++        '}' + m.group(3)
++    )
++
++    new_content = content[:m.start()] + replacement + content[m.end():]
++    print(f"{GREEN}[webview-sim-click]{RESET} webview/index.js — injected (event var: {ev_var})")
++    return new_content
++
++
++def main():
++    ext_dir = resolve_ext_dir(sys.argv)
++    check_files(ext_dir, ["webview/index.js"])
++    js = ext_dir / "webview" / "index.js"
++
++    print(f"Patching Claude Code webview at: {js}")
++
++    content = js.read_text()
++    original = content
++    content = patch_message_intercept(content)
++
++    if content != original:
++        js.write_text(content)
++
++    print(f"{GREEN}{BOLD}✓ webview-simulated-click patches complete{RESET}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/.devcontainer/post-start.sh b/.devcontainer/post-start.sh
+index 144538c..ac85a53 100644
+--- a/.devcontainer/post-start.sh
++++ b/.devcontainer/post-start.sh
+@@ -27,12 +27,15 @@ echo "=== post-start $(date) ==="
+ echo "  log:   ${LOG#/workspace/}"
+ echo "  trace: $TRACE_LOC"
+ 
+-# Wipe the Claude Code VS Code extension inbound log at every container start.
+-# Observation/audit data — no value retaining across boots. The JS appendFile
+-# in the user-action-observer patch creates the file on the first event.
+-# Parent dir (.devcontainer/logs) is already created above by the lifecycle
+-# block, so appendFile doesn't need to mkdir.
+-rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl
++# Wipe the Claude Code VS Code extension observation/control JSONLs at every
++# container start. Observation/audit + control-channel data — no value retaining
++# across boots. The JS appendFile in the user-action-observer patch creates
++# inbound.jsonl on the first event ; outbound-action-injector's watcher creates
++# outbound.jsonl + pending-perms.jsonl at ext startup. Parent dir
++# (.devcontainer/logs) is created above by the lifecycle block.
++rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl \
++      /workspace/.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl \
++      /workspace/.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl
+ 
+ # Hide bind-mounted .vscode/settings.json from git
+ # (the devcontainer overrides it via docker-compose volume mount)
+diff --git a/.gitignore b/.gitignore
+index d510c3d..03a22c6 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -17,6 +17,10 @@
+ .devcontainer/notify/floating-perms-state.json.lock
+ .devcontainer/notify/floating-perms-audit.jsonl
+ 
++# sync-skills — timestamped backups of ~/.claude/settings.json (one per run with changes)
++.devcontainer/claude/settings-backups/
++
+ # Build / OS
+ .env.dev
+ .DS_Store
++vendor/anthropic.claude-code/
+diff --git a/docs/vscode-ext/outbound-rectification-prompt.md b/docs/vscode-ext/outbound-rectification-prompt.md
+new file mode 100644
+index 0000000..32ef58a
+--- /dev/null
++++ b/docs/vscode-ext/outbound-rectification-prompt.md
+@@ -0,0 +1,176 @@
++# Prompt — session de rectification préventive du outbound control channel
++
++À coller **verbatim** dans une session Claude Code fraîche (nouveau
++onglet, pas de contexte cumulé). Ne PAS l'invoquer via une commande
++`/prepare-plan` ou similaire — c'est un audit ciblé, pas un rollout
++multi-session. La session doit terminer en une passe, avec soit une
++liste de rectifications proposées, soit un rapport « rien à corriger ».
++
++---
++
++## Prompt à coller
++
++Tu es sur un devcontainer avec un patch récent du Claude Code VS Code
++extension : un **canal de contrôle outbound** qui permet à un
++contrôleur externe d'injecter des réponses à des permission requests
++(comme si l'utilisateur avait cliqué Allow / Deny) via un fichier
++JSONL. Le patch a été mergé en 3 pièces :
++
++1. **`.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py`**
++   — instrumente `extension.js` : ajoute un file-watcher singleton dans
++   `PanelManager.setupPanel(z,K,V,N){` (poll 200 ms sur
++   `.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl`), et
++   instrumente `Comms.sendRequest(…)` pour logger les perm-requests
++   pending dans `pending-perms.jsonl`.
++2. **`.devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py`**
++   — instrumente `webview/index.js` : intercepte un message
++   `{type:"simulated_click", requestId, result}` dans le
++   `window.addEventListener("message", …)`, cherche l'instance `Q =
++   new Gn(requestId,…)` dans `this.permissionRequests.value` par
++   `Q.channelId === requestId`, appelle `Q.accept(input, perms)` ou
++   `Q.reject(msg, false)`.
++3. **`.devcontainer/claude/outbound-tester.js`** — CLI node
++   standalone : `list` (lit pending-perms.jsonl, affiche unsettled)
++   et `send <rid> allow|deny [--input '<json>'] [--message '<txt>']`
++   (append à outbound.jsonl).
++
++Le tout est décrit en détail dans
++[updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md](updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md).
++Le plan de tests manuels est dans
++[.devcontainer/claude/outbound-tester-manual-tests.md](.devcontainer/claude/outbound-tester-manual-tests.md).
++
++**Ton mandat** : audit préventif ciblé sur les failure modes
++plausibles, PAS une réécriture. Tu vas :
++
++1. **Lire les 3 fichiers listés ci-dessus + les updates-v2.1 associés**
++   pour reconstruire le modèle mental.
++
++2. **Lire les injections finales** dans les fichiers patchés :
++   ```bash
++   grep -A 40 'notify-queue-outbound-inject-v1' \
++     ~/.vscode-server/extensions/anthropic.claude-code-*/extension.js
++   grep -A 30 'notify-queue-outbound-perm-log-v1' \
++     ~/.vscode-server/extensions/anthropic.claude-code-*/extension.js
++   grep -A 30 'notify-queue-outbound-perm-settle-v1' \
++     ~/.vscode-server/extensions/anthropic.claude-code-*/extension.js
++   grep -A 25 'notify-queue-webview-sim-click-v1' \
++     ~/.vscode-server/extensions/anthropic.claude-code-*/webview/index.js
++   ```
++   Vérifier que le JS injecté est valide (`node --check`) et que la
++   sémantique correspond aux intentions décrites.
++
++3. **Chercher activement les failure modes suivants** :
++
++   **F1 — Race au boot**. Le watcher est démarré dès la 1re invocation
++   de `setupPanel()`, mais `this.sessionPanels.get(sid)` peut retourner
++   `undefined` si outbound.jsonl a des lignes AVANT que la session
++   cible ne soit ouverte. Vérifier : le watcher log un warning et
++   continue ; le fichier n'est pas rewound pour retry.
++   **Attendu** : ce cas est acceptable (log warning). Confirmer que
++   c'est le comportement.
++
++   **F2 — Bug de lookup Q.channelId**. La classe `Gn` stocke le
++   requestId sous `.channelId` (nom trompeur — le param constructor
++   est `$` capturé comme `this.channelId`). Vérifier que la comparaison
++   webview `q?.channelId === rid` est correcte. Cross-check :
++   `handleToolPermissionRequest($, Z, J) { … Q = new Gn($, …) }`
++   → oui, `$` = requestId.
++
++   **F3 — Q.accept / Q.reject args**. Confirmer que la signature
++   coincide avec ce que le vrai click handler passe :
++   - `Q.accept({}, [])` → equivalent d'un click Allow, `updatedInput`
++     et `updatedPermissions` vides
++   - `Q.reject("denied", false)` → equivalent d'un click Deny sans
++     interrupt
++   Compare avec le composant React qui gère les boutons (grep
++   `permissionRequests.value` dans `webview/index.js`).
++
++   **F4 — pending-perms.jsonl growth unbounded**. Rien ne wipe ce
++   fichier en cours de session (uniquement au boot par
++   `post-start.sh`). Pour un usage prolongé (session de plusieurs
++   heures), calcule combien de lignes ça fait par heure. Si > 1000/h,
++   propose un rotate ou un truncate périodique. Sinon RAS.
++
++   **F5 — Idempotence broken sur re-run**. Confirmer que
++   `run-all.sh` re-appliqué N fois n'ajoute jamais un 2ème watcher
++   (le flag `this._outboundStarted` protège). Réel : lancer 3× et
++   vérifier `grep -c 'setInterval' extension.js` avant/après (ne
++   doit pas augmenter à chaque run).
++
++   **F6 — Concurrent writes à outbound.jsonl**. Deux invocations
++   simultanées de `outbound-tester.js send` peuvent-elles interleave ?
++   `fs.appendFileSync` sur POSIX est atomique jusqu'à `PIPE_BUF` (4 KB
++   généralement). Confirmer que chaque ligne JSON reste sous ça et
++   qu'on write avec `\n` en fin.
++
++   **F7 — Le watcher lit des lignes partielles**. Si un writer append
++   la moitié d'une ligne au moment où le watcher poll, le `\n` n'est
++   pas là — le `JSON.parse` fail. Vérifier le buffering : le patch
++   utilise un `carry` string qui garde le trailing partial jusqu'au
++   prochain poll. Confirmer qu'il est correctement séparé (le
++   dernier élément de `split("\n")` doit aller dans `carry`).
++
++   **F8 — Le webview intercept bloque des messages légitimes**. Le
++   check `if(_m?.type === "simulated_click")` doit être exclusif : si
++   la condition matche un message légitime avec ce type par
++   coïncidence, on shortcut avant l'enqueue. Confirmer que
++   `"simulated_click"` n'est pas un type utilisé par Anthropic ailleurs
++   (grep dans webview/index.js pour le confirmer).
++
++   **F9 — sendRequest instrumentation loggue TOUT** dans pending-perms.
++   Le patch conditionne sur `K?.type === "tool_permission_request"`
++   mais un typo dans la comparaison ferait tout logger. Confirmer.
++
++   **F10 — Multi-session cross-talk**. Un send vers sessionId=A avec
++   requestId=B, où B appartient à la session A → OK. Mais si B est
++   dans session C (mismatched pair), notre lookup
++   `this.sessionPanels?.get(sid_A)` renvoie panel A, on postMessage à
++   panel A qui cherche B dans SES permissionRequests, ne le trouve
++   pas, warn console. Confirmer que ce cas est bien un warn et pas
++   un crash / cross-inject.
++
++   **F11 — Le webview intercept ne handle pas les erreurs**. Si
++   `Q.accept` throw (par exemple `updatedInput` invalide), le catch
++   est-il en place ? Grep pour `catch` dans l'injection webview.
++
++   **F12 — Le tester CLI ne handle pas les paths absolus**. Si l'user
++   lance `node /path/to/outbound-tester.js` depuis un CWD différent,
++   les paths des JSONL sont-ils résolus correctement ? Le patch
++   utilise `path.resolve(__dirname, '..', 'logs')` — vérifier que
++   c'est stable.
++
++4. **Rapporte** :
++
++   - Pour chaque F qui est un vrai bug : file:line + fix proposé (pas
++     de code encore, juste le diff conceptuel).
++   - Pour chaque F qui est un edge case acceptable : justifier
++     brièvement.
++   - Si tu identifies un failure mode HORS liste : ajoute-le comme
++     F13, F14, …
++   - Si tout est clean : dis-le explicitement, ne bricole pas des
++     problèmes.
++
++5. **Ne modifie AUCUN fichier** avant qu'on ait discuté du rapport.
++   L'output attendu est un audit .md brut, pas un commit.
++
++**Contraintes** :
++- Utilise les subagents `Explore` pour les greps qui prennent du
++  temps ; garde le main thread pour la synthèse.
++- Pas de web fetch. Tout est on-disk.
++- Reste focalisé sur les 3 fichiers du canal outbound + leur
++  environnement immédiat (post-start.sh, la config JSONL). Le reste
++  du repo n'est pas dans le scope.
++
++---
++
++## Mes remarques (à compléter avant de coller)
++
++<!-- Ajoute ici les points que tu veux que la session cible en priorité,
++     par exemple :
++     - "surtout regarde le F4 en profondeur, on va laisser tourner 8h+"
++     - "j'ai déjà vu un warning [outbound-inject] no panel for sid=... hier,
++        peux-tu tracer d'où ça peut venir ?"
++     - "on va aussi utiliser ça sur des ExitPlanMode / AskUserQuestion, est-ce
++        que la sémantique tient ?"
++-->
++
+diff --git a/docs/vscode-ext/outbound-tester-manual-tests.md b/docs/vscode-ext/outbound-tester-manual-tests.md
+new file mode 100644
+index 0000000..988c5c7
+--- /dev/null
++++ b/docs/vscode-ext/outbound-tester-manual-tests.md
+@@ -0,0 +1,164 @@
++# Outbound control channel — manual test plan
++
++Post-reload validation of the outbound action injector patch set
++(`outbound-action-injector.py` + `webview-simulated-click.py` +
++`outbound-tester.js`). Run these after `Developer: Reload Window` on
++the Claude Code VS Code panel.
++
++**Prerequisites**
++- LIVE ext already patched (`bash .devcontainer/claude/vscode-ext-patchs/run-all.sh`)
++- VS Code window reloaded so the patched `extension.js` and
++  `webview/index.js` are actually loaded
++- A terminal open in the workspace to run `outbound-tester.js` + tail
++  the JSONL logs
++
++## Baseline sanity — no session yet
++
++```bash
++node .devcontainer/claude/outbound-tester.js list
++# expected: "(no pending perm requests)"
++ls -l .devcontainer/logs/claude-code-vscode-ext-{outbound,pending-perms}.jsonl
++# expected: both files exist (created by the ext watcher at startup),
++# both empty (0 bytes) or absent-then-touched on first perm request
++```
++
++## T1 — Pending perm request appears in the observability log
++
++1. In Claude, ask : "run `whoami`".
++2. Wait for the permission prompt UI to appear.
++3. In the terminal :
++   ```bash
++   tail -f .devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl
++   ```
++   Expected : a JSON line with `"settled":false`, `"toolName":"Bash"`,
++   a valid `"requestId"` (short id).
++
++4. Simultaneously :
++   ```bash
++   node .devcontainer/claude/outbound-tester.js list
++   ```
++   Expected : tabular row showing sid8, requestId, "Bash",
++   inputs (starts with `{"command":"whoami"`), age.
++
++## T2 — Inject allow via CLI, tool runs
++
++Grab the `requestId` from T1. Then :
++
++```bash
++node .devcontainer/claude/outbound-tester.js send <requestId> allow
++```
++
++**Within 200 ms, expected** :
++
++- ✅ The Allow / Deny prompt in the webview **disappears** (real
++  dismiss, not orphan) — same visual as if a human had clicked Allow.
++- ✅ Claude proceeds with `whoami` — you see its output land in the
++  panel.
++- ✅ New line in `.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl`
++  with `"source":"user-action"` (not `"user-action-simulated"` —
++  because we go through the canonical webview→ext roundtrip, not a
++  synthetic side-channel) and payload matching a normal
++  `tool_permission_response`.
++- ✅ New line in `pending-perms.jsonl` with `"settled":true,
++  "outcome":"allow"` for the same requestId.
++- ✅ « Claude VSCode » output channel logs
++  `[outbound-inject] posted simulated_click sid=... rid=... behavior=allow`.
++
++## T3 — Inject deny, tool does NOT run
++
++Ask Claude to run another Bash command (e.g., `ls /tmp`). Wait for
++prompt. Then :
++
++```bash
++node .devcontainer/claude/outbound-tester.js send <requestId> deny
++```
++
++Expected :
++- ✅ Prompt dismisses in the webview.
++- ✅ Claude gets the deny — the tool does NOT execute, Claude either
++  stops or reroutes.
++- ✅ `pending-perms.jsonl` gets `"settled":true, "outcome":"deny"`.
++
++## T4 — Multi-session isolation (skip if only one Claude panel open)
++
++1. Open a SECOND Claude session (icon → New Session or the `+` button
++   in the panel header).
++2. In session A, ask Claude to run a Bash command → prompt appears.
++3. In session B, ask Claude to run a DIFFERENT Bash command → prompt
++   appears.
++4. `node .devcontainer/claude/outbound-tester.js list` → both should
++   appear with different `sid8` values.
++5. `send <requestId-A> allow` → **only session A's prompt dismisses**,
++   session B is untouched.
++6. `send <requestId-B> deny` → session B's prompt dismisses, session A
++   already back to normal.
++
++Confirms the sessionId lookup in `this.sessionPanels?.get(sid)` routes
++to the right panel per session.
++
++## T5 — Error handling : unknown requestId, bad sessionId
++
++```bash
++# Unknown requestId
++node .devcontainer/claude/outbound-tester.js send nonexistent-id allow
++# expected: exit 1 with error "no pending request with requestId=nonexistent-id"
++
++# Force with a bogus sid — patch should log a warning but not crash
++echo '{"cmd":"tool_permission_response","sessionId":"bogus","requestId":"x","behavior":"allow"}' \
++  >> .devcontainer/logs/claude-code-vscode-ext-outbound.jsonl
++# expected in « Claude VSCode » channel:
++#   [outbound-inject] no panel for sid=bogus
++```
++
++The extension keeps running normally. No panels affected.
++
++## T6 — Malformed JSONL line handling
++
++```bash
++echo 'not json at all' \
++  >> .devcontainer/logs/claude-code-vscode-ext-outbound.jsonl
++```
++
++Expected : warning in « Claude VSCode » channel
++`[outbound-inject] parse failed: Unexpected token ...`. Next valid
++line still gets processed.
++
++## T7 — Boot-time state — files touched on VS Code startup
++
++1. Close VS Code entirely (Cmd+Q).
++2. Reopen. Wait for the Claude panel to initialize.
++3. Check the logs directory :
++   ```bash
++   ls -la .devcontainer/logs/claude-code-vscode-ext-*.jsonl
++   ```
++   Expected :
++   - `inbound.jsonl`, `outbound.jsonl`, `pending-perms.jsonl` all
++     present, wiped clean (0 bytes) by `post-start.sh`.
++
++## T8 — Watcher robustness — file removed mid-session
++
++```bash
++# With Claude panel open and no perm request pending :
++rm .devcontainer/logs/claude-code-vscode-ext-outbound.jsonl
++# The watcher's stat() will fail silently on the next tick, retry on
++# subsequent ticks. No crash, no ext restart needed.
++# Then :
++node .devcontainer/claude/outbound-tester.js send <newRequestId> allow
++# The tester itself re-creates the file on append. Injection should
++# work the next time a perm request comes up.
++```
++
++## Rollback check (if any test fails badly)
++
++```bash
++# Revert to unpatched extension.js + webview/index.js by re-extracting
++# the VSIX. The Dockerfile is set up for this at every image rebuild.
++docker compose --project-directory .devcontainer down
++docker compose --project-directory .devcontainer build claude
++docker compose --project-directory .devcontainer up
++```
++
++Or, if you want to test without a full rebuild : delete the marker
++strings from the ext bundle and reload. But the cleanest reset is a
++container rebuild — that's why we test on `vendor/anthropic.claude-code/v<VER>/min/`
++extracts before touching LIVE.
+diff --git a/docs/vscode-ext/v2.1.201-to-v2.1.202-diff.md b/docs/vscode-ext/v2.1.201-to-v2.1.202-diff.md
+new file mode 100644
+index 0000000..3a44a0f
+--- /dev/null
++++ b/docs/vscode-ext/v2.1.201-to-v2.1.202-diff.md
+@@ -0,0 +1,204 @@
++# 20260707-0850 — Real diff Claude Code VS Code ext 2.1.201 → 2.1.202
++
++Verified diff between the two **pristine** VSIX extracts (no patches
++applied). All observations below rely on direct string extraction from
++`vendor/anthropic.claude-code/v2.1.201-pristine/` and `.../v2.1.202-pristine/`.
++
++**Empty checks first** — these did NOT change :
++
++- `package.json` : only the `"version"` field bumped (`2.1.201` →
++  `2.1.202`). All other schema keys, enums, command contributions,
++  activation events identical.
++- `claude-code-settings.schema.json` : only the auto-generated
++  `"$comment": "Generated on <date>"` timestamp changed.
++- Command surface : **0 new commands** registered, **0 removed**.
++- Enum values : `preferredLocation` still `["sidebar", "panel"]` on
++  both. Anthropic has NOT added `"primary"` natively — that was a
++  false alarm from an earlier diff against a self-patched v2.1.202.
++- Extension activation events : identical.
++- Contributed keybindings : identical.
++- Contributed views : identical.
++- Contributed walkthroughs, icons, resources except `native-binary/claude`
++  (see below).
++
++## What actually changed
++
++### 1. Cloud provider support — AWS Bedrock + GCP Vertex
++
++35+ new string literals in `extension.js`, all cloud-credential /
++metadata related. The extension now speaks Bedrock and Vertex natively
++via env-var detection.
++
++**AWS Bedrock** — 14 new env-var names read at runtime :
++
++```
++AWS_ACCESS_KEY_ID              AWS_SECRET_ACCESS_KEY       AWS_SESSION_TOKEN
++AWS_REGION                     AWS_DEFAULT_REGION          AWS_PROFILE
++AWS_CONFIG_FILE                AWS_SHARED_CREDENTIALS_FILE
++AWS_CONTAINER_CREDENTIALS_FULL_URI        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
++AWS_CONTAINER_AUTHORIZATION_TOKEN         AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
++AWS_EC2_METADATA_SERVICE_ENDPOINT         AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
++```
++
++**GCP Vertex** — 7 new env-var names + metadata service :
++
++```
++GCE_METADATA_HOST              GCE_METADATA_IP             METADATA_SERVER_DETECTION
++GCLOUD_PROJECT                 GOOGLE_CLOUD_PROJECT        GOOGLE_CLOUD_QUOTA_PROJECT
++GOOGLE_APPLICATION_CREDENTIALS
++```
++
++**Vertex model regions** — one constant per model family :
++
++```
++VERTEX_REGION_CLAUDE_3_5_HAIKU      VERTEX_REGION_CLAUDE_3_5_SONNET
++VERTEX_REGION_CLAUDE_3_7_SONNET     VERTEX_REGION_CLAUDE_4_0_OPUS
++VERTEX_REGION_CLAUDE_4_0_SONNET     VERTEX_REGION_CLAUDE_4_1_OPUS
++VERTEX_REGION_CLAUDE_4_5_OPUS       VERTEX_REGION_CLAUDE_4_5_SONNET
++VERTEX_REGION_CLAUDE_4_6_OPUS       VERTEX_REGION_CLAUDE_4_6_SONNET
++VERTEX_REGION_CLAUDE_4_7_OPUS       VERTEX_REGION_CLAUDE_4_8_OPUS
++VERTEX_REGION_CLAUDE_5_SONNET       VERTEX_REGION_CLAUDE_FABLE_5
++VERTEX_REGION_CLAUDE_HAIKU_4_5
++```
++
++**Meaning** : if you run in an AWS or GCP environment with the right
++env vars set, the extension can dispatch to Bedrock / Vertex instead
++of the Anthropic API directly. Regional model routing is now
++per-model-family, configurable via env.
++
++### 2. New model IDs
++
++Three ID namespaces, all catalogued in one place. Note the presence of
++**unshipped code-name models** (`mythos`, `fable`) — probably staged
++for future release.
++
++**Anthropic marketplace slug** (`anthropic.<slug>`) — 5 new :
++
++```
++anthropic.claude-fable-5
++anthropic.claude-haiku-4-5
++anthropic.claude-opus-4-7
++anthropic.claude-opus-4-8
++anthropic.claude-sonnet-5
++```
++
++**Kebab-case (CLI / SDK facing)** — 17 new (many historical too, now
++catalogued together for switching) :
++
++```
++claude-3-5-haiku    claude-3-5-sonnet    claude-3-5-sonnet-20241022
++claude-3-7-sonnet   claude-fable-5       claude-haiku-4-5
++claude-mythos-5     claude-opus-4        claude-opus-4-1
++claude-opus-4-5     claude-opus-4-5-20251101   claude-opus-4-7
++claude-opus-4-8     claude-sonnet-4      claude-sonnet-4-5
++claude-sonnet-4-5-20250929      claude-sonnet-4-6
++```
++
++**Bedrock-style** (`us.anthropic.<slug>`) — 15 new :
++
++```
++us.anthropic.claude-3-5-haiku-20241022-v1:0
++us.anthropic.claude-3-5-sonnet-20241022-v2:0
++us.anthropic.claude-3-7-sonnet-20250219-v1:0
++us.anthropic.claude-fable-5
++us.anthropic.claude-haiku-4-5-20251001-v1:0
++us.anthropic.claude-opus-4-1-20250805-v1:0
++us.anthropic.claude-opus-4-20250514-v1:0
++us.anthropic.claude-opus-4-5-20251101-v1:0
++us.anthropic.claude-opus-4-6-v1
++us.anthropic.claude-opus-4-7
++us.anthropic.claude-opus-4-8
++us.anthropic.claude-sonnet-4-20250514-v1:0
++us.anthropic.claude-sonnet-4-5-20250929-v1:0
++us.anthropic.claude-sonnet-4-6
++us.anthropic.claude-sonnet-5
++```
++
++### 3. New feature keys
++
++Config values / capability flags introduced in the model dispatch
++plumbing :
++
++- `SSEHttpError` — new error class for server-sent-events streaming.
++  Probably distinguishes network-level failures from Anthropic API
++  errors (finer-grained retry logic).
++- `adaptive_thinking` — new thinking mode variant. Was
++  `default_on`/`off` previously ; now there's an adaptive third rail.
++- `context_management` — new capability toggle. Probably relates to
++  automatic context compaction / truncation.
++- `mid_conv_system` — mid-conversation system prompt handling.
++  Probably lets the ext inject a system prompt mid-stream instead of
++  only at conversation start.
++- `lean_prompt` — new prompt mode. Streamlined variant.
++- `fast_mode` — corresponds to the /fast Claude Code toggle. Probably
++  now surfaced as a first-class capability the model dispatcher can
++  see.
++- `overflow` — probably context-overflow handling policy.
++- `rejects_disabled_thinking` — flag distinguishing which models
++  refuse a request when `thinking: off` is passed.
++
++**Effort levels** — 3 new granularity constants :
++
++- `effort` (base)
++- `max_effort`
++- `xhigh_effort` (a step above max)
++
++Probably driving compute-budget control per request.
++
++**Model family labels** — 4 new bare strings :
++
++- `haiku`, `sonnet`, `mythos`, `fable`
++
++Match the 4 emerging model families. `mythos` and `fable` are the
++new code-names — not yet in the marketplace, but wired in the
++dispatcher.
++
++### 4. `native-binary/claude` bumped
++
++Size delta : 248 MB (v201) → 258 MB (v202) = **+10 MB**. Almost
++certainly the underlying Claude Code CLI binary got a version bump
++matching the ext version, with the same set of features baked in.
++
++## What did NOT change (surface confirmation)
++
++Verified explicit non-changes to reassure our patch-set stability :
++
++- `onDidReceiveMessage` chokepoint in `setupPanel()` — same shape (3
++  call sites, same regex captures `(panel, msg, comms)`).
++- `sendRequest(sid, req, abort)` signature — the requestId generator
++  function was renamed (`Y3()` on 2.1.145 → `Hs()` in 2.1.202), but
++  the surrounding structure is identical. Our patch already uses
++  `\w+\(\)` for the generator name so it survives.
++- `handleToolPermissionRequest` in the webview — same `Q = new Gn(…)`
++  ; same `Q.onResolved(…)` ; same
++  `this.permissionRequests.value.filter(…)` shape. The webview-side
++  intercept anchor is unchanged.
++- `class Gn` fields (`channelId`, `toolName`, `inputs`, `suggestions`,
++  `resolved`) and methods (`accept`, `reject`, `onResolved`) —
++  identical. Our `Q.accept(input, perms)` / `Q.reject(msg, false)`
++  contract holds.
++
++## Impact on our patches
++
++**None.** The 7 patches (5 pre-existing + 2 new) all apply cleanly on
++pristine v2.1.202 with zero syntax errors on both `extension.js` and
++`webview/index.js`. The version-adaptive naming in
++`icon-fix-open-in-current-panel.py` (step 1/6) switches the enum from
++`"primary"` to `"active-panel"` on 2.1.202+ — pure future-proofing
++against a hypothetical Anthropic wiring of `"primary"` that hasn't
++happened yet.
++
++## Compatibility with our devcontainer configs
++
++On 2.1.202+ the two config files below need updating **only when the
++image bumps to 2.1.202+** — currently we're on 2.1.145, no action
++required :
++
++- `.devcontainer/devcontainer.json` :
++  `"claudeCode.preferredLocation": "primary"` → `"active-panel"`
++- `.devcontainer/vscode-settings.jsonc` : same.
++
++The change is idempotent : if you set `"active-panel"` on a 2.1.145
++container, our patch on that version added `"primary"` to the enum
++(not `"active-panel"`) so VS Code will reject the setting as invalid.
++The migration is version-locked : bump image + config in the same PR.
+diff --git a/templates/v2/claude/outbound-tester.js b/templates/v2/claude/outbound-tester.js
+new file mode 100755
+index 0000000..b572b4b
+--- /dev/null
++++ b/templates/v2/claude/outbound-tester.js
+@@ -0,0 +1,206 @@
++#!/usr/bin/env node
++/**
++ * outbound-tester — CLI for driving the outbound control channel from the
++ * host / a script. Companion to the vscode-ext-patchs/{outbound-action-injector,
++ * webview-simulated-click}.py patches.
++ *
++ * Reads .devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl (written
++ * by the extension's instrumented sendRequest) to discover the requestId of
++ * each currently-pending tool_permission_request. Writes injection commands
++ * to .devcontainer/logs/claude-code-vscode-ext-outbound.jsonl for the
++ * extension's file watcher to pick up (200 ms poll).
++ *
++ * Subcommands
++ * -----------
++ *   list [--json]
++ *       Print unsettled perm requests (grouped by requestId, latest state
++ *       wins). Default: tabular. --json: machine-readable.
++ *
++ *   send <requestId> allow [--input '<json>'] [--sid <sessionId>]
++ *   send <requestId> deny  [--message '<text>']  [--sid <sessionId>]
++ *       Append a tool_permission_response line to outbound.jsonl. Auto-
++ *       resolves sessionId from pending-perms.jsonl unless --sid is given.
++ *       --input overrides the inputs to send (deep merge preserves fields
++ *       not specified). If omitted, echoes back the original inputs.
++ *
++ * Exit codes
++ * ----------
++ *   0 : success
++ *   1 : argparse error / requestId not found (for `send`)
++ *   2 : IO error
++ */
++
++"use strict";
++const fs = require("fs");
++const path = require("path");
++
++const LOGS_DIR = path.resolve(__dirname, "..", "logs");
++const PENDING = path.join(LOGS_DIR, "claude-code-vscode-ext-pending-perms.jsonl");
++const OUTBOUND = path.join(LOGS_DIR, "claude-code-vscode-ext-outbound.jsonl");
++
++function die(code, msg) {
++    console.error(msg);
++    process.exit(code);
++}
++
++function readJsonl(file) {
++    // Missing file is not fatal — treat as empty. This is the boot state
++    // before any perm request has been sent.
++    if (!fs.existsSync(file)) return [];
++    const raw = fs.readFileSync(file, "utf8");
++    const records = [];
++    for (const line of raw.split("\n")) {
++        const t = line.trim();
++        if (!t) continue;
++        try { records.push(JSON.parse(t)); }
++        catch (e) { console.warn(`[outbound-tester] skip bad line in ${path.basename(file)}: ${e.message}`); }
++    }
++    return records;
++}
++
++function aggregatePending() {
++    // pending-perms.jsonl is append-only : the first record for a requestId
++    // has settled:false + full metadata (toolName, inputs) ; the second has
++    // settled:true + outcome. We fold by requestId, last-write-wins.
++    const byRid = {};
++    for (const rec of readJsonl(PENDING)) {
++        const rid = rec.requestId;
++        if (!rid) continue;
++        byRid[rid] = { ...byRid[rid], ...rec };
++    }
++    const pending = [];
++    for (const rid in byRid) {
++        if (byRid[rid].settled === false) pending.push(byRid[rid]);
++    }
++    return pending;
++}
++
++function fmtAge(iso) {
++    const ms = Date.now() - new Date(iso).getTime();
++    if (!isFinite(ms)) return "?";
++    const s = Math.round(ms / 1000);
++    if (s < 60) return `${s}s`;
++    if (s < 3600) return `${Math.round(s / 60)}m`;
++    return `${Math.round(s / 3600)}h`;
++}
++
++function truncate(s, n) {
++    if (typeof s !== "string") s = JSON.stringify(s ?? "");
++    return s.length > n ? s.slice(0, n - 1) + "…" : s;
++}
++
++function cmdList(args) {
++    const asJson = args.includes("--json");
++    const pending = aggregatePending();
++    if (asJson) {
++        console.log(JSON.stringify(pending, null, 2));
++        return 0;
++    }
++    if (pending.length === 0) {
++        console.log("(no pending perm requests)");
++        return 0;
++    }
++    // Tabular : sid8  requestId  tool  inputs  age
++    console.log(`${"sid8".padEnd(9)}${"requestId".padEnd(14)}${"tool".padEnd(14)}${"inputs".padEnd(52)}age`);
++    console.log("─".repeat(94));
++    for (const p of pending) {
++        const sid8 = (p.sessionId || "").slice(0, 8);
++        const rid = truncate(p.requestId || "", 12);
++        const tool = truncate(p.toolName || "", 12);
++        const inputs = truncate(JSON.stringify(p.inputs ?? {}), 50);
++        const age = fmtAge(p.ts);
++        console.log(`${sid8.padEnd(9)}${rid.padEnd(14)}${tool.padEnd(14)}${inputs.padEnd(52)}${age}`);
++    }
++    return 0;
++}
++
++function parseFlags(argv) {
++    // Strip and collect --flag <value> pairs into a plain object ; return
++    // (positional, flags). Bare --json is treated as {json:true}.
++    const flags = {};
++    const positional = [];
++    for (let i = 0; i < argv.length; i++) {
++        const a = argv[i];
++        if (a.startsWith("--")) {
++            const key = a.slice(2);
++            const next = argv[i + 1];
++            if (next !== undefined && !next.startsWith("--")) {
++                flags[key] = next;
++                i++;
++            } else {
++                flags[key] = true;
++            }
++        } else {
++            positional.push(a);
++        }
++    }
++    return { positional, flags };
++}
++
++function cmdSend(args) {
++    const { positional, flags } = parseFlags(args);
++    if (positional.length < 2) die(1, "usage: send <requestId> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sessionId>]");
++    const [requestId, behavior] = positional;
++    if (behavior !== "allow" && behavior !== "deny") die(1, `behavior must be 'allow' or 'deny' (got ${behavior})`);
++
++    // Resolve sessionId : explicit --sid > lookup in pending-perms
++    let sessionId = flags.sid;
++    let inputsFromPending;
++    if (!sessionId || behavior === "allow") {
++        // We need pending metadata either for sid or to echo back inputs
++        const pending = aggregatePending().find(p => p.requestId === requestId);
++        if (!sessionId) {
++            if (!pending) die(1, `no pending request with requestId=${requestId} — pass --sid <sessionId> to force`);
++            sessionId = pending.sessionId;
++        }
++        inputsFromPending = pending?.inputs;
++    }
++
++    const cmd = { cmd: "tool_permission_response", sessionId, requestId, behavior };
++
++    if (behavior === "allow") {
++        if (flags.input) {
++            try { cmd.updatedInput = JSON.parse(flags.input); }
++            catch (e) { die(1, `--input must be valid JSON: ${e.message}`); }
++        } else {
++            cmd.updatedInput = inputsFromPending ?? {};
++        }
++        cmd.updatedPermissions = [];
++    } else {
++        cmd.message = flags.message ?? "denied";
++    }
++
++    // Ensure the directory + file exist ; extension.js also creates them
++    // defensively, but we may run before the ext has started.
++    try { fs.mkdirSync(LOGS_DIR, { recursive: true }); } catch (_) {}
++    fs.appendFileSync(OUTBOUND, JSON.stringify(cmd) + "\n");
++    console.log(`✓ appended to ${path.relative(process.cwd(), OUTBOUND)}: ${behavior} sid=${sessionId.slice(0, 8)} rid=${requestId}`);
++    return 0;
++}
++
++function main() {
++    const argv = process.argv.slice(2);
++    const [subcmd, ...rest] = argv;
++    switch (subcmd) {
++        case "list":
++            process.exit(cmdList(rest));
++        case "send":
++            process.exit(cmdSend(rest));
++        default:
++            console.error(
++`outbound-tester — drive Claude Code perm requests from CLI
++
++Usage :
++  outbound-tester.js list [--json]
++  outbound-tester.js send <requestId> allow [--input '<json>'] [--sid <sessionId>]
++  outbound-tester.js send <requestId> deny  [--message '<text>']  [--sid <sessionId>]
++
++Files :
++  ${path.relative(process.cwd(), PENDING)}   (read — populated by ext.js instrumented sendRequest)
++  ${path.relative(process.cwd(), OUTBOUND)}  (write — polled by ext.js watcher, 200 ms)
++`);
++            process.exit(subcmd ? 1 : 0);
++    }
++}
++
++main();
+diff --git a/templates/v2/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py b/templates/v2/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
+index f14af18..0271f6f 100755
+--- a/templates/v2/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
++++ b/templates/v2/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
+@@ -84,7 +84,44 @@ IMPACT_LINES = [
+ ]
+ 
+ 
+-def patch_package_json(pkg_path):
++def resolve_enum_name(pkg_path):
++    """Return the enum value our patch should use for the "opens in active
++    column, at end of tab group" behavior.
++
++    Version-based cutoff (RELIABLE, unlike enum inspection which gets
++    polluted by our own previous patches once they've run) :
++
++    - v2.1.201- : `"primary"` — the historical value, matches
++                  legacy devcontainer.json / vscode-settings.jsonc.
++    - v2.1.202+ : `"active-panel"` — reserves `"primary"` for potential
++                  future Anthropic wiring (they already register a
++                  `primaryEditor.open` command in all versions, and the
++                  `getPreferredLocation()` getter would only need one line
++                  to route it — see the update recipe notes for the full
++                  reasoning).
++
++    Migration : devcontainer.json / vscode-settings.jsonc using `"primary"`
++    stay valid on ≤201, but must be updated to `"active-panel"` when
++    upgrading to 202+.
++    """
++    p = json.loads(pkg_path.read_text())
++    try:
++        version = p["version"]
++    except KeyError:
++        banner("ICON-FIX-OPEN-IN-CURRENT-PANEL PATCH FAILED",
++               "package.json: 'version' field missing",
++               IMPACT_LINES)
++        sys.exit(1)
++    # `2.1.202` → (2, 1, 202). Parse defensively — any unparseable component
++    # falls through to the safer "primary" default.
++    try:
++        parts = tuple(int(x) for x in version.split("."))
++    except ValueError:
++        return "primary"
++    return "active-panel" if parts >= (2, 1, 202) else "primary"
++
++
++def patch_package_json(pkg_path, name):
+     p = json.loads(pkg_path.read_text())
+     try:
+         loc = p["contributes"]["configuration"]["properties"]["claudeCode.preferredLocation"]
+@@ -93,19 +130,21 @@ def patch_package_json(pkg_path):
+                f"package.json: schema path missing ({e})",
+                IMPACT_LINES)
+         sys.exit(1)
+-    if "primary" in loc["enum"]:
+-        print(f"{YELLOW}[1/6]{RESET} package.json — already patched")
++    if name in loc["enum"]:
++        print(f"{YELLOW}[1/6]{RESET} package.json — {name!r} already in enum")
+         return
+-    loc["enum"].append("primary")
+-    loc.setdefault("enumDescriptions", []).append("Primary Editor (Active Column)")
++    loc["enum"].append(name)
++    desc = "Primary Editor (Active Column)" if name == "primary" else "Active Panel (Same Column, End of Group)"
++    loc.setdefault("enumDescriptions", []).append(desc)
+     pkg_path.write_text(json.dumps(p, indent=2))
+-    print(f"{GREEN}[1/6]{RESET} package.json — added 'primary' to preferredLocation enum")
++    print(f"{GREEN}[1/6]{RESET} package.json — added {name!r} to preferredLocation enum")
+ 
+ 
+-def patch_editor_open_guard(content):
++def patch_editor_open_guard(content, name):
+     """Prevent `editor.open` from silently overwriting the preferredLocation
+-    setting when it's "primary" (which would otherwise mutate it to "panel")."""
+-    marker = 'getConfiguration("claudeCode").get("preferredLocation")!=="primary"'
++    setting when it's our chosen value (which would otherwise mutate it to
++    "panel")."""
++    marker = f'getConfiguration("claudeCode").get("preferredLocation")!=="{name}"'
+     if marker in content:
+         print(f"{YELLOW}[2/6]{RESET} extension.js editor.open guard — already patched")
+         return content
+@@ -123,19 +162,19 @@ def patch_editor_open_guard(content):
+     replacement = (
+         f'registerCommand("claude-vscode.editor.open",async({a1},{a2},{a3})=>{{'
+         f'if({c1}!=={vs}.ViewColumn.Active'
+-        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="primary")'
++        f'&&{vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")!=="{name}")'
+         f'{st}.setPreferredLocation("panel");'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st})")
++    print(f"{GREEN}[2/6]{RESET} extension.js editor.open guard — applied (vscode={vs}, state={st}, name={name!r})")
+     return new_content
+ 
+ 
+-def patch_editor_openLast(content):
++def patch_editor_openLast(content, name):
+     """Redirect `editor.openLast` (= the icon and status bar handler) to
+-    `primaryEditor.open` when the setting is "primary"."""
++    `primaryEditor.open` when the setting equals our chosen enum value."""
+     idx = content.find('"claude-vscode.editor.openLast"')
+-    marker = 'getConfiguration("claudeCode").get("preferredLocation")==="primary"'
++    marker = f'getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
+     if idx != -1 and marker in content[idx:idx + 600]:
+         print(f"{YELLOW}[3/6]{RESET} extension.js editor.openLast — already patched")
+         return content
+@@ -156,12 +195,12 @@ def patch_editor_openLast(content):
+         f'registerCommand("claude-vscode.editor.openLast",async()=>{{'
+         f'if({st}.getPreferredLocation()==="sidebar"){{'
+         f'await {vs}.commands.executeCommand("claude-vscode.sidebar.open");return}}'
+-        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"){{'
++        f'if({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"){{'
+         f'await {vs}.commands.executeCommand("claude-vscode.primaryEditor.open");return}}'
+         f'await {vs}.commands.executeCommand("claude-vscode.editor.open")'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs})")
++    print(f"{GREEN}[3/6]{RESET} extension.js editor.openLast — applied (state={st}, vscode={vs}, name={name!r})")
+     return new_content
+ 
+ 
+@@ -189,21 +228,27 @@ def patch_primaryEditor_use_active_column(content):
+                IMPACT_LINES)
+         sys.exit(1)
+     a, r, pm, vs = m.groups()
++    # `_tg` (underscore-prefixed) avoids shadow-collision when the captured
++    # arrow params happen to include a bare `g` — the minifier assigned
++    # `(g,b)` to primaryEditor.open on 2.1.202, which turned the previous
++    # `let g=...` injection into `async(g,b)=>{let g=...}` (duplicate
++    # declaration, SyntaxError). Minified names are one-lowercase-letter, so
++    # any underscore prefix guarantees no future collision.
+     replacement = (
+         f'registerCommand("claude-vscode.primaryEditor.open",async({a},{r})=>{{'
+-        f'let g={vs}.window.tabGroups.activeTabGroup;'
+-        f'{pm}.createPanel({a},{r},g&&g.viewColumn?g.viewColumn:{vs}.ViewColumn.Active)}})'
++        f'let _tg={vs}.window.tabGroups.activeTabGroup;'
++        f'{pm}.createPanel({a},{r},_tg&&_tg.viewColumn?_tg.viewColumn:{vs}.ViewColumn.Active)}})'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+     print(f"{GREEN}[4/6]{RESET} extension.js primaryEditor.open active column — applied (panelMgr={pm}, vscode={vs})")
+     return new_content
+ 
+ 
+-def patch_plus_button_active_column(content):
++def patch_plus_button_active_column(content, name):
+     """Fix the `+` button in the Claude webview header. The handler for the
+     `new_conversation_tab` message originally calls `editor.open(sessionId,
+-    prompt)`. Branch on `preferredLocation`: when "primary", route to
+-    `primaryEditor.open` (which resolves the active column via
++    prompt)`. Branch on `preferredLocation`: when our chosen value, route
++    to `primaryEditor.open` (which resolves the active column via
+     `tabGroups.activeTabGroup.viewColumn` and renders full chrome) ; else
+     fall back to the unmodified two-arg `editor.open(sid, prompt)`
+     (Anthropic's original split-column behavior). Mirrors step [3/6]'s
+@@ -231,23 +276,23 @@ def patch_plus_button_active_column(content):
+     msg, vs = m.groups()
+     replacement = (
+         f'{msg}.request.type==="new_conversation_tab")return await '
+-        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"'
++        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="{name}"'
+         f'?{vs}.commands.executeCommand("claude-vscode.primaryEditor.open",'
+         f'{msg}.request.sessionId,{msg}.request.initialPrompt)'
+         f':{vs}.commands.executeCommand("claude-vscode.editor.open",'
+         f'{msg}.request.sessionId,{msg}.request.initialPrompt))'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs})")
++    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs}, name={name!r})")
+     return new_content
+ 
+ 
+-def patch_openlast_move_to_end(content):
+-    """For the primary branch of `editor.openLast` (icon top-right / status
+-    bar item / command palette), follow `primaryEditor.open` with a single
+-    `workbench.action.moveEditorToEnd` so the new tab lands at the end of
+-    the active tab group. Wrapped in `try/catch` ; failures log to the
+-    « Claude VSCode » output channel via the PanelManager singleton's
++def patch_openlast_move_to_end(content, name):
++    """For the active-panel branch of `editor.openLast` (icon top-right /
++    status bar item / command palette), follow `primaryEditor.open` with a
++    single `workbench.action.moveEditorToEnd` so the new tab lands at the
++    end of the active tab group. Wrapped in `try/catch` ; failures log to
++    the « Claude VSCode » output channel via the PanelManager singleton's
+     `.output` field.
+ 
+     Why this command : `vscode.window.tabGroups` has no `move()` method
+@@ -276,9 +321,12 @@ def patch_openlast_move_to_end(content):
+         sys.exit(1)
+     pm = pm_match.group(1)
+ 
++    # Step 3 has already written `==="<name>"` here — reuse the same NAME to
++    # match the post-[3/6] state. Escaping isn't needed (kebab-case names are
++    # regex-safe), but re.escape is defensive against future naming choices.
+     pat = re.compile(
+         r'(getConfiguration\("claudeCode"\)\.get\("preferredLocation"\)'
+-        r'==="primary"\)\{await (\w+)\.commands\.executeCommand'
++        r'===' + re.escape(f'"{name}"') + r'\)\{await (\w+)\.commands\.executeCommand'
+         r'\("claude-vscode\.primaryEditor\.open"\);)'
+         r'[\s\S]*?'
+         r'(return\})'
+@@ -311,16 +359,20 @@ def main():
+ 
+     print(f"Patching Claude Code extension at: {ext_dir}")
+ 
+-    patch_package_json(pkg)
++    name = resolve_enum_name(pkg)
++    print(f"  enum value in use: {BOLD}{name!r}{RESET} "
++          f"({'v2.1.202+ — Anthropic reserved primary' if name == 'active-panel' else 'v2.1.201- — historical primary'})")
++
++    patch_package_json(pkg, name)
+ 
+     content = js.read_text()
+     original = content
+ 
+-    content = patch_editor_open_guard(content)
+-    content = patch_editor_openLast(content)
++    content = patch_editor_open_guard(content, name)
++    content = patch_editor_openLast(content, name)
+     content = patch_primaryEditor_use_active_column(content)
+-    content = patch_plus_button_active_column(content)
+-    content = patch_openlast_move_to_end(content)
++    content = patch_plus_button_active_column(content, name)
++    content = patch_openlast_move_to_end(content, name)
+ 
+     if content != original:
+         js.write_text(content)
+diff --git a/templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py b/templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py
+new file mode 100755
+index 0000000..859289c
+--- /dev/null
++++ b/templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py
+@@ -0,0 +1,274 @@
++#!/usr/bin/env python3
++"""
++Injects a reciprocal control channel into the Claude Code VS Code extension.
++
++Two patches applied to `extension.js`:
++
++1. **Outbound file watcher** — singleton, injected at the top of
++   `PanelManager.setupPanel()`. Guarded by `this._outboundStarted` so only
++   the first panel to open kicks it off. Polls `.devcontainer/logs/
++   claude-code-vscode-ext-outbound.jsonl` every 200 ms; for each new line
++   `{"cmd":"tool_permission_response","sessionId","requestId","behavior",
++   "updatedInput","updatedPermissions"}` it looks up the target panel in
++   `this.sessionPanels`, then posts `{type:"simulated_click", requestId,
++   result:{...}}` to the webview via `panel.webview.postMessage`. The
++   webview-side patch (`webview-simulated-click.py`) intercepts the
++   `simulated_click`, finds the pending Gn permission-request instance
++   by `channelId === requestId`, and calls `Q.accept(...)` / `Q.reject(...)` —
++   which is exactly what a real Allow / Deny button click does. The response
++   round-trips back to the ext through the canonical `onDidReceiveMessage`
++   chokepoint (already logged by `user-action-observer.py`), so
++   `inbound.jsonl` gets a `source:"user-action"` entry indistinguishable
++   from a human click.
++
++2. **sendRequest instrumentation** — Comms.sendRequest is patched to
++   append pending / settled markers to `pending-perms.jsonl` whenever the
++   request is a `tool_permission_request`. This makes outstanding
++   permission requests observable to an external controller (which
++   otherwise has no visibility into the ext→webview direction — the
++   existing user-action-observer only captures webview→ext). The pending
++   record shape is `{ts, sessionId, requestId, toolName, inputs, settled:
++   false}`; the settle record is `{ts, sessionId, requestId, settled:true,
++   outcome:"allow|deny"}`.
++
++Anchor choice — why setupPanel top rather than the onDidReceiveMessage
++site: user-action-observer.py already patches the onDidReceiveMessage
++callback body. Patching the same site here would create a subtle
++ordering dependency (alphabetical order puts outbound-* before user-*,
++so we'd invalidate user-action-observer's regex). Injecting at the
++opening brace of setupPanel is fully independent and survives
++user-action-observer's own patch.
++
++MARKER: `notify-queue-outbound-inject-v1`.
++
++Exit codes
++----------
++- 0 : applied or already patched
++- 1 : any regex miss (red banner + IMPACT_LINES)
++
++Usage
++-----
++    outbound-action-injector.py [EXT_DIR]
++
++If EXT_DIR omitted, autodiscovers the latest
++~/.vscode-server/extensions/anthropic.claude-code-*.
++"""
++
++import os
++import re
++import sys
++from pathlib import Path
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_files
++
++
++MARKER_WATCHER = 'notify-queue-outbound-inject-v1'
++MARKER_PENDING = 'notify-queue-outbound-perm-log-v1'
++MARKER_SETTLE = 'notify-queue-outbound-perm-settle-v1'
++
++IMPACT_LINES = [
++    "→ The outbound control channel will NOT be wired up.",
++    "  External writes to claude-code-vscode-ext-outbound.jsonl will be",
++    "  ignored; automated permission response injection will not work.",
++    "  Pending permission tracking (pending-perms.jsonl) also lost.",
++    "Likely cause: CLAUDE_CODE_VERSION was bumped and either the",
++    "  setupPanel() signature or the sendRequest() shape drifted.",
++    "  Inspect vendor/anthropic.claude-code/v<VER>/pretty/extension.js",
++    "  around setupPanel and Comms.sendRequest, then update the regexes",
++    "  in .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py.",
++]
++
++
++WATCHER_BLOCK = (
++    '/*' + MARKER_WATCHER + '*/'
++    'if(!this._outboundStarted){'
++      'this._outboundStarted=true;'
++      'try{'
++        'const vscode=require("vscode");'
++        'const wf=vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
++        'if(wf){'
++          'const path=require("path"),fs=require("fs");'
++          'const dir=path.join(wf,".devcontainer","logs");'
++          'const file=path.join(dir,"claude-code-vscode-ext-outbound.jsonl");'
++          'try{fs.mkdirSync(dir,{recursive:true});fs.closeSync(fs.openSync(file,"a"));}catch(_){}'
++          'let pos=0;try{pos=fs.statSync(file).size;}catch(_){}'
++          'let carry="";'
++          'this._outboundTimer=setInterval(()=>{'
++            'let sz;try{sz=fs.statSync(file).size;}catch(_){return;}'
++            'if(sz<pos){pos=0;carry="";}'
++            'if(sz<=pos)return;'
++            'const buf=Buffer.alloc(sz-pos);let fd;'
++            'try{fd=fs.openSync(file,"r");fs.readSync(fd,buf,0,buf.length,pos);}catch(_){return;}'
++            'finally{if(fd!==undefined){try{fs.closeSync(fd);}catch(_){}}}'
++            'pos=sz;'
++            'const chunk=carry+buf.toString("utf8");'
++            'const lines=chunk.split("\\n");'
++            'carry=lines.pop()||"";'
++            'for(const line of lines){'
++              'const t=line.trim();if(!t)continue;'
++              'try{'
++                'const cmd=JSON.parse(t);'
++                'if(cmd.cmd==="tool_permission_response"){'
++                  'const p=this.sessionPanels?.get(cmd.sessionId);'
++                  'if(!p){this.output.warn(`[outbound-inject] no panel for sid=${cmd.sessionId}`);continue;}'
++                  'const result={behavior:cmd.behavior,updatedInput:cmd.updatedInput??{},updatedPermissions:cmd.updatedPermissions??[]};'
++                  'if(cmd.behavior==="deny")result.message=cmd.message??"denied";'
++                  'p.webview.postMessage({type:"from-extension",message:{type:"simulated_click",requestId:cmd.requestId,result}});'
++                  'this.output.info(`[outbound-inject] posted simulated_click sid=${cmd.sessionId} rid=${cmd.requestId} behavior=${cmd.behavior}`);'
++                '}else{'
++                  'this.output.warn(`[outbound-inject] unknown cmd: ${cmd.cmd}`);'
++                '}'
++              '}catch(e){this.output.warn(`[outbound-inject] parse failed: ${e?.message??e}`);}'
++            '}'
++          '},200);'
++          'this.output.info(`[outbound-inject] watcher started on ${file}`);'
++        '}'
++      '}catch(e){this.output?.warn?.(`[outbound-inject] init failed: ${e?.message??e}`);}'
++    '}'
++)
++
++
++def patch_watcher(content):
++    """Inject the singleton file-watcher at the top of setupPanel(z,K,V,N){.
++    Independent of user-action-observer.py which patches the onDidReceiveMessage
++    call inside the method body.
++    """
++    if MARKER_WATCHER in content:
++        n = content.count(MARKER_WATCHER)
++        print(f"{YELLOW}[outbound-watcher]{RESET} extension.js — already patched ({n} site(s))")
++        return content
++
++    pat = re.compile(r'(setupPanel\(\w+,\w+,\w+,\w+\)\{)')
++    matches = list(pat.finditer(content))
++    if not matches:
++        banner("OUTBOUND WATCHER PATCH FAILED",
++               "extension.js: setupPanel(z,K,V,N){ signature not found",
++               IMPACT_LINES)
++        sys.exit(1)
++    if len(matches) > 1:
++        # setupPanel appears exactly once as a method definition ; if we see
++        # multiple, the regex is too permissive — abort loudly.
++        banner("OUTBOUND WATCHER PATCH AMBIGUOUS",
++               f"extension.js: setupPanel signature matched {len(matches)} times (expected 1)",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    # Direct char-index splice — re.sub would treat backslash escapes in
++    # WATCHER_BLOCK as replacement escapes (`\n` → real newline mid-string,
++    # breaking the JS). Same trap as user-action-observer.py documents.
++    m = matches[0]
++    new_content = content[:m.end()] + WATCHER_BLOCK + content[m.end():]
++    print(f"{GREEN}[outbound-watcher]{RESET} extension.js — injected at setupPanel top")
++    return new_content
++
++
++def patch_sendrequest(content):
++    """Instrument Comms.sendRequest to log tool_permission_request pending +
++    settled events to pending-perms.jsonl. Two injections:
++      A. Right after `let N=Y3();` → append pending record.
++      B. Inside `{resolve:(Z)=>{...x(Z)...}` → append settled record.
++    """
++    if MARKER_PENDING in content and MARKER_SETTLE in content:
++        print(f"{YELLOW}[outbound-perm-log]{RESET} extension.js — already patched")
++        return content
++
++    # A. Pending log injection — match the sendRequest signature + `let N=Y3();`
++    #    Captures: (1) full prefix, (2) sid var (z), (3) req obj var (K),
++    #    (4) abort var (V), (5) requestId var (N).
++    # `\w+\(\)` matches whichever minified name the requestId generator has
++    # (Y3() on 2.1.145, Hs() on 2.1.202, likely to keep drifting) — the
++    # surrounding sendRequest(...) { let ID = <fn>(); shape is the true anchor.
++    pat_pending = re.compile(
++        r'(sendRequest\((\w+),(\w+),(\w+)\)\{let (\w+)=\w+\(\);)'
++    )
++    m_pending = pat_pending.search(content)
++    if not m_pending:
++        banner("OUTBOUND PENDING-LOG PATCH FAILED",
++               "extension.js: sendRequest(<sid>,<req>,<abort>){let <rid>=<fn>();...} not found",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    sid_var = m_pending.group(2)
++    req_var = m_pending.group(3)
++    rid_var = m_pending.group(5)
++
++    pending_inject = (
++        '/*' + MARKER_PENDING + '*/'
++        'try{'
++          f'if({req_var}?.type==="tool_permission_request"){{'
++            'const vs=require("vscode");'
++            'const wf=vs.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
++            'if(wf){'
++              'const path=require("path"),fs=require("fs");'
++              'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
++              f'const rec={{ts:new Date().toISOString(),sessionId:{sid_var},requestId:{rid_var},toolName:{req_var}.toolName,inputs:{req_var}.inputs,settled:false}};'
++              'try{fs.mkdirSync(path.dirname(file),{recursive:true});}catch(_){}'
++              'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'
++            '}'
++          '}'
++        '}catch(_){};'
++    )
++    content = content[:m_pending.end()] + pending_inject + content[m_pending.end():]
++
++    # B. Settle log injection — match the resolve callback inside the same
++    #    sendRequest promise body. Anchor: `this.outstandingRequests.set(N,{resolve:(Z)=>{x(Z)}`
++    #    where N is the requestId var captured in A.
++    pat_settle = re.compile(
++        r'(this\.outstandingRequests\.set\(' + re.escape(rid_var) + r',\{resolve:\((\w+)\)=>\{)(' + r'\w+\(\2\))(\})'
++    )
++    m_settle = pat_settle.search(content)
++    if not m_settle:
++        banner("OUTBOUND SETTLE-LOG PATCH FAILED",
++               f"extension.js: outstandingRequests.set({rid_var},{{resolve:...}}) not found",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    resolve_arg = m_settle.group(2)   # Z
++    resolve_call = m_settle.group(3)  # x(Z)
++
++    settle_inject = (
++        '/*' + MARKER_SETTLE + '*/'
++        'try{'
++          f'if({req_var}?.type==="tool_permission_request"){{'
++            'const vs=require("vscode");'
++            'const wf=vs.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
++            'if(wf){'
++              'const path=require("path"),fs=require("fs");'
++              'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
++              f'const rec={{ts:new Date().toISOString(),sessionId:{sid_var},requestId:{rid_var},settled:true,outcome:{resolve_arg}?.result?.behavior??"unknown"}};'
++              'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'
++            '}'
++          '}'
++        '}catch(_){};'
++    )
++    # Direct char-index splice — same re.sub escape-processing trap as the
++    # watcher injection above. Splice at m_settle.start(1) end (right after
++    # the resolve callback opening brace).
++    inject_at = m_settle.start(3)  # start of `x(Z)`
++    content = content[:inject_at] + settle_inject + content[inject_at:]
++
++    print(f"{GREEN}[outbound-perm-log]{RESET} extension.js — instrumented sendRequest (sid={sid_var}, rid={rid_var})")
++    return content
++
++
++def main():
++    ext_dir = resolve_ext_dir(sys.argv)
++    check_files(ext_dir, ["extension.js"])
++    js = ext_dir / "extension.js"
++
++    print(f"Patching Claude Code extension at: {ext_dir}")
++
++    content = js.read_text()
++    original = content
++    content = patch_watcher(content)
++    content = patch_sendrequest(content)
++
++    if content != original:
++        js.write_text(content)
++
++    print(f"{GREEN}{BOLD}✓ outbound-action-injector patches complete{RESET}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/templates/v2/claude/vscode-ext-patchs/webview-simulated-click.py b/templates/v2/claude/vscode-ext-patchs/webview-simulated-click.py
+new file mode 100755
+index 0000000..50a652d
+--- /dev/null
++++ b/templates/v2/claude/vscode-ext-patchs/webview-simulated-click.py
+@@ -0,0 +1,159 @@
++#!/usr/bin/env python3
++"""
++Injects a `simulated_click` interceptor into the Claude Code VS Code webview
++bundle (`webview/index.js`). Companion to `outbound-action-injector.py`.
++
++The extension-side watcher posts `{type:"from-extension", message:{type:
++"simulated_click", requestId, result:{behavior, updatedInput,
++updatedPermissions}}}` to `panel.webview.postMessage()` whenever an entry
++lands in `.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl`. This
++patch intercepts that message on the WEBVIEW side (before the normal
++message dispatcher runs) and calls `Q.accept(...)` / `Q.reject(...)` on the
++matching pending `Gn` permission-request instance — which is the SAME
++method the Allow/Deny button click handler invokes.
++
++Why this is the right abstraction: `handleToolPermissionRequest` builds
++a `Q = new Gn($, ...)` (where $ is the requestId, stored as `Q.channelId`
++inside Gn — misleadingly named). `Q.accept(input, perms)` fires
++`Q.resolved.emit({behavior:"allow", updatedInput, updatedPermissions})`.
++That triggers the `onResolved` callback registered inside
++handleToolPermissionRequest:
++  ```
++  Q.onResolved((result) => {
++    X({type:"tool_permission_response", result});      // (a) postMessage to ext
++    this.permissionRequests.value =
++      this.permissionRequests.value.filter(z => z !== Q);  // (b) UI dismiss
++  });
++  ```
++So (a) sends the canonical response through the standard webview→ext
++channel — captured by `user-action-observer.py` into `inbound.jsonl` with
++`source:"user-action"`, indistinguishable from a real click. And (b)
++drops Q from the reactive `permissionRequests` signal — dismissing the
++prompt UI atomically. Zero orphan.
++
++Anchor: the top-level `window.addEventListener("message",(G)=>{...})` in
++the connection provider class. The `this` in the arrow function is
++already the `zn` instance (which owns both `fromHost` — the message queue
++— and `permissionRequests`). No global exposure needed.
++
++MARKER: `notify-queue-webview-sim-click-v1`.
++
++Exit codes
++----------
++- 0 : applied or already patched
++- 1 : regex miss (red banner + IMPACT_LINES)
++
++Usage
++-----
++    webview-simulated-click.py [EXT_DIR]
++"""
++
++import os
++import re
++import sys
++from pathlib import Path
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_files
++
++
++MARKER = 'notify-queue-webview-sim-click-v1'
++
++IMPACT_LINES = [
++    "→ The webview will NOT intercept simulated_click messages from the",
++    "  extension. External permission-response injection via outbound.jsonl",
++    "  will still resolve ext-side promises (the tool runs), but the",
++    "  webview UI prompt will not dismiss — orphaned Allow/Deny buttons.",
++    "Likely cause: CLAUDE_CODE_VERSION was bumped and the",
++    "  window.addEventListener('message', ...) shape drifted, OR the",
++    "  connection provider class no longer stores permissionRequests on",
++    "  `this` in the listener's scope.",
++    "Inspect vendor/anthropic.claude-code/v<VER>/pretty/webview-index.js",
++    "  around the addEventListener('message', ...) call and update the",
++    "  regex in .devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py.",
++]
++
++
++def patch_message_intercept(content):
++    """Rewrite:
++        window.addEventListener("message",(G)=>{
++          if(G.data.type==="from-extension")this.fromHost.enqueue(G.data.message)
++        })
++    into:
++        window.addEventListener("message",(G)=>{
++          if(G.data.type==="from-extension"){
++            /*marker*/
++            const m = G.data.message;
++            if (m?.type === "simulated_click") { ...resolve pending Gn...; return; }
++            this.fromHost.enqueue(m);
++          }
++        })
++    """
++    if MARKER in content:
++        n = content.count(MARKER)
++        print(f"{YELLOW}[webview-sim-click]{RESET} webview/index.js — already patched ({n} site(s))")
++        return content
++
++    # Groups:
++    #   1: full prefix ending at the closing paren of the from-extension cond
++    #   2: event param var (G) — used in backrefs
++    #   3: the closing `})` of the addEventListener call
++    pat = re.compile(
++        r'(window\.addEventListener\("message",\((\w+)\)=>\{'
++        r'if\(\2\.data\.type==="from-extension"\))'
++        r'this\.fromHost\.enqueue\(\2\.data\.message\)'
++        r'(\}\))'
++    )
++    m = pat.search(content)
++    if not m:
++        banner("WEBVIEW SIMULATED-CLICK PATCH FAILED",
++               'webview/index.js: window.addEventListener("message",...) shape not found',
++               IMPACT_LINES)
++        sys.exit(1)
++
++    ev_var = m.group(2)
++
++    replacement = (
++        m.group(1) + '{'
++        '/*' + MARKER + '*/'
++        f'const _m={ev_var}.data.message;'
++        'if(_m?.type==="simulated_click"){'
++          'try{'
++            'const _rid=_m.requestId;'
++            'const _Q=this.permissionRequests?.value?.find(q=>q?.channelId===_rid);'
++            'if(_Q){'
++              'const _r=_m.result;'
++              'if(_r?.behavior==="allow")_Q.accept(_r.updatedInput??{},_r.updatedPermissions??[]);'
++              'else _Q.reject(_r?.message??"denied",false);'
++            '}else{console.warn("[webview-sim-click] no pending Gn for requestId="+_rid);}'
++          '}catch(e){console.warn("[webview-sim-click] failed:",e);}'
++          'return;'
++        '}'
++        f'this.fromHost.enqueue(_m);'
++        '}' + m.group(3)
++    )
++
++    new_content = content[:m.start()] + replacement + content[m.end():]
++    print(f"{GREEN}[webview-sim-click]{RESET} webview/index.js — injected (event var: {ev_var})")
++    return new_content
++
++
++def main():
++    ext_dir = resolve_ext_dir(sys.argv)
++    check_files(ext_dir, ["webview/index.js"])
++    js = ext_dir / "webview" / "index.js"
++
++    print(f"Patching Claude Code webview at: {js}")
++
++    content = js.read_text()
++    original = content
++    content = patch_message_intercept(content)
++
++    if content != original:
++        js.write_text(content)
++
++    print(f"{GREEN}{BOLD}✓ webview-simulated-click patches complete{RESET}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/templates/v2/post-start.sh b/templates/v2/post-start.sh
+index 144538c..ac85a53 100644
+--- a/templates/v2/post-start.sh
++++ b/templates/v2/post-start.sh
+@@ -27,12 +27,15 @@ echo "=== post-start $(date) ==="
+ echo "  log:   ${LOG#/workspace/}"
+ echo "  trace: $TRACE_LOC"
+ 
+-# Wipe the Claude Code VS Code extension inbound log at every container start.
+-# Observation/audit data — no value retaining across boots. The JS appendFile
+-# in the user-action-observer patch creates the file on the first event.
+-# Parent dir (.devcontainer/logs) is already created above by the lifecycle
+-# block, so appendFile doesn't need to mkdir.
+-rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl
++# Wipe the Claude Code VS Code extension observation/control JSONLs at every
++# container start. Observation/audit + control-channel data — no value retaining
++# across boots. The JS appendFile in the user-action-observer patch creates
++# inbound.jsonl on the first event ; outbound-action-injector's watcher creates
++# outbound.jsonl + pending-perms.jsonl at ext startup. Parent dir
++# (.devcontainer/logs) is created above by the lifecycle block.
++rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl \
++      /workspace/.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl \
++      /workspace/.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl
+ 
+ # Hide bind-mounted .vscode/settings.json from git
+ # (the devcontainer overrides it via docker-compose volume mount)
+diff --git a/updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md b/updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md
+new file mode 100644
+index 0000000..f0643cc
+--- /dev/null
++++ b/updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md
+@@ -0,0 +1,278 @@
++# 20260707-0811 — Reciprocal control channel for the Claude Code VS Code extension (outbound action injector)
++
++**Affects** : v2.1 devcontainers where the Claude Code VS Code extension
++already ships with `user-action-observer.py` (observation-only — webview→ext
++messages logged to `inbound.jsonl`). This update adds the **reciprocal**
++channel : an external script writes a JSONL line, the extension picks it
++up and injects the action as if the user had clicked, and the UI dismisses
++exactly as on a real click.
++
++**Symptom / limitation being lifted** : until now Claude Code's permission
++prompts required a **human click** per tool call. An orchestrator, batch
++auto-allow script, or driven test can observe every webview→ext event
++(via `user-action-observer` + `inbound.jsonl`) but has no way to
++**inject** a response back — every prompt still blocks on manual input.
++
++**Design** : the injection round-trips through the canonical webview
++click path :
++
++1. An external writer appends
++   `{"cmd":"tool_permission_response","sessionId","requestId","behavior","updatedInput","updatedPermissions"}`
++   to `.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl`.
++2. The extension's file-watcher (200 ms poll, singleton across all
++   panels) reads the new line, looks up the target panel in
++   `this.sessionPanels`, and posts a `{type:"simulated_click", requestId,
++   result}` message to `panel.webview.postMessage()`.
++3. The webview-side patch intercepts `simulated_click` in the message
++   listener, finds the pending `Q = new Gn(requestId, ...)` in the
++   reactive signal `this.permissionRequests.value` by `Q.channelId ===
++   requestId` (Gn stores the requestId under `channelId`, a mildly
++   misleading Anthropic naming choice), and calls `Q.accept(input,
++   perms)` or `Q.reject(msg, false)` — which is **exactly** the method
++   the real Allow / Deny button invokes.
++4. `Q.accept(...)` triggers the pre-existing `onResolved` callback :
++   sends the `tool_permission_response` back to the ext via the standard
++   webview→ext channel (captured by `user-action-observer` as a normal
++   `source:"user-action"` line in `inbound.jsonl` — indistinguishable
++   from a real click) AND filters `Q` out of `permissionRequests.value`,
++   which dismisses the prompt UI atomically.
++
++The whole design deliberately avoids `comms.fromClient(fake_msg)`
++short-circuits — resolving from ext-side without the webview seeing
++the click would leave the prompt UI orphaned. Going through
++`Q.accept/reject` reuses the atomic dismiss + reply operation.
++
++**Observability** : the extension's `Comms.sendRequest` is instrumented
++to append pending / settled markers to
++`pending-perms.jsonl` whenever the message is a
++`tool_permission_request`. An external controller reads that file to
++know which `requestId` to target (previously invisible : the
++ext→webview direction wasn't observed).
++
++## Manual how-to
++
++Six new files + two modified files. Both trees (`.devcontainer/` dogfood
++and `templates/v2/` shipped template) get the same additions.
++
++### File 1 — `.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py`
++
++New patch script targeting `extension.js`. Two injections :
++
++- Singleton file-watcher at the top of `PanelManager.setupPanel(z,K,V,N){`
++  (independent anchor from user-action-observer.py which targets the
++  onDidReceiveMessage call inside the body — no collision).
++- Pending log instrumentation in `Comms.sendRequest(sid, req, abort)` :
++  writes `settled:false` at open time, `settled:true, outcome:"allow|deny"`
++  at resolve time — only when `req.type === "tool_permission_request"`.
++
++Regex uses `\w+\(\)` for the requestId generator (`Y3()` in 2.1.145 →
++`Hs()` in 2.1.202 — the surrounding sendRequest signature is the true
++anchor). Splices via `content[:idx] + INJECT + content[idx:]` (never
++`re.sub` with the replacement string form — `\n` escapes get processed
++and produce real newlines inside JS string literals, a known trap
++documented in `user-action-observer.py`).
++
++MARKERS : `notify-queue-outbound-inject-v1`,
++`notify-queue-outbound-perm-log-v1`,
++`notify-queue-outbound-perm-settle-v1`.
++
++### File 2 — `.devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py`
++
++New patch script targeting `webview/index.js`. One injection at the
++`window.addEventListener("message",...)` site — intercepts
++`simulated_click` before the normal `fromHost.enqueue` dispatch. The
++event listener already has `this = zn` (which owns `permissionRequests`)
++in scope, so no global exposure needed.
++
++MARKER : `notify-queue-webview-sim-click-v1`.
++
++### File 3 — `.devcontainer/claude/outbound-tester.js`
++
++Node CLI, zero-dep. Two sub-commands :
++
++- `list [--json]` : reads `pending-perms.jsonl`, aggregates by
++  requestId, shows unsettled entries in a tabular view.
++- `send <requestId> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sessionId>]` :
++  appends a line to `outbound.jsonl`. Auto-resolves `sessionId` from
++  the pending log unless `--sid` is passed.
++
++### File 4 — `.devcontainer/post-start.sh` (modified)
++
++The existing wipe block for `inbound.jsonl` at container boot is
++extended to also wipe `outbound.jsonl` and `pending-perms.jsonl` —
++control-channel data is per-session, no retention.
++
++### Files 5-7 — `templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py`, `templates/v2/claude/vscode-ext-patchs/webview-simulated-click.py`, `templates/v2/claude/outbound-tester.js`
++
++Byte-for-byte mirrors of files 1-3. The template tree keeps downstream
++projects generated from `templates/v2/` in sync with the dogfood tree.
++
++### File 8 — `templates/v2/post-start.sh` (modified)
++
++Same wipe extension as file 4.
++
++### Bonus — `vendor/anthropic.claude-code/` + `.gitignore` + memory
++
++Not part of the runtime, but part of the workflow that produced this
++update :
++
++- `vendor/anthropic.claude-code/README.md` : documents the layout
++  (`v<VERSION>/min/` = raw VSIX extract, `v<VERSION>/pretty/` = beautified
++  copy for anchor selection) and the manual regeneration commands. The
++  directory itself is `.gitignore`'d (200+ MB per version).
++- `.gitignore` : `vendor/anthropic.claude-code/` added.
++- Auto-memory entry `vendor-claude-code-ext-workflow.md` : records the
++  workflow rule "any Claude Code VS Code ext patch goes through
++  `vendor/anthropic.claude-code/v<VER>/{min,pretty}/` first".
++
++### Commit
++
++`````bash
++git add \
++  .devcontainer/claude/outbound-tester.js \
++  .devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py \
++  .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py \
++  .devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py \
++  .devcontainer/post-start.sh \
++  templates/v2/claude/outbound-tester.js \
++  templates/v2/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py \
++  templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py \
++  templates/v2/claude/vscode-ext-patchs/webview-simulated-click.py \
++  templates/v2/post-start.sh \
++  updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md \
++  .gitignore
++
++git commit -m "feat(vscode-ext): reciprocal outbound control channel + icon-fix hardening for 2.1.202+"
++`````
++
++### Apply the patch (existing devcontainer, no rebuild required)
++
++`run-all.sh` picks the new scripts automatically at the next container
++boot. To apply immediately without rebuilding :
++
++`````bash
++python3 .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
++python3 .devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py
++`````
++
++Then reload the VS Code window (palette → `Developer: Reload Window`)
++so both `extension.js` and `webview/index.js` re-load from disk.
++
++## Verify
++
++- [ ] `python3 .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py`
++      → GREEN "injected at setupPanel top" + "instrumented sendRequest"
++      first run ; YELLOW "already patched" thereafter, exit 0 both times.
++- [ ] `python3 .devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py`
++      → GREEN "injected (event var: …)" first run ; YELLOW "already
++      patched" thereafter.
++- [ ] `node --check ~/.vscode-server/extensions/anthropic.claude-code-*/extension.js`
++      → no output (valid JS).
++- [ ] `node --check ~/.vscode-server/extensions/anthropic.claude-code-*/webview/index.js`
++      → no output.
++- [ ] After reload, trigger a Claude Code tool that needs permission
++      (e.g. ask Claude to run `whoami`) :
++      - `.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl`
++        gets a `settled:false` line with `requestId`.
++      - `node .devcontainer/claude/outbound-tester.js list` shows the
++        pending request.
++- [ ] `node .devcontainer/claude/outbound-tester.js send <requestId> allow`
++      → within 200 ms :
++      - The Allow/Deny prompt disappears from the webview (real dismiss,
++        not orphan).
++      - Claude proceeds with `whoami`.
++      - `inbound.jsonl` gets a `source:"user-action"` line with the
++        tool_permission_response (indistinguishable from a real click).
++      - `pending-perms.jsonl` gets a matching `settled:true,
++        outcome:"allow"` line.
++- [ ] `node .devcontainer/claude/outbound-tester.js send <requestId> deny`
++      → same, `outcome:"deny"`, tool NOT executed.
++- [ ] `bash .devcontainer/claude/vscode-ext-patchs/run-all.sh` → summary
++      lists `outbound-action-injector.py` and `webview-simulated-click.py`
++      as OK alongside existing scripts.
++- [ ] `diff .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
++      templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py`
++      → no output. Same for the other 3 mirrored files.
++
++## Rollback
++
++`````bash
++rm .devcontainer/claude/outbound-tester.js
++rm .devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
++rm .devcontainer/claude/vscode-ext-patchs/webview-simulated-click.py
++rm templates/v2/claude/outbound-tester.js
++rm templates/v2/claude/vscode-ext-patchs/outbound-action-injector.py
++rm templates/v2/claude/vscode-ext-patchs/webview-simulated-click.py
++
++# Revert the post-start.sh JSONL wipe extension
++sed -i 's|rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl \\|rm -f /workspace/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl|' \
++  .devcontainer/post-start.sh templates/v2/post-start.sh
++# Then hand-remove the outbound.jsonl + pending-perms.jsonl lines that follow.
++
++# Remove injection sites from the live extension (best-effort — a fresh
++# VSIX re-extract is cleaner if you're going to rebuild anyway) :
++LIVE=~/.vscode-server/extensions/anthropic.claude-code-*
++node -e "
++  const fs=require('fs'),path=require('path'),glob=require('glob');
++  for (const dir of glob.sync(process.argv[1])) {
++    for (const f of ['extension.js', 'webview/index.js']) {
++      const p=path.join(dir,f);
++      let s=fs.readFileSync(p,'utf8');
++      // Simplest revert: remove everything between MARKER and next matching brace.
++      // In practice, re-extract from vendor/ is safer.
++      console.log('re-extract',dir,'from vendor/');
++    }
++  }
++" "$LIVE"
++
++git revert <commit-hash>
++`````
++
++## Bundled — icon-fix `_tg` rename + version-adaptive enum name
++
++While validating this update against the latest marketplace release
++(2.1.202), two pre-existing issues were found in
++`icon-fix-open-in-current-panel.py` and fixed in the same commit.
++
++**Fix 1 — `let g=` shadow collision.** Step [4/6] hard-coded a `let g=…`
++injection inside the `primaryEditor.open` arrow function. On 2.1.202 the
++minifier assigned `(g, b)` as arrow params → `async(g,b)=>{let g=…}` →
++`SyntaxError: Identifier 'g' has already been declared`. Renamed to
++`let _tg=…` (underscore-prefixed, guaranteed no collision with
++one-letter-lowercase minified names).
++
++**Fix 2 — version-adaptive enum name.** Verified against the raw VSIX
++files : Anthropic has NOT added `"primary"` to the `preferredLocation`
++enum in any released version (2.1.145 / 2.1.201 / 2.1.202 all ship with
++`enum: ["sidebar", "panel"]`). The `primaryEditor.open` command IS
++registered in all versions but is dead-code (only invoked by the
++`vscode://anthropic.claude-code/open?…` deep-link handler; the
++`getPreferredLocation()` getter collapses everything non-`"sidebar"` to
++`"panel"`).
++
++However, `primaryEditor.open` **exists as a command** in the ext bundle
++which suggests Anthropic may plug the wiring in a future release. To
++avoid a semantic conflict if that ever ships :
++
++- **v2.1.201-** : patch keeps using `"primary"` (matches current
++  `devcontainer.json` and `vscode-settings.jsonc` configs, no
++  migration needed on the shipped devcontainer).
++- **v2.1.202+** : patch uses `"active-panel"` — reserves `"primary"`
++  for whatever Anthropic might do with it.
++
++The choice is version-based (parsed from `package.json`'s `version`
++field), not enum-inspection based (which gets contaminated by our own
++previous patches once they've run).
++
++**Migration** : when the base image bumps to 2.1.202+, the two config
++files above must switch from `"primary"` to `"active-panel"`. That's a
++one-line change in each file, tracked as a follow-up update recipe.
++
++## Extensibility
++
++The `outbound.jsonl` `cmd` field is deliberately extensible. Follow-up
++updates can add `cmd:"askuser_response"` (for AskUserQuestion),
++`cmd:"mode_change"` (for set_permission_mode), or `cmd:"prompt"` (drive
++the input field) with a matching case in the ext-side watcher and, for
++the last two, a matching webview-side intercept in the
++`simulated_click` patch.
