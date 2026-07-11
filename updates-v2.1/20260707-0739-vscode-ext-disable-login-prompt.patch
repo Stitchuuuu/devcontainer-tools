@@ -1,0 +1,28 @@
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+index 83fcb67..741f3da 100644
+--- a/.devcontainer/devcontainer.json
++++ b/.devcontainer/devcontainer.json
+@@ -39,7 +39,8 @@
+           }
+         },
+         "window.title": "Devcontainer Tools [${localWorkspaceFolderBasename}] - Claude Code Sandbox - ${activeEditorShort}",
+-        "claudeCode.preferredLocation": "primary"
++        "claudeCode.preferredLocation": "primary",
++        "claudeCode.disableLoginPrompt": true
+       }
+     }
+   },
+diff --git a/templates/v2/devcontainer.json b/templates/v2/devcontainer.json
+index a9ec7dd..7ae0cb0 100644
+--- a/templates/v2/devcontainer.json
++++ b/templates/v2/devcontainer.json
+@@ -39,7 +39,8 @@
+           }
+         },
+         "window.title": "{{PROJECT_DISPLAY_NAME}} [${localWorkspaceFolderBasename}] - Claude Code Sandbox - ${activeEditorShort}",
+-        "claudeCode.preferredLocation": "primary"
++        "claudeCode.preferredLocation": "primary",
++        "claudeCode.disableLoginPrompt": true
+       }
+     }
+   },
