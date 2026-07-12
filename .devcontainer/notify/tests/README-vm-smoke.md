@@ -87,7 +87,7 @@ or set `NOTIF_BIN` and restart.
 
 ---
 
-## 3. Inject a canonical fixture
+## 3. Inject a single canonical fixture (one-shot)
 
 Open a second terminal (leave the daemon running in the first) :
 
@@ -119,7 +119,124 @@ node .devcontainer/notify/tests/replay-fixture.js <path.jsonl>     # any absolut
 
 ---
 
-## 4. Verify user interaction landed
+## 4. Replay a full captured session (realistic timing)
+
+`replay-fixture.js` fires one synthetic event and stops — great for a
+smoke check on the notify-app dispatch, useless for anything timing-
+sensitive. For end-to-end validation of the focus-debounce arm/fire/cancel
+lifecycle, inbound cancel signals racing queue events, or long-idle
+behavior, use [`replay-session.js`](./replay-session.js) with one of the
+three real-capture session fixtures shipped under
+[`fixtures/sessions/`](./fixtures/sessions/) :
+
+| Slug                | Queue span | Queue · Inbound · Pending-perms | Use case                                                                    |
+|---------------------|------------|---------------------------------|-----------------------------------------------------------------------------|
+| `a-permission-rich` | 109 min    | 317 · 170 · 20                  | 32 `permission_request` events — dense action-button flow.                  |
+| `b-balanced`        | 125 min    | 236 · 160 · 20                  | 10 `permission_request` over a typical dev session. Default choice.         |
+| `c-long-idle`       | 508 min    | 361 · 250 · 30                  | ~8 h with long idle gaps — validates focus-debounce over sparse activity.   |
+
+Queue span is the `first_ts` → `last_ts` gap of the queue stream (read
+from each fixture's `meta.json`). The merged timeline (queue + inbound +
+pending-perms) usually extends 30-70 % beyond that ; the exact merged
+span + projected wall-time is printed by `replay-session.js` at boot.
+
+### Basic invocation
+
+```bash
+node .devcontainer/notify/tests/replay-session.js b-balanced
+```
+
+Replays the balanced fixture at 10× speed with waits capped at 5 s (both
+defaults) — the ~220 min merged timeline finishes in ~4-5 min of wall
+time (the script prints the exact projection at boot). The three streams
+— queue events, VS Code extension inbound signals, pending-perms focus
+snapshots — are merged into a single timeline sorted by `ts`, then each
+event is written to the same path the live devcontainer uses :
+
+- Queue events → `.devcontainer/notify/queue/<fresh-sid>.jsonl` (daemon watches via `fs.watch`).
+- Inbound → `.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl` (appended).
+- Pending-perms → `.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl` (appended).
+
+Every occurrence of the captured `sid` / `sessionId` is rewritten to a
+fresh UUID per invocation (string-level replacement, so deeply nested
+fields like `payload.request.sessionId` are also caught). Every `ts` is
+rewritten to current wall clock time.
+
+### Speed and delay controls
+
+```bash
+node .devcontainer/notify/tests/replay-session.js b-balanced --speed 1
+# real-time — mirrors production pacing exactly (long !).
+
+node .devcontainer/notify/tests/replay-session.js b-balanced --speed 100 --max-delay-ms 200
+# burst — good for CI-style regression smoke.
+
+node .devcontainer/notify/tests/replay-session.js c-long-idle --max-delay-ms 2000
+# snappier ~8 h — collapses long idles to ≤ 2 s waits.
+```
+
+- `--speed N` scales captured inter-event delays (default `10`).
+- `--max-delay-ms MS` caps individual waits (default `5000`) so a captured
+  long idle doesn't stall the smoke run.
+- `--min-delay-ms MS` floors individual waits — useful for visible pacing
+  when `--speed` alone would burst too fast to eyeball.
+
+### Interactive step-through
+
+```bash
+node .devcontainer/notify/tests/replay-session.js b-balanced -i
+```
+
+Waits for a keypress between events (raw-mode stdin, no dep) :
+
+| Key                   | Action                                       |
+|-----------------------|----------------------------------------------|
+| `n` / Enter / space   | Fire the next event.                         |
+| `a`                   | Switch to auto (timed) mode from here on.    |
+| `s`                   | Skip this event (do not write it).           |
+| `q` / Ctrl+C          | Quit.                                        |
+
+Use this to probe a specific point in a real captured flow — advance to
+the `permission_request` you want to inspect, then let auto mode play the
+rest.
+
+### Dry-run and isolated outputs
+
+```bash
+node .devcontainer/notify/tests/replay-session.js b-balanced --dry-run
+```
+
+Prints the full merged timeline without writing anywhere. Cheapest way to
+audit the sequence of events a fixture will produce before committing to
+a real replay.
+
+For fully isolated smokes (no risk of appending to the real
+`.devcontainer/logs/` files that VS Code may be reading) :
+
+```bash
+node .devcontainer/notify/tests/replay-session.js b-balanced \
+  --queue-dir /tmp/smoke/queue \
+  --inbound-log /tmp/smoke/inbound.jsonl \
+  --pending-perms-log /tmp/smoke/pending-perms.jsonl
+```
+
+Pair with `--no-inbound` and/or `--no-pending-perms` to skip either
+sibling stream entirely (queue-only replay, useful when the daemon under
+test doesn't have the inbound-watch bridge wired).
+
+### Known limitation
+
+The 8-char sid prefix embedded in `notif_id` fields (`<event>-<sid[0:8]>-<epoch-ms>`)
+is NOT rewritten — the full UUID is caught by string replacement but the
+short prefix is too generic to safely regex. Rapid consecutive replays of
+the same fixture can produce colliding `notif_id`s (the epoch-ms is
+frozen in the fixture). Not a blocker for smoke ; if it bites you, add a
+`sleep 1` between replays or file a follow-up to add the `notif_id`
+rewrite.
+
+---
+
+## 5. Verify user interaction landed
 
 When you click **Allow** on a permission banner, `notif` appends a JSONL
 record to the actions inbox and the notify-app consumer's tail watcher
@@ -143,10 +260,13 @@ in the daemon output. This is expected and does not indicate a bug.
 
 ---
 
-## 5. Fixture matrix — what each replay triggers
+## 6. Fixture matrix — what each single-fixture replay triggers
 
-Rows below use the fixture directory name. All fixtures share a single-line
-JSONL schema ; see any file under
+Rows below cover the one-shot synthetic fixtures loaded by
+[`replay-fixture.js`](./replay-fixture.js) (§3) — the multi-event captured
+session fixtures loaded by [`replay-session.js`](./replay-session.js) (§4)
+are documented in that section's table instead. All single-fixtures share
+a one-line JSONL schema ; see any file under
 [`fixtures/`](./fixtures/) for the exact shape.
 
 | Fixture directory   | Effect on replay                                                                                                                                    |
@@ -166,43 +286,55 @@ JSONL schema ; see any file under
 visible banner (or produces a delayed one, depending on the fixture's
 `focused` flag) ; the daemon expects a matching `tool_finished` /
 `tool_cancelled` / `user_replied` line on the same `sid` to clear it.
-The replay runner rewrites `sid` per invocation, so replaying
-`tool_started` then `tool_finished` in separate commands does **not**
-pair them ; use a shared sid or a scripted replay if you need to
-exercise the cancel path.
+`replay-fixture.js` rewrites `sid` per invocation, so replaying
+`tool_started` then `tool_finished` in two separate commands does **not**
+pair them — the second gets a fresh sid. Two ways out : (a) hand-craft a
+JSONL file with a shared sid and pass it via
+`replay-fixture.js <path.jsonl>`, or (b) use `replay-session.js` (§4)
+which preserves matched sids across every event of a captured session,
+which is precisely what makes it the right tool for cancel-path smoke.
 
 ---
 
-## 6. What fixture replay covers — and what it doesn't
+## 7. What fixture replay covers — and what it doesn't
 
 The parity contract for the `notif` binary is **4 callback events**
 (click / action / dismiss / timeout) × **4 callback kinds**
 (hook / url / file / focus:open) = **16 combinations**.
 
-Fixture replay drives the daemon, and the daemon only ever emits **2 of the 16**
+Both `replay-fixture.js` and `replay-session.js` drive the same daemon,
+and the daemon only ever emits **2 of the 16** combos
 (see [`notify-app.js:332-416`](../lib/consumers/notify-app.js#L332-L416)) :
 
-| Callback event | Callback kind    | Triggered by                                                        |
-|----------------|------------------|---------------------------------------------------------------------|
-| `--on-click`   | `focus:open-a://` | every fixture with a valid `launchUrl` in the queue line             |
-| `--on-action`  | `file:`           | `permission_request` / `permission_prompt` fixtures with `tool_use_id` |
+| Callback event | Callback kind    | Triggered by                                                         |
+|----------------|------------------|----------------------------------------------------------------------|
+| `--on-click`   | `focus:open-a://` | every queue line with a valid `launchUrl`                             |
+| `--on-action`  | `file:`           | `permission_request` / `permission_prompt` lines with `tool_use_id`   |
 
 The other 14 combinations (all dismiss / timeout events, plus hook / url
 callback kinds on click and action) are **not** produced by the daemon and
-therefore cannot be reached through fixture replay. They are covered by
-the **direct `notif` invocations** in the W1→W5 (Windows) and L1→L5 (Linux)
+cannot be reached through either replay tool. They are covered by the
+**direct `notif` invocations** in the W1→W5 (Windows) and L1→L5 (Linux)
 verification playbooks — see the PowerShell / bash blocks in the approved
 rollout plan and mirrored in each session's prompt.
 
+What each replay tool adds on top of that shared surface :
+- **`replay-fixture.js`** — one synthetic event, no timing. Fastest way
+  to smoke a specific queue-line shape.
+- **`replay-session.js`** — a full merged timeline (queue + inbound +
+  pending-perms) with realistic pacing. The right tool for anything
+  touching focus-debounce, inbound cancel races, or long-idle behavior
+  — the flows a single-event fixture can't exercise.
+
 Rule of thumb :
-- **Fixture replay** = daemon → notif integration path.
+- **Replay tools** = daemon → notif integration path.
 - **Direct `notif` commands** = notif → OS callback path.
 
 Both must be green for a milestone to be considered done.
 
 ---
 
-## 7. Running the unit tests on the VM
+## 8. Running the unit tests on the VM
 
 `.devcontainer/notify/package.json` currently has no `scripts` section, so
 `npm test` is a no-op. Invoke each test file directly with `node` :
@@ -220,7 +352,7 @@ run without a binary installed.
 
 ---
 
-## 8. Common pitfalls
+## 9. Common pitfalls
 
 - **Linux over SSH** — no D-Bus session bus, so `Notify` calls fail
   silently. Fix : run from the desktop Terminal, or prepend `eval $(dbus-launch --sh-syntax)`.
@@ -245,3 +377,16 @@ run without a binary installed.
   compositor to honor `xdg-activation-v1` (GNOME 46+, KWin 6+, Sway).
   Older LXDE / XFCE may fall back to the X11 `wmctrl` path — install
   `wmctrl` if it's missing (`sudo apt install wmctrl`).
+- **`replay-session.js` appends to the live logs by default** — the
+  `--inbound-log` and `--pending-perms-log` defaults point at the
+  standard `.devcontainer/logs/claude-code-vscode-ext-*.jsonl` files.
+  If the VS Code extension is actively reading those (devcontainer up,
+  session live), a replay can inject events the extension will treat as
+  real. On a VM smoke there's nothing to interfere with, so the
+  defaults are fine ; on a live devcontainer, override both with
+  temp paths (see §4 "Custom output paths").
+- **Session fixtures contain real captured content** — the JSONL under
+  `fixtures/sessions/*/` is extracted from real Claude Code sessions
+  (task descriptions, user messages, tool inputs). Fine for internal
+  smoke ; do not mirror the fixture dir into a public repo without
+  redacting first.
