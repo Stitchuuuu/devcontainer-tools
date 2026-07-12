@@ -231,21 +231,31 @@ function resolveAuthority(historyDir, cachePath) {
 	return null
 }
 
-// Scan the tail of pending-perms.jsonl for the most recent JSONL entry
-// carrying a `focused` boolean. Returns the value or null when no entry
-// with the field is found (fresh boot before the first perm cycle, file
-// absent, parse failure). `active` is not returned separately — the
-// daemon debounce policy only keys on `focused`.
+// Scan the tail of pending-perms.jsonl for two pieces of state:
 //
-// Reads at most PENDING_PERMS_TAIL_BYTES from the end of the file : one
-// entry per perm cycle keeps the working set small, and the extension
-// patch wipes the file on every container start so it never accumulates
-// across boots.
-function readLatestFocus(pendingPath = PENDING_PERMS_PATH, tailBytes = PENDING_PERMS_TAIL_BYTES) {
+//   - `focused`  — latest boolean seen, any session (drives daemon debounce).
+//   - `requestId` — latest ext-side `requestId` from a `settled:false` record
+//     whose `sessionId` matches the caller-provided sid (drives daemon's
+//     `--on-action Allow:file:…` binding for permission_request events).
+//
+// Both are extracted from a single backward tail-scan. Returns
+// `{ focused, requestId }` with either field null when not found (fresh boot
+// before the first perm cycle, file absent, parse failure, no matching sid).
+//
+// Why sourced from pending-perms and not the Claude Code hook payload : the
+// `PermissionRequest` hook doesn't provide the ext's `requestId` (its
+// `tool_use_id`, if present, would be the model-side `toolu_XXX`, which is a
+// disjoint ID space from the ext's channel-level requestId that
+// `outbound-action-injector.py` expects on the ack path).
+//
+// Reads at most PENDING_PERMS_TAIL_BYTES from the end of the file : one entry
+// per perm cycle keeps the working set small, and the extension patch wipes
+// the file on every container start so it never accumulates across boots.
+function readPendingPermsTail(pendingPath = PENDING_PERMS_PATH, sid = null, tailBytes = PENDING_PERMS_TAIL_BYTES) {
 	let fd
 	try {
 		const stat = fs.statSync(pendingPath)
-		if (stat.size <= 0) return null
+		if (stat.size <= 0) return { focused: null, requestId: null }
 		fd = fs.openSync(pendingPath, 'r')
 		const size  = Math.min(stat.size, tailBytes)
 		const start = Math.max(0, stat.size - size)
@@ -253,16 +263,43 @@ function readLatestFocus(pendingPath = PENDING_PERMS_PATH, tailBytes = PENDING_P
 		fs.readSync(fd, buf, 0, size, start)
 		const text  = buf.toString('utf8')
 		const lines = text.split('\n')
+		let focused = null
+		let requestId = null
+		// Once a record matching the caller's sid is seen with a boolean
+		// `settled`, its state is the "current" perm state — a `settled:true`
+		// closes out any earlier `settled:false` for the same request. So
+		// the first hit backward that carries `settled` for our sid decides
+		// whether requestId is emitted or not.
+		let permDecidedForSid = false
 		for (let i = lines.length - 1; i >= 0; i--) {
 			const raw = lines[i].trim()
 			if (!raw) continue
 			let evt
 			try { evt = JSON.parse(raw) } catch { continue }
-			if (typeof evt.focused === 'boolean') return evt.focused
+			if (focused === null && typeof evt.focused === 'boolean') {
+				focused = evt.focused
+			}
+			if (!permDecidedForSid
+				&& typeof evt.settled === 'boolean'
+				&& (!sid || evt.sessionId === sid)) {
+				permDecidedForSid = true
+				if (evt.settled === false
+					&& typeof evt.requestId === 'string' && evt.requestId) {
+					requestId = evt.requestId
+				}
+			}
+			if (focused !== null && permDecidedForSid) break
 		}
-		return null
-	} catch { return null }
+		return { focused, requestId }
+	} catch { return { focused: null, requestId: null } }
 	finally { if (fd !== undefined) try { fs.closeSync(fd) } catch (_) {} }
+}
+
+// Backward-compat wrapper — session 4 shipped `readLatestFocus` in the public
+// export ; kept as a thin shim over `readPendingPermsTail` so existing callers
+// and tests don't have to migrate. New code should call the tail directly.
+function readLatestFocus(pendingPath = PENDING_PERMS_PATH, tailBytes = PENDING_PERMS_TAIL_BYTES) {
+	return readPendingPermsTail(pendingPath, null, tailBytes).focused
 }
 
 function buildLine(eventName, payload, pendingPath = PENDING_PERMS_PATH) {
@@ -297,15 +334,16 @@ function buildLine(eventName, payload, pendingPath = PENDING_PERMS_PATH) {
 	const launchUrl = resolveLaunchUrl()
 	if (launchUrl) line.launchUrl = launchUrl
 
-	// Attach the latest host window-focus snapshot from pending-perms.jsonl.
-	// Only added for dispatch events (stop / notification / permission_request) ;
-	// user_replied is a pure cancel signal and needs no focus context. When
-	// the value is null (no snapshot yet, file absent, parse failure) the
-	// field is omitted — daemon treats absence as "not focused" and fires
-	// immediately.
+	// Attach the latest host window-focus snapshot and — for permission
+	// events — the ext's pending requestId, both sourced from pending-perms.jsonl
+	// via a single backward tail-scan. user_replied is a pure cancel signal
+	// and needs neither. Absent field → daemon treats as "not focused" and
+	// fires immediately ; missing requestId → daemon drops the Allow button
+	// (no way to route the ack).
+	let pending = { focused: null, requestId: null }
 	if (eventName !== 'user_replied') {
-		const focused = readLatestFocus(pendingPath)
-		if (focused !== null) line.focused = focused
+		pending = readPendingPermsTail(pendingPath, sid)
+		if (pending.focused !== null) line.focused = pending.focused
 	}
 
 	if (eventName === 'stop') {
@@ -314,7 +352,12 @@ function buildLine(eventName, payload, pendingPath = PENDING_PERMS_PATH) {
 		line.notification_type = payload.notification_type || ''
 		line.message = truncate(payload.message || '', MAX_EXCERPT)
 	} else if (eventName === 'permission_request') {
-		if (payload.tool_use_id) line.tool_use_id = payload.tool_use_id
+		// tool_use_id is the ext-side `requestId` (see readPendingPermsTail
+		// docstring) — the daemon writes it as `requestId` on the outbound
+		// tool_permission_response, which is what outbound-action-injector.py
+		// matches against pending permissions. Sourced from pending-perms
+		// only ; the Claude Code hook payload does not carry it.
+		if (pending.requestId) line.tool_use_id = pending.requestId
 		line.tool_name = payload.tool_name || ''
 		// Pass-through: emit tool_input verbatim as an object. Any
 		// formatting (per-tool summary, truncation, JSON pretty-print)
@@ -373,4 +416,4 @@ function main() {
 
 if (require.main === module) main()
 
-module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus, AUTHORITY_CACHE, PENDING_PERMS_PATH }
+module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus, readPendingPermsTail, AUTHORITY_CACHE, PENDING_PERMS_PATH }

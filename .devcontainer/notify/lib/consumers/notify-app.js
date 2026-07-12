@@ -691,8 +691,14 @@ function processInboxLine(record) {
  * mirrors outbound-tester.js exactly so the ext.js watcher parses both
  * sources identically.
  *
+ * Naming note — the parameter is called `toolUseId` for historical continuity
+ * with the queue-line field `line.tool_use_id`, but its actual value is the
+ * ext-side channel `requestId` (hex 32 chars) sourced from pending-perms.jsonl
+ * by hook.js. NOT the model-side `toolu_XXX` from Claude — those are a
+ * disjoint ID namespace and would fail the injector's pending-request match.
+ *
  * @param {string} sid
- * @param {string} toolUseId
+ * @param {string} toolUseId   ext channel requestId — see naming note above
  * @param {*}      toolInput   passthrough of the original tool_input ;
  *                              becomes `updatedInput` on the wire
  * @returns {void}

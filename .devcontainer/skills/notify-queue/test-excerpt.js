@@ -8,7 +8,7 @@ const assert = require('assert')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus } = require('./hook')
+const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus, readPendingPermsTail } = require('./hook')
 
 // 1. The reported mojibake : `\uXXXX` literals in a Recap line.
 const reported =
@@ -281,6 +281,84 @@ function pendingPermsFixture(lines) {
 	const file = pendingPermsFixture([{ ts: '2026-07-12T10:00:00Z', focused: true }])
 	const replied = buildLine('user_replied', { session_id: SID }, file)
 	assert.strictEqual('focused' in replied, false, 'user_replied never carries focused')
+}
+
+// --- readPendingPermsTail + buildLine.tool_use_id — session 5 smoke fix ---
+//
+// The Claude Code PermissionRequest hook payload does not carry the
+// ext-side requestId that outbound-action-injector.py expects on the
+// ack path. Sourced from pending-perms.jsonl instead : latest record
+// with `settled:false`, matching sessionId, non-empty requestId wins.
+
+const REQ_ID = 'cfa581dae6fc206ce21ce8ad3bf8d7a8'
+
+// 21. readPendingPermsTail returns both focused and requestId in one scan.
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: true, settled: false },
+	])
+	const t = readPendingPermsTail(file, SID)
+	assert.strictEqual(t.focused,   true,   'tail focused = latest boolean')
+	assert.strictEqual(t.requestId, REQ_ID, 'tail requestId = latest settled:false matching sid')
+}
+
+// 22. readPendingPermsTail ignores settled:true records for requestId.
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: false, settled: false },
+		{ ts: '2026-07-12T10:00:05Z', sessionId: SID, requestId: REQ_ID, focused: false, settled: true, outcome: 'allow' },
+	])
+	const t = readPendingPermsTail(file, SID)
+	assert.strictEqual(t.requestId, null, 'settled:true → requestId not returned (perm already resolved)')
+	assert.strictEqual(t.focused,   false, 'focused still resolves from either record')
+}
+
+// 23. readPendingPermsTail filters by sid — non-matching sessions ignored.
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', sessionId: 'other-sid', requestId: 'other-req', focused: true, settled: false },
+	])
+	const t = readPendingPermsTail(file, SID)
+	assert.strictEqual(t.requestId, null, 'requestId for a different sessionId is not returned')
+}
+
+// 24. buildLine attaches line.tool_use_id from pending-perms.requestId.
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: true, settled: false },
+	])
+	const perm = buildLine('permission_request', {
+		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
+	}, file)
+	assert.strictEqual(perm.tool_use_id, REQ_ID,
+		'permission_request.tool_use_id = latest pending-perms requestId (settled:false, matching sid)')
+}
+
+// 25. buildLine omits line.tool_use_id when pending-perms has no matching entry.
+{
+	const dir = tmpDir()
+	const empty = path.join(dir, 'empty.jsonl')
+	fs.writeFileSync(empty, '')
+	const perm = buildLine('permission_request', {
+		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
+	}, empty)
+	assert.strictEqual('tool_use_id' in perm, false,
+		'tool_use_id omitted when pending-perms absent (daemon drops Allow button)')
+}
+
+// 26. buildLine ignores payload.tool_use_id — pending-perms is the only source.
+//     (Guards against a future Claude Code version adding tool_use_id in the
+//      hook payload : it would be the model-side `toolu_XXX`, wrong namespace.)
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: true, settled: false },
+	])
+	const perm = buildLine('permission_request', {
+		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
+		tool_use_id: 'toolu_01ABCDEFGH',
+	}, file)
+	assert.strictEqual(perm.tool_use_id, REQ_ID,
+		'ext requestId wins even when payload provides its own tool_use_id')
 }
 
 console.log('test-excerpt.js — all assertions passed')
