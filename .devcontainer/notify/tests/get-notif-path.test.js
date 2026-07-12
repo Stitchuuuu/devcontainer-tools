@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // get-notif-path.test.js — resolution order for notify-app::getNotifPath.
 //
-// Runs the 5 candidate branches (NOTIF_BIN → $XDG_DATA_HOME → ~/.local/bin →
-// ~/bin → vendor fallback) plus the all-missing case. Uses a per-test
-// temp $HOME so real disk state can't leak into the assertions.
+// Runs the 7 candidate branches (NOTIF_BIN → $XDG_DATA_HOME → ~/.local/bin →
+// ~/bin → /usr/local/bin → /opt/homebrew/bin → vendor fallback) plus the
+// all-missing case. Uses a per-test temp $HOME so real disk state can't leak
+// into the assertions. Homebrew paths are absolute and can't be sandboxed —
+// tests skip their existence assertion if the host actually has a `notif`
+// binary at those locations.
 //
 // Run: node .devcontainer/notify/tests/get-notif-path.test.js
 // Exits 0 on success ; throws + non-zero on failure.
@@ -96,13 +99,20 @@ function clearEnv() {
 	assert.strictEqual(getNotifPath(), homeBin)
 }
 
-// 5. All candidates missing → null. Confirms consumers fall back cleanly.
+// 5. All sandbox candidates missing → null OR one of the absolute Homebrew
+// paths (`/usr/local/bin/notif`, `/opt/homebrew/bin/notif`) when the host
+// happens to have `notif` installed there. Can't be sandboxed cheaply, so
+// accept either shape as long as the resolution is deterministic.
 {
 	resetSandbox()
 	clearEnv()
 	process.env.HOME = SANDBOX
-	// no files created — every candidate should miss
-	assert.strictEqual(getNotifPath(), null)
+	const HOMEBREW_PATHS = ['/usr/local/bin/notif', '/opt/homebrew/bin/notif']
+	const resolved = getNotifPath()
+	assert.ok(
+		resolved === null || HOMEBREW_PATHS.includes(resolved),
+		`expected null or a Homebrew path, got: ${resolved}`,
+	)
 }
 
 console.log('get-notif-path.test.js — all assertions passed')

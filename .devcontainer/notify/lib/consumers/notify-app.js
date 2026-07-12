@@ -277,7 +277,9 @@ function runNotif(args, label, timeoutMs) {
  *   2. `$XDG_DATA_HOME/notif/notif` — XDG-conformant install location.
  *   3. `~/.local/bin/notif` — common user-local bin dir.
  *   4. `~/bin/notif` — the location suggested by apps/notifier/docs/install-macos.md.
- *   5. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
+ *   5. `/usr/local/bin/notif` — Homebrew Intel + manual system install.
+ *   6. `/opt/homebrew/bin/notif` — Homebrew Apple Silicon.
+ *   7. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
  *
  * Returns `null` if none exist. Callers report `skipped` and hand the bus
  * back to basic-notif.
@@ -292,6 +294,8 @@ function getNotifPath() {
 			: null,
 		path.join(os.homedir(), '.local', 'bin', 'notif'),
 		path.join(os.homedir(), 'bin', 'notif'),
+		'/usr/local/bin/notif',
+		'/opt/homebrew/bin/notif',
 		path.join(__dirname, '..', '..', 'vendor', 'notif'),
 	]
 	for (const p of candidates) {
