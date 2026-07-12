@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // get-notif-path.test.js — resolution order for notify-app::getNotifPath.
 //
-// Runs the 7 candidate branches (NOTIF_BIN → $XDG_DATA_HOME → ~/.local/bin →
-// ~/bin → /usr/local/bin → /opt/homebrew/bin → vendor fallback) plus the
-// all-missing case. Uses a per-test temp $HOME so real disk state can't leak
-// into the assertions. Homebrew paths are absolute and can't be sandboxed —
-// tests skip their existence assertion if the host actually has a `notif`
-// binary at those locations.
+// Runs the 8 candidate branches (NOTIF_BIN → $XDG_DATA_HOME → ~/.local/bin →
+// ~/bin → /usr/local/bin → /opt/homebrew/bin → $PATH scan → vendor fallback)
+// plus the all-missing case. Uses a per-test temp $HOME so real disk state
+// can't leak into the assertions. Absolute paths (Homebrew, arbitrary $PATH
+// entries) can't be sandboxed — the terminal "all missing" case only
+// asserts `null` when we neutralise $PATH too.
 //
 // Run: node .devcontainer/notify/tests/get-notif-path.test.js
 // Exits 0 on success ; throws + non-zero on failure.
@@ -23,6 +23,7 @@ const SNAPSHOT_ENV = {
 	NOTIF_BIN:      process.env.NOTIF_BIN,
 	XDG_DATA_HOME:  process.env.XDG_DATA_HOME,
 	HOME:           process.env.HOME,
+	PATH:           process.env.PATH,
 }
 function restoreEnv() {
 	for (const [k, v] of Object.entries(SNAPSHOT_ENV)) {
@@ -99,20 +100,39 @@ function clearEnv() {
 	assert.strictEqual(getNotifPath(), homeBin)
 }
 
-// 5. All sandbox candidates missing → null OR one of the absolute Homebrew
-// paths (`/usr/local/bin/notif`, `/opt/homebrew/bin/notif`) when the host
-// happens to have `notif` installed there. Can't be sandboxed cheaply, so
-// accept either shape as long as the resolution is deterministic.
+// 5. All candidates missing → null. Neutralise $PATH so the terminal $PATH
+// scan can't match a real system `notif` binary and skew the assertion.
 {
 	resetSandbox()
 	clearEnv()
 	process.env.HOME = SANDBOX
-	const HOMEBREW_PATHS = ['/usr/local/bin/notif', '/opt/homebrew/bin/notif']
-	const resolved = getNotifPath()
-	assert.ok(
-		resolved === null || HOMEBREW_PATHS.includes(resolved),
-		`expected null or a Homebrew path, got: ${resolved}`,
-	)
+	process.env.PATH = ''
+	assert.strictEqual(getNotifPath(), null, 'no explicit + empty PATH → null')
+}
+
+// 6. $PATH scan finds notif when explicit candidates miss. Uses the sandbox
+// as a fake bin dir so the scan is deterministic on any host.
+{
+	resetSandbox()
+	clearEnv()
+	process.env.HOME = SANDBOX
+	const pathBin = path.join(SANDBOX, 'somewhere-on-path', 'notif')
+	touch(pathBin)
+	process.env.PATH = path.dirname(pathBin)
+	assert.strictEqual(getNotifPath(), pathBin, '$PATH scan finds sandboxed notif')
+}
+
+// 7. Explicit candidates beat $PATH scan even when both exist.
+{
+	resetSandbox()
+	clearEnv()
+	process.env.HOME = SANDBOX
+	const dotLocal = path.join(SANDBOX, '.local', 'bin', 'notif')
+	const pathBin  = path.join(SANDBOX, 'somewhere-on-path', 'notif')
+	touch(dotLocal)
+	touch(pathBin)
+	process.env.PATH = path.dirname(pathBin)
+	assert.strictEqual(getNotifPath(), dotLocal, '~/.local/bin/notif wins over $PATH scan')
 }
 
 console.log('get-notif-path.test.js — all assertions passed')

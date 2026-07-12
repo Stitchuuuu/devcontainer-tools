@@ -279,7 +279,9 @@ function runNotif(args, label, timeoutMs) {
  *   4. `~/bin/notif` — the location suggested by apps/notifier/docs/install-macos.md.
  *   5. `/usr/local/bin/notif` — Homebrew Intel + manual system install.
  *   6. `/opt/homebrew/bin/notif` — Homebrew Apple Silicon.
- *   7. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
+ *   7. `PATH` scan — any directory on `$PATH` containing `notif` (catches
+ *      MacPorts /opt/local/bin, custom shim dirs, etc).
+ *   8. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
  *
  * Returns `null` if none exist. Callers report `skipped` and hand the bus
  * back to basic-notif.
@@ -287,7 +289,7 @@ function runNotif(args, label, timeoutMs) {
  * @returns {string|null} absolute path, or null
  */
 function getNotifPath() {
-	const candidates = [
+	const explicit = [
 		process.env.NOTIF_BIN,
 		process.env.XDG_DATA_HOME
 			? path.join(process.env.XDG_DATA_HOME, 'notif', 'notif')
@@ -296,11 +298,21 @@ function getNotifPath() {
 		path.join(os.homedir(), 'bin', 'notif'),
 		'/usr/local/bin/notif',
 		'/opt/homebrew/bin/notif',
-		path.join(__dirname, '..', '..', 'vendor', 'notif'),
 	]
-	for (const p of candidates) {
+	for (const p of explicit) {
 		if (p && fs.existsSync(p)) return p
 	}
+	// PATH scan — no subprocess. `which`-style resolution for whichever
+	// bin dir the operator dropped `notif` in and exported on PATH.
+	const PATH = process.env.PATH || ''
+	for (const dir of PATH.split(path.delimiter)) {
+		if (!dir) continue
+		const candidate = path.join(dir, 'notif')
+		if (fs.existsSync(candidate)) return candidate
+	}
+	// Bundled fallback — daemon ships its own copy for zero-install cases.
+	const vendor = path.join(__dirname, '..', '..', 'vendor', 'notif')
+	if (fs.existsSync(vendor)) return vendor
 	return null
 }
 
