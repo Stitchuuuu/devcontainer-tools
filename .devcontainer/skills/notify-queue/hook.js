@@ -177,20 +177,29 @@ function lastMatch(text, re) {
 // it from VS Code's own local history instead of recomputing it (it
 // doesn't know `localDocker` / `settings.context` first-hand).
 //
-// Two layers :
-//   1. Cache — /tmp/notify-queue-authority (plain text, single line).
-//      Container-lifetime TTL ; wiped on recreate = matches authority
-//      stability.
-//   2. Scan — enumerate ~/.vscode-server/data/User/History/*/entries.json
-//      for `dev-container%2B[0-9a-f]+`. All entries in one session
-//      share the authority — first match wins.
+// Three layers, ranked by ground-truth fidelity :
+//   L1. `<QUEUE_DIR>/.authority` — written by the Claude Code
+//       extension's authority-writer patch at activation, sourced from
+//       `vscode.workspace.workspaceFolders[0].uri.authority` (VS Code's
+//       own API, 100% correct). Bind-mounted (visible from host for
+//       debug) ; rewritten on every extension activation.
+//   L2. History scan — enumerate
+//       ~/.vscode-server/data/User/History/*/entries.json for
+//       `dev-container%2B[0-9a-f]+`. Fallback when the patch hasn't
+//       fired yet (very early hook fires) or is uninstalled. All
+//       entries in one session share the authority — first match wins.
+//   L3. Reconstruct — bit-exact rebuild from HOST_WORKSPACE_PATH env.
+//       Matches what the Dev Containers extension emits on macOS /
+//       Windows Docker Desktop. Two env overrides for atypical setups
+//       (Linux plain daemon, Podman) : DEVCONTAINER_DOCKER_CONTEXT
+//       (default "desktop-linux") and DEVCONTAINER_LOCAL_DOCKER
+//       (default "false"). Bit-exact reconstruction is required — VS
+//       Code's URL handler compares authority strings verbatim.
 //
 // Returns full URL (`vscode://vscode-remote/<authority>/workspace`) or
-// null. No JSON-payload fallback : an empty history means the daemon
-// gets no launchUrl, and the body-click becomes a no-op (session 2's
-// contract). Guessing `localDocker` / `settings.context` would open a
-// wrong-authority window on non-Docker-Desktop hosts.
-const AUTHORITY_CACHE = '/tmp/notify-queue-authority'
+// null. If all three layers fail, the daemon gets no launchUrl and the
+// body-click becomes a no-op (session 2's contract).
+const AUTHORITY_CACHE = path.join(QUEUE_DIR, '.authority')
 const AUTHORITY_PREFIX = 'dev-container+'
 const HISTORY_DIR = process.env.HOME
 	? path.join(process.env.HOME, '.vscode-server/data/User/History')
@@ -204,31 +213,69 @@ function resolveLaunchUrl(historyDir = HISTORY_DIR, cachePath = AUTHORITY_CACHE)
 }
 
 function resolveAuthority(historyDir, cachePath) {
-	// Cache hit — must start with the prefix and carry hex payload.
+	// L1 — extension-written cache.
 	try {
 		const cached = fs.readFileSync(cachePath, 'utf8').trim()
 		if (cached.startsWith(AUTHORITY_PREFIX) &&
 			/^[0-9a-fA-F]+$/.test(cached.slice(AUTHORITY_PREFIX.length))) {
 			return cached
 		}
-	} catch { /* miss — fall through to scan */ }
+	} catch { /* miss — fall through */ }
 
-	if (!historyDir) return null
-	let entries
-	try { entries = fs.readdirSync(historyDir) } catch { return null }
+	// L2 — History scan.
+	if (historyDir) {
+		let entries
+		try { entries = fs.readdirSync(historyDir) } catch { entries = [] }
+		const rx = /dev-container%2B([0-9a-fA-F]+)/
+		for (const dir of entries) {
+			const p = path.join(historyDir, dir, 'entries.json')
+			let content
+			try { content = fs.readFileSync(p, 'utf8') } catch { continue }
+			const m = content.match(rx)
+			if (!m) continue
+			const authority = AUTHORITY_PREFIX + m[1].toLowerCase()
+			try { fs.writeFileSync(cachePath, authority) } catch { /* best-effort */ }
+			return authority
+		}
+	}
 
-	const rx = /dev-container%2B([0-9a-fA-F]+)/
-	for (const dir of entries) {
-		const p = path.join(historyDir, dir, 'entries.json')
-		let content
-		try { content = fs.readFileSync(p, 'utf8') } catch { continue }
-		const m = content.match(rx)
-		if (!m) continue
-		const authority = AUTHORITY_PREFIX + m[1].toLowerCase()
-		try { fs.writeFileSync(cachePath, authority) } catch { /* best-effort */ }
-		return authority
+	// L3 — reconstruction from env.
+	const reconstructed = reconstructAuthority()
+	if (reconstructed) {
+		try { fs.writeFileSync(cachePath, reconstructed) } catch { /* best-effort */ }
+		return reconstructed
 	}
 	return null
+}
+
+// Bit-exact rebuild of the `dev-container+<hex>` authority from the
+// container-side env. Shape reference : URI.toJSON in vscode core
+// (src/vs/base/common/uri.ts) — configFile key order is `$mid → fsPath
+// → _sep? → external → path → scheme`. `_sep: 1` is emitted only when
+// the fsPath uses backslash separators (Windows host). Outer payload
+// order (hostPath, localDocker, settings, configFile) matches what the
+// closed-source Dev Containers extension emits, verified against a
+// captured ground truth (see docstring on resolveAuthority).
+function reconstructAuthority() {
+	const hostPath = process.env.HOST_WORKSPACE_PATH
+	if (!hostPath) return null
+	const isWinHost = /^[A-Za-z]:[\\/]/.test(hostPath)
+	const sep = isWinHost ? '\\' : '/'
+	const cfg = hostPath + sep + '.devcontainer' + sep + 'devcontainer.json'
+	const configFile = { $mid: 1, fsPath: cfg }
+	if (isWinHost) configFile._sep = 1
+	const cfgUri = isWinHost ? cfg.replace(/\\/g, '/') : cfg
+	configFile.external = 'file://' + (isWinHost ? '/' : '') + cfgUri
+	configFile.path = (isWinHost ? '/' : '') + cfgUri
+	configFile.scheme = 'file'
+	const payload = {
+		hostPath,
+		localDocker: process.env.DEVCONTAINER_LOCAL_DOCKER === 'true',
+		settings: { context: process.env.DEVCONTAINER_DOCKER_CONTEXT || 'desktop-linux' },
+		configFile,
+	}
+	const hex = Buffer.from(JSON.stringify(payload), 'utf8').toString('hex')
+	return AUTHORITY_PREFIX + hex
 }
 
 // Scan the tail of pending-perms.jsonl for two pieces of state:
