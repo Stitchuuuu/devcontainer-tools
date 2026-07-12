@@ -13,9 +13,12 @@
 // listing `notify` in NOTIFY_CHANNELS (see index.js). If both are listed,
 // index.js drops basic-notif with a warning ; they'd otherwise double-fire.
 //
-// Session 8 scope :
-//   - macOS only. Windows/Linux fall through as `skipped` until sessions 9/10
-//     wire their `notif` backends.
+// Host support :
+//   - Any host with a `notif` binary reachable on PATH (or via the explicit
+//     `NOTIF_BIN` env / bundled fallback in getNotifPath). macOS ships a
+//     binary today ; Windows and Linux gain one when their apps/notifier
+//     backends land — no code change here to onboard them, the consumer
+//     just starts resolving a binary and stops reporting `skipped`.
 //   - Sender is always `default` (hook.js writes `line.sender = 'default'` on
 //     every queue line). Per-event routing (claude vs npm-script vs …) is a
 //     v0.3+ extension.
@@ -110,9 +113,9 @@ const PERMISSION_TTL_MS = 10 * 60 * 1000
  * Wire the notify-app consumer onto the bus. Returns { status, diag } per
  * the index.js consumer contract.
  *
- * `skipped` cases :
- *   - host is not macOS (Windows/Linux backends land in sessions 9/10)
- *   - no `notif` binary found on any candidate path
+ * `skipped` case :
+ *   - no `notif` binary found on any candidate path (the sole gate — the
+ *     consumer serves any host once a binary is discoverable).
  *
  * @param {object} opts
  * @param {import('events').EventEmitter} opts.bus   listens for send + cancel events
@@ -123,9 +126,6 @@ const PERMISSION_TTL_MS = 10 * 60 * 1000
  */
 function start({ bus, projectDir }) {
 	const host = getHostKind()
-	if (host !== 'macos') {
-		return { status: 'skipped', diag: { host, reason: 'notify-app-macos-only-v0.2' } }
-	}
 	notifBinPath = getNotifPath()
 	if (!notifBinPath) {
 		return { status: 'skipped', diag: { host, reason: 'notif-binary-not-found' } }
