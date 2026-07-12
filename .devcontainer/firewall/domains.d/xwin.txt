@@ -1,0 +1,10 @@
+# cargo-xwin runtime endpoints — Microsoft Windows SDK auto-fetch.
+# xwin downloads Visual Studio Build Tools components (Windows SDK, MSVC
+# runtime headers, ucrt) needed to cross-compile to *-pc-windows-msvc from
+# Linux. Cache lives at $XDG_CACHE_HOME/cargo-xwin/ ; re-fetched after every
+# devcontainer rebuild since /home/node/.cache is not a persistent volume.
+#
+# All ~500 MB per target arch fetched via HTTPS ; no auth, no POST.
+
+[GET,HEAD] aka.ms                                     # short-URL redirector — xwin's channel manifest lives at aka.ms/vs/17/release/channel
+[GET,HEAD] download.visualstudio.microsoft.com        # actual VS Build Tools + Windows SDK payload host (aka.ms redirects here)

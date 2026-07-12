@@ -53,7 +53,18 @@ ENV PATH="/home/node/.local/zig:${PATH}"
 
 # cargo-zigbuild wraps `cargo build` and swaps the C linker for `zig cc`.
 # Apple Silicon + Intel Mac targets pre-installed so `cargo zigbuild --target
-# {aarch64,x86_64}-apple-darwin` works out of the box. Windows / Linux-x86
-# targets get added in v0.3 / v0.4 sessions.
+# {aarch64,x86_64}-apple-darwin` works out of the box.
 RUN cargo install --locked cargo-zigbuild \
  && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# cargo-xwin — cross-compile to Windows MSVC from Linux, using LLVM `lld-link`
+# + Microsoft's Windows SDK auto-fetched by `xwin` from aka.ms (see the
+# `xwin.txt` firewall bucket). Both target archs pre-installed :
+#   - aarch64-pc-windows-msvc : native for Parallels Windows 11 on Apple Silicon
+#   - x86_64-pc-windows-msvc  : Intel Macs + x64 Windows VMs + Windows-11-ARM
+#                                emulating x64 via Prism
+# The SDK cache lives at $XDG_CACHE_HOME/cargo-xwin/ (~500 MB per arch) and is
+# NOT pre-populated in the image — it is fetched on first `cargo xwin build`
+# so image size stays reasonable ; a re-fetch happens after every rebuild.
+RUN cargo install --locked cargo-xwin \
+ && rustup target add aarch64-pc-windows-msvc x86_64-pc-windows-msvc
