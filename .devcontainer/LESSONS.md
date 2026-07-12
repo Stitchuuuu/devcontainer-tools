@@ -138,6 +138,24 @@
   `— plan abc123`, etc. If a reviewer needs the rollout context, the
   PR description / commit body is where it goes, not the subject.
 
+- **When proposing a commit via `AskUserQuestion` (per §10 CLAUDE.md +
+  [feedback-commit-validation-askuser](../.claude/memory/feedback-commit-validation-askuser.md)),
+  print the FULL commit subject + body AND the file-by-file staged list
+  (`git diff --cached --stat` or equivalent) in the chat BEFORE the AskUser
+  call.** *Why* : the AskUserQuestion preview is a secondary panel the
+  user has to focus on to read ; a terse chat teaser ("commit shape
+  looks like X, 2 files touched, +9/-9") does not give enough signal to
+  approve without expanding the preview, and the user has repeatedly
+  asked for the *real* commit message + files-changed list inlined.
+  Chat text stays in the transcript ; the preview can be missed. *How
+  to apply* : right before `AskUserQuestion`, emit (a) the exact
+  commit message inside a fenced code block, and (b) an explicit staged
+  list with per-file additions / deletions. THEN call AskUserQuestion
+  with the Commit / Modifier / Annuler triple ; the preview may
+  duplicate the same content but the chat block is what the user
+  actually reads. Applies to every commit — session bookkeeping, hot
+  fixes, docs-only, all of them.
+
 - **Before searching the web for tooling docs, check
   `.devcontainer/knowledge/<tool>.md` first.** *Why* : this repo ships
   cheat-sheets for every dev-tool baked into the base image — `wtf.md`,
