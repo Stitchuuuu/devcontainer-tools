@@ -8,7 +8,7 @@ const assert = require('assert')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl } = require('./hook')
+const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus } = require('./hook')
 
 // 1. The reported mojibake : `\uXXXX` literals in a Recap line.
 const reported =
@@ -194,6 +194,93 @@ function tmpDir() {
 	const url = resolveLaunchUrl(history, cache)
 	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
 		`should skip non-matching entries.json — got: ${url}`)
+}
+
+// --- readLatestFocus — session 4 focus-aware-delivery ---
+//
+// hook.js reads pending-perms.jsonl (written by the extension patch
+// `outbound-action-injector.py`) tail-first and returns the most recent
+// `focused` boolean. buildLine attaches it as `line.focused` on every
+// dispatch event so the daemon can debounce banners when the host VS
+// Code window is focused.
+
+function pendingPermsFixture(lines) {
+	const dir = tmpDir()
+	const file = path.join(dir, 'pending-perms.jsonl')
+	fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
+	return file
+}
+
+// 13. Tail-first scan — returns the LAST entry's focused, not the first.
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', focused: true,  active: true },
+		{ ts: '2026-07-12T10:01:00Z', focused: false, active: false },
+	])
+	assert.strictEqual(readLatestFocus(file), false, 'latest entry (focused:false) wins')
+}
+
+// 14. Skips entries without a `focused` field (session_boot markers, etc).
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', focused: true },
+		{ ts: '2026-07-12T10:01:00Z', ev: 'session_boot' },
+	])
+	assert.strictEqual(readLatestFocus(file), true, 'session_boot marker skipped, focused:true from prior entry returned')
+}
+
+// 15. Missing file → null (fresh boot before the extension patch runs).
+{
+	const dir = tmpDir()
+	assert.strictEqual(readLatestFocus(path.join(dir, 'does-not-exist.jsonl')), null,
+		'missing pending-perms.jsonl → null (fail-open at daemon side)')
+}
+
+// 16. Empty file → null.
+{
+	const dir = tmpDir()
+	const file = path.join(dir, 'empty.jsonl')
+	fs.writeFileSync(file, '')
+	assert.strictEqual(readLatestFocus(file), null, 'empty file → null')
+}
+
+// 17. Malformed JSON lines are skipped ; the last valid focused entry wins.
+{
+	const dir = tmpDir()
+	const file = path.join(dir, 'malformed.jsonl')
+	fs.writeFileSync(file, '{"focused":true}\n{not json at all\n{"focused":false\n')
+	// Line 3 truncated ; line 2 not JSON ; only line 1 parses → true.
+	assert.strictEqual(readLatestFocus(file), true, 'malformed lines skipped')
+}
+
+// 18. buildLine attaches line.focused when pending-perms yields a value.
+{
+	const file = pendingPermsFixture([
+		{ ts: '2026-07-12T10:00:00Z', focused: true, active: true },
+	])
+	const stopLine = buildLine('stop', { session_id: SID, last_assistant_message: 'x' }, file)
+	assert.strictEqual(stopLine.focused, true, 'stop.focused = latest pending-perms focused')
+
+	const permLine = buildLine('permission_request', {
+		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
+	}, file)
+	assert.strictEqual(permLine.focused, true, 'permission_request.focused = latest pending-perms focused')
+}
+
+// 19. buildLine omits line.focused when pending-perms has no snapshot.
+{
+	const dir = tmpDir()
+	const empty = path.join(dir, 'empty.jsonl')
+	fs.writeFileSync(empty, '')
+	const stopLine = buildLine('stop', { session_id: SID, last_assistant_message: 'x' }, empty)
+	assert.strictEqual('focused' in stopLine, false, 'focused omitted when snapshot absent')
+}
+
+// 20. user_replied never reads pending-perms — it's a pure cancel signal.
+{
+	const file = pendingPermsFixture([{ ts: '2026-07-12T10:00:00Z', focused: true }])
+	const replied = buildLine('user_replied', { session_id: SID }, file)
+	assert.strictEqual('focused' in replied, false, 'user_replied never carries focused')
 }
 
 console.log('test-excerpt.js — all assertions passed')

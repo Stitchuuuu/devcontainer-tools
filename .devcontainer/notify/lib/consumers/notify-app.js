@@ -31,6 +31,7 @@ const os = require('os')
 const path = require('path')
 const log = require('../log')
 const { getHostKind } = require('../host')
+const focusDebounce = require('../focus-debounce')
 
 // Hardcoded Claude Code sender identity. Every banner dispatched through
 // this consumer appears in Notification Center under "Claude Code" with
@@ -377,7 +378,43 @@ function send(payload) {
 		rememberPermissionContext(notifId, sid, line.tool_use_id, line.tool_input)
 	}
 
-	log.info(`[notify-app] DISPATCH ${payload.eventType} ${sid8} — id=${notifId} sender=${sender}`)
+	// Session 4 focus-aware gate. `line.focused` is written by hook.js's
+	// readLatestFocus() from the extension patch's `vscode.window.state`
+	// snapshot in pending-perms.jsonl. When the host VS Code window is
+	// focused at emission time, delay the banner by NOTIFY_FOCUS_DEBOUNCE_MS
+	// (default 5 s) — gives the user a grace window to act in-app before the
+	// macOS banner interrupts. A `cancelled:notification` on the bus (user
+	// replied, tool finished, Allow click via inbound-watch) clears the
+	// pending debounce before it fires ; no banner in that case. Missing /
+	// false `line.focused` short-circuits to the immediate dispatch path.
+	const debounceMs = focusDebounce.getDebounceMs(process.env)
+	if (line.focused === true && debounceMs > 0) {
+		log.info(`[notify-app] focus-debounce ARM ${sid8} ${payload.eventType} — ${debounceMs}ms (id=${notifId})`)
+		focusDebounce.armDebounce(sid, debounceMs, () => {
+			log.info(`[notify-app] focus-debounce FIRE ${sid8} ${payload.eventType} — timeout expired (id=${notifId})`)
+			dispatchNow(sid, sid8, sender, notifId, args, payload.eventType)
+		})
+		return
+	}
+	dispatchNow(sid, sid8, sender, notifId, args, payload.eventType)
+}
+
+/**
+ * Spawn `notif send` with the pre-built argv and record the dispatched banner
+ * so cancel signals can later dismiss it. Extracted from `send()` so the
+ * focus-aware gate can either invoke it directly (not focused) or defer it
+ * behind a debounce timer (focused).
+ *
+ * @param {string}   sid
+ * @param {string}   sid8       first 8 chars for log lines
+ * @param {string}   sender     'claude-code' in v0.2
+ * @param {string}   notifId
+ * @param {string[]} args       fully-built `notif send` argv
+ * @param {string}   eventType  logged for diagnostics
+ * @returns {void}              fire-and-forget
+ */
+function dispatchNow(sid, sid8, sender, notifId, args, eventType) {
+	log.info(`[notify-app] DISPATCH ${eventType} ${sid8} — id=${notifId} sender=${sender}`)
 	// Enforce the "1 delivered banner per sid" invariant : dismiss any prior
 	// banner for this sid BEFORE dispatching the new one, so Notification
 	// Center never accumulates duplicates when a session emits multiple
@@ -424,6 +461,14 @@ function dismissPrevious(sid, reason) {
  */
 function onCancelled({ sid, eventType, reason } = {}) {
 	if (!sid) return
+	// Session 4 — if a focus-debounce timer is pending for this sid, cancel
+	// it BEFORE the dismiss path : a debounced-and-cancelled event never
+	// dispatched, so `dismissPrevious` will short-circuit at its empty-map
+	// check (no banner to remove). Doing cancel-debounce first keeps the
+	// happy-path (dispatched banner + cancel) unchanged.
+	if (focusDebounce.cancelDebounce(sid)) {
+		log.info(`[notify-app] focus-debounce CANCEL ${sid.slice(0, 8)} — ${eventType || 'unknown'}/${reason}`)
+	}
 	dismissPrevious(sid, `${eventType || 'unknown'}/${reason}`)
 }
 

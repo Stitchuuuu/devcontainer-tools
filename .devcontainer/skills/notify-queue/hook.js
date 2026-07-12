@@ -15,6 +15,17 @@ const path = require('path')
 const QUEUE_DIR = '/workspace/.devcontainer/notify/queue'
 const MAX_EXCERPT = 200
 
+// Session 4 : pending-perms.jsonl is written by the VS Code extension patch
+// `outbound-action-injector.py` at every tool_use permission cycle, with a
+// `vscode.window.state` snapshot (`focused` / `active`). The container-side
+// hook reads the latest snapshot to propagate the host window-focus state
+// into every queue event — the daemon uses it to debounce banners when the
+// user is engaged in VS Code. Trade-off : snapshots only refresh on
+// permission cycles (~one every few tool_uses) ; between cycles the value
+// is stale but still the best signal we have from the container side.
+const PENDING_PERMS_PATH = '/workspace/.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl'
+const PENDING_PERMS_TAIL_BYTES = 64 * 1024
+
 const ARG_TO_EVENT = {
 	stop: 'stop',
 	notification: 'notification',
@@ -220,7 +231,41 @@ function resolveAuthority(historyDir, cachePath) {
 	return null
 }
 
-function buildLine(eventName, payload) {
+// Scan the tail of pending-perms.jsonl for the most recent JSONL entry
+// carrying a `focused` boolean. Returns the value or null when no entry
+// with the field is found (fresh boot before the first perm cycle, file
+// absent, parse failure). `active` is not returned separately — the
+// daemon debounce policy only keys on `focused`.
+//
+// Reads at most PENDING_PERMS_TAIL_BYTES from the end of the file : one
+// entry per perm cycle keeps the working set small, and the extension
+// patch wipes the file on every container start so it never accumulates
+// across boots.
+function readLatestFocus(pendingPath = PENDING_PERMS_PATH, tailBytes = PENDING_PERMS_TAIL_BYTES) {
+	let fd
+	try {
+		const stat = fs.statSync(pendingPath)
+		if (stat.size <= 0) return null
+		fd = fs.openSync(pendingPath, 'r')
+		const size  = Math.min(stat.size, tailBytes)
+		const start = Math.max(0, stat.size - size)
+		const buf   = Buffer.alloc(size)
+		fs.readSync(fd, buf, 0, size, start)
+		const text  = buf.toString('utf8')
+		const lines = text.split('\n')
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const raw = lines[i].trim()
+			if (!raw) continue
+			let evt
+			try { evt = JSON.parse(raw) } catch { continue }
+			if (typeof evt.focused === 'boolean') return evt.focused
+		}
+		return null
+	} catch { return null }
+	finally { if (fd !== undefined) try { fs.closeSync(fd) } catch (_) {} }
+}
+
+function buildLine(eventName, payload, pendingPath = PENDING_PERMS_PATH) {
 	const sid = payload.session_id
 	if (!sid) return null
 
@@ -251,6 +296,17 @@ function buildLine(eventName, payload) {
 	// window (session 2 contract).
 	const launchUrl = resolveLaunchUrl()
 	if (launchUrl) line.launchUrl = launchUrl
+
+	// Attach the latest host window-focus snapshot from pending-perms.jsonl.
+	// Only added for dispatch events (stop / notification / permission_request) ;
+	// user_replied is a pure cancel signal and needs no focus context. When
+	// the value is null (no snapshot yet, file absent, parse failure) the
+	// field is omitted — daemon treats absence as "not focused" and fires
+	// immediately.
+	if (eventName !== 'user_replied') {
+		const focused = readLatestFocus(pendingPath)
+		if (focused !== null) line.focused = focused
+	}
 
 	if (eventName === 'stop') {
 		line.last_message_excerpt = excerptV2(payload.last_assistant_message)
@@ -317,4 +373,4 @@ function main() {
 
 if (require.main === module) main()
 
-module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, AUTHORITY_CACHE }
+module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus, AUTHORITY_CACHE, PENDING_PERMS_PATH }
