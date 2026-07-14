@@ -72,12 +72,12 @@ pub fn render_html(
 }
 
 #[cfg(windows)]
-pub fn run(preview: bool) -> anyhow::Result<()> {
-    windows_impl::run(preview)
+pub fn run(preview: bool, debug: bool) -> anyhow::Result<()> {
+    windows_impl::run(preview, debug)
 }
 
 #[cfg(not(windows))]
-pub fn run(_preview: bool) -> anyhow::Result<()> {
+pub fn run(_preview: bool, _debug: bool) -> anyhow::Result<()> {
     anyhow::bail!("popup mode is Windows-only")
 }
 
@@ -107,17 +107,20 @@ mod windows_impl {
         Dismiss,
     }
 
-    pub fn run(preview: bool) -> Result<()> {
+    pub fn run(preview: bool, debug: bool) -> Result<()> {
         let cfg =
             crate::config::load_or_default(Path::new(STATE_DAT));
 
-        // Popup uses palier 0 for the force-minimize opt-in. Not applied
-        // in preview mode : the parent triggers preview manually from
-        // the config UI, they don't want to lose their current window.
-        if !preview && cfg.force_minimize_paliers.contains(&0) {
+        // Popup uses palier 0 for the force-minimize opt-in. Skipped
+        // in preview mode (parent testing from their desktop) AND in
+        // debug mode (developer wants to keep their current window).
+        if !preview && !debug && cfg.force_minimize_paliers.contains(&0) {
             if let Err(e) = fullscreen_detect::force_minimize_foreground_fullscreen() {
-                tracing::warn!(error = %e, "force-minimize check failed");
+                tracing::warn!(error = ?e, "force-minimize check failed");
             }
+        }
+        if debug {
+            tracing::info!("popup: --debug mode (no keyboard hook, no force-minimize)");
         }
 
         // Sequential mode reads the rotation cursor from disk ; Random ignores it.
@@ -174,8 +177,17 @@ mod windows_impl {
         window_style::apply_topmost_toolwindow(hwnd)
             .context("apply WS_EX_TOOLWINDOW|WS_EX_TOPMOST")?;
 
-        let _kb_guard =
-            keyboard_hook::install_keyboard_hook().context("install keyboard hook")?;
+        // Debug mode leaves Alt+F4 / Alt+Tab / Win+D / Ctrl+Esc alone
+        // so a developer can exit the popup during smoke without
+        // killing the process from Task Manager.
+        let _kb_guard = if debug {
+            None
+        } else {
+            Some(
+                keyboard_hook::install_keyboard_hook()
+                    .context("install keyboard hook")?,
+            )
+        };
 
         let proxy = event_loop.create_proxy();
         let protocol_resources = resources_dir.clone();

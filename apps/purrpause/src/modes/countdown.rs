@@ -45,12 +45,12 @@ pub fn resolve_palier_message(cfg: &Config, palier: u32) -> String {
 }
 
 #[cfg(windows)]
-pub fn run(seconds: u64, palier: u32) -> anyhow::Result<()> {
-    windows_impl::run(seconds, palier)
+pub fn run(seconds: u64, palier: u32, debug: bool) -> anyhow::Result<()> {
+    windows_impl::run(seconds, palier, debug)
 }
 
 #[cfg(not(windows))]
-pub fn run(_seconds: u64, _palier: u32) -> anyhow::Result<()> {
+pub fn run(_seconds: u64, _palier: u32, _debug: bool) -> anyhow::Result<()> {
     anyhow::bail!("countdown mode is Windows-only")
 }
 
@@ -77,17 +77,21 @@ mod windows_impl {
     const HEIGHT: f32 = 90.0;
     const MARGIN: i32 = 20;
 
-    pub fn run(seconds: u64, palier: u32) -> Result<()> {
+    pub fn run(seconds: u64, palier: u32, debug: bool) -> Result<()> {
         let cfg = crate::config::load_or_default(Path::new(STATE_DAT));
 
         // If this palier is opted-in for force-minimize, escalate over
         // any foreground fullscreen app BEFORE creating our own window
         // — otherwise our topmost bit competes with the game's and
-        // exclusive-fullscreen games win.
-        if cfg.force_minimize_paliers.contains(&palier) {
+        // exclusive-fullscreen games win. Debug mode skips the
+        // minimize so a developer's current window isn't stolen.
+        if !debug && cfg.force_minimize_paliers.contains(&palier) {
             if let Err(e) = fullscreen_detect::force_minimize_foreground_fullscreen() {
-                tracing::warn!(error = %e, palier, "force-minimize check failed");
+                tracing::warn!(error = ?e, palier, "force-minimize check failed");
             }
+        }
+        if debug {
+            tracing::info!("countdown widget: --debug mode (force-minimize skipped)");
         }
 
         // Position top-right on the primary monitor's work area (i.e.
@@ -112,13 +116,17 @@ mod windows_impl {
         let y = my + MARGIN;
         tracing::info!(x, y, w = WIDTH, h = HEIGHT, "computed widget position");
 
+        // Note : NOT requesting `with_transparent(true)` — Parallels
+        // ARM64 virtualized graphics stack drops the alpha channel in
+        // the OpenGL framebuffer, rendering the widget as opaque white
+        // no matter what. Ship an opaque dark background instead
+        // (matches the desired look, minus the desktop-showing-through).
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([WIDTH, HEIGHT])
                 .with_position([x as f32, y as f32])
                 .with_resizable(false)
                 .with_decorations(false)
-                .with_transparent(true)
                 .with_always_on_top(),
             ..Default::default()
         };
@@ -159,9 +167,19 @@ mod windows_impl {
     }
 
     impl eframe::App for CountdownApp {
+        // Opaque dark background — same colour as the panel Frame's fill
+        // so the widget looks uniform even before the panel paints, and
+        // survives virtualized graphics stacks that drop the alpha
+        // channel (Parallels ARM64).
+        fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+            [17.0 / 255.0, 17.0 / 255.0, 26.0 / 255.0, 1.0]
+        }
+
         fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
             // One-shot styling on the first frame : hide from Alt+Tab
-            // and the taskbar (WS_EX_TOOLWINDOW) + reinforce topmost.
+            // and the taskbar (WS_EX_TOOLWINDOW) + reinforce topmost +
+            // strip the title bar / thick frame that winit sometimes
+            // leaves behind despite `with_decorations(false)`.
             if !self.styled_once {
                 tracing::info!("countdown widget: first ui() frame");
                 if let Ok(handle) = frame.window_handle() {
@@ -175,6 +193,9 @@ mod windows_impl {
                                 error = ?e,
                                 "apply_topmost_toolwindow failed"
                             );
+                        }
+                        if let Err(e) = window_style::strip_window_frame(hwnd) {
+                            tracing::warn!(error = ?e, "strip_window_frame failed");
                         }
                         self.styled_once = true;
                     } else {

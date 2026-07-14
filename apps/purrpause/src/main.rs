@@ -121,9 +121,13 @@ enum Mode {
     /// Windows service entry point, invoked by SCM.
     Service,
     /// Fullscreen Lottie break popup, spawned by the service.
-    Popup { preview: bool },
-    /// Small corner countdown widget for T-15 / T-10 / T-5.
-    Countdown { seconds: u64, palier: u32 },
+    /// `debug` skips the keyboard hook (Alt+F4 / Alt+Tab work) so a
+    /// developer can exit the popup during smoke without killing the
+    /// process from Task Manager.
+    Popup { preview: bool, debug: bool },
+    /// Small corner countdown widget for T-15 / T-10 / T-5 / T-1.
+    /// `debug` skips force-minimize so the current window isn't lost.
+    Countdown { seconds: u64, palier: u32, debug: bool },
     /// Passcode-gated config UI (egui window).
     Config { first_run: bool },
     /// Health-check task run by Scheduled Task every minute.
@@ -142,6 +146,7 @@ fn classify_mode(args: &[String]) -> Mode {
         Some("--service") => Mode::Service,
         Some("--popup") => Mode::Popup {
             preview: args.iter().any(|a| a == "--preview"),
+            debug: args.iter().any(|a| a == "--debug"),
         },
         Some("--countdown") => parse_countdown(args),
         Some("--config") => Mode::Config {
@@ -155,7 +160,7 @@ fn classify_mode(args: &[String]) -> Mode {
 }
 
 fn parse_countdown(args: &[String]) -> Mode {
-    // Shape: --countdown <secs> --palier <15|10|5>
+    // Shape: --countdown <secs> --palier <15|10|5|1> [--debug]
     let seconds = args
         .get(1)
         .and_then(|s| s.parse::<u64>().ok())
@@ -166,7 +171,8 @@ fn parse_countdown(args: &[String]) -> Mode {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(0);
-    Mode::Countdown { seconds, palier }
+    let debug = args.iter().any(|a| a == "--debug");
+    Mode::Countdown { seconds, palier, debug }
 }
 
 /// User-facing stopgap for modes not yet implemented. Under
@@ -204,9 +210,9 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         Mode::Config { first_run: true } => modes::config_first_run::run()?,
         Mode::Service => modes::service::run()?,
         Mode::Watchdog => modes::watchdog::run()?,
-        Mode::Popup { preview } => modes::popup::run(preview)?,
-        Mode::Countdown { seconds, palier } => {
-            modes::countdown::run(seconds, palier)?
+        Mode::Popup { preview, debug } => modes::popup::run(preview, debug)?,
+        Mode::Countdown { seconds, palier, debug } => {
+            modes::countdown::run(seconds, palier, debug)?
         }
         Mode::Config { first_run } => {
             not_yet_available_dialog(
@@ -252,7 +258,7 @@ mod tests {
     fn popup_with_preview() {
         assert_eq!(
             classify_mode(&as_args(["--popup", "--preview"])),
-            Mode::Popup { preview: true }
+            Mode::Popup { preview: true, debug: false }
         );
     }
 
@@ -260,7 +266,15 @@ mod tests {
     fn popup_without_preview() {
         assert_eq!(
             classify_mode(&as_args(["--popup"])),
-            Mode::Popup { preview: false }
+            Mode::Popup { preview: false, debug: false }
+        );
+    }
+
+    #[test]
+    fn popup_with_debug() {
+        assert_eq!(
+            classify_mode(&as_args(["--popup", "--debug"])),
+            Mode::Popup { preview: false, debug: true }
         );
     }
 
@@ -268,7 +282,15 @@ mod tests {
     fn countdown_parsed() {
         assert_eq!(
             classify_mode(&as_args(["--countdown", "900", "--palier", "15"])),
-            Mode::Countdown { seconds: 900, palier: 15 }
+            Mode::Countdown { seconds: 900, palier: 15, debug: false }
+        );
+    }
+
+    #[test]
+    fn countdown_with_debug() {
+        assert_eq!(
+            classify_mode(&as_args(["--countdown", "60", "--palier", "1", "--debug"])),
+            Mode::Countdown { seconds: 60, palier: 1, debug: true }
         );
     }
 
