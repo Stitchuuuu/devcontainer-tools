@@ -1,0 +1,57 @@
+[package]
+name = "purrpause"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Break-reminder overlay for Windows — camouflaged Windows Session Health Service"
+publish = false
+
+[[bin]]
+name = "SystemHealthAgent"
+path = "src/main.rs"
+
+# Cross-platform deps — needed for the argv classifier + shared logic.
+[dependencies]
+anyhow = "1.0.103"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
+argon2 = "0.5.3"                   # Passcode hashing (pure Rust, no ring)
+rand = "0.9.5"                     # Salt generation
+base64 = "0.22.1"                  # Embed default Lottie as data URL
+# Filesystem watcher for hot-reload of state.dat. Confusing name : this is
+# NOT the OS toast notifications — it's inotify/FSEvents/ReadDirectoryChangesW.
+notify = "8.2.0"
+
+# Windows-only deps — the actual UI + service layer. Gated so `cargo check`
+# on Linux doesn't pull GTK/WebKit through wry/eframe.
+[target.'cfg(windows)'.dependencies]
+tao = "0.35.3"
+wry = "0.55.1"
+egui = "0.35.0"
+eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow"] }
+windows-service = "0.8.1"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",       # DPAPI CryptProtectData / CryptUnprotectData
+    "Win32_System_RemoteDesktop",        # WTSQueryUserToken
+    "Win32_System_Threading",            # CreateProcessAsUser
+    "Win32_UI_WindowsAndMessaging",      # SetWindowsHookEx, MessageBoxW
+    "Win32_Storage_FileSystem",          # SetFileAttributesW
+    "Win32_System_Services",             # SCM helpers not covered by windows-service
+    "Win32_System_Registry",             # Runtime service ImagePath queries
+] }
+webview2-com = "0.39.1"                  # WebView2 runtime detection
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
