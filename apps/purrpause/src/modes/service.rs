@@ -78,7 +78,7 @@ mod win {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_service));
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::error!(error = %e, "service exited with error"),
+            Ok(Err(e)) => tracing::error!(error = ?e, "service exited with error"),
             Err(_) => tracing::error!("service main panicked — SCM watchdog will restart"),
         }
     }
@@ -136,7 +136,7 @@ mod win {
 
         let exit_code = if loop_result.is_err() { 1 } else { 0 };
         if let Err(e) = status_handle.set_service_status(stopped(exit_code)) {
-            tracing::warn!(error = %e, "SetServiceStatus(Stopped) failed");
+            tracing::warn!(error = ?e, "SetServiceStatus(Stopped) failed");
         }
         loop_result
     }
@@ -171,7 +171,7 @@ mod win {
                 Ok(TickCommand::Trigger) => {
                     tracing::info!("TriggerPopupNow received");
                     if let Err(e) = fire_popup(exe, last_popup, fired) {
-                        tracing::warn!(error = %e, "trigger popup failed");
+                        tracing::warn!(error = ?e, "trigger popup failed");
                     }
                 }
                 Ok(TickCommand::Reload) => {
@@ -186,7 +186,7 @@ mod win {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Err(e) = maybe_fire(config, last_popup, fired, exe) {
-                        tracing::warn!(error = %e, "tick maybe_fire failed");
+                        tracing::warn!(error = ?e, "tick maybe_fire failed");
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -227,12 +227,12 @@ mod win {
                 *last_popup = now;
                 fired.clear();
                 if let Err(e) = write_runtime_dat(now) {
-                    tracing::warn!(error = %e, "write runtime.dat failed");
+                    tracing::warn!(error = ?e, "write runtime.dat failed");
                 }
                 Ok(())
             }
             Err(e) => {
-                tracing::warn!(error = %e, "popup spawn failed — will retry on next tick");
+                tracing::warn!(error = ?e, "popup spawn failed — will retry on next tick");
                 Err(e)
             }
         }
@@ -259,7 +259,7 @@ mod win {
                 Ok(())
             }
             Err(e) => {
-                tracing::warn!(error = %e, palier, "countdown spawn failed");
+                tracing::warn!(error = ?e, palier, "countdown spawn failed");
                 Err(e)
             }
         }
@@ -283,7 +283,7 @@ mod win {
             }
         }
         if let Ok(Err(e)) = accept_result.join() {
-            tracing::warn!(error = %e, "pipe accept loop exited with error");
+            tracing::warn!(error = ?e, "pipe accept loop exited with error");
         }
     }
 
@@ -298,13 +298,13 @@ mod win {
             let mut watcher: RecommendedWatcher = match notify::recommended_watcher(fs_tx) {
                 Ok(w) => w,
                 Err(e) => {
-                    tracing::error!(error = %e, "notify::recommended_watcher failed");
+                    tracing::error!(error = ?e, "notify::recommended_watcher failed");
                     return;
                 }
             };
             let watched_dir = Path::new(DIAGNOSTICS_CACHE_DIR);
             if let Err(e) = watcher.watch(watched_dir, RecursiveMode::NonRecursive) {
-                tracing::error!(error = %e, dir = %watched_dir.display(), "watcher.watch failed");
+                tracing::error!(error = ?e, dir = %watched_dir.display(), "watcher.watch failed");
                 return;
             }
 
@@ -320,7 +320,7 @@ mod win {
                         }
                     }
                     Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "notify event error");
+                        tracing::warn!(error = ?e, "notify event error");
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if pending {
