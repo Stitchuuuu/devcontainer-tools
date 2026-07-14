@@ -166,10 +166,14 @@ mod windows_impl {
         tracing::info!("popup: creating event loop");
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
-        tracing::info!("popup: building tao window (fullscreen transparent borderless)");
+        tracing::info!("popup: building tao window (fullscreen opaque borderless)");
+        // TEMPORARY smoke : with_transparent(true) is unreliable on
+        // Parallels ARM64 (virt stack drops alpha), causing a white
+        // popup. Ship opaque + let the HTML's own semi-opaque bg do
+        // the visual work. Restore .with_transparent(true) when
+        // shipping to real hardware.
         let window = WindowBuilder::new()
             .with_title(&cfg.popup_window_title)
-            .with_transparent(true)
             .with_decorations(false)
             .with_always_on_top(true)
             .with_fullscreen(Some(Fullscreen::Borderless(None)))
@@ -183,6 +187,13 @@ mod windows_impl {
         window_style::apply_topmost_toolwindow(hwnd)
             .context("apply WS_EX_TOOLWINDOW|WS_EX_TOPMOST")?;
         tracing::info!("popup: apply_topmost_toolwindow OK");
+
+        // Same brute-force borderless as the countdown widget — winit
+        // /tao's with_decorations(false) has been observed to leak the
+        // title bar on virtualized graphics stacks. Strip explicitly.
+        window_style::strip_window_frame(hwnd)
+            .context("strip window frame")?;
+        tracing::info!("popup: strip_window_frame OK");
 
         // Debug mode leaves Alt+F4 / Alt+Tab / Win+D / Ctrl+Esc alone
         // so a developer can exit the popup during smoke without

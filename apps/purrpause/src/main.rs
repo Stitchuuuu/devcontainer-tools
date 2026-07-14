@@ -146,7 +146,10 @@ fn classify_mode(args: &[String]) -> Mode {
         Some("--service") => Mode::Service,
         Some("--popup") => Mode::Popup {
             preview: args.iter().any(|a| a == "--preview"),
-            debug: args.iter().any(|a| a == "--debug"),
+            // Temporary : debug=true by default during smoke. Pass
+            // `--no-debug` to opt back into production behaviour
+            // (keyboard hook + force-minimize).
+            debug: !args.iter().any(|a| a == "--no-debug"),
         },
         Some("--countdown") => parse_countdown(args),
         Some("--config") => Mode::Config {
@@ -160,7 +163,7 @@ fn classify_mode(args: &[String]) -> Mode {
 }
 
 fn parse_countdown(args: &[String]) -> Mode {
-    // Shape: --countdown <secs> --palier <15|10|5|1> [--debug]
+    // Shape: --countdown <secs> --palier <15|10|5|1> [--no-debug]
     let seconds = args
         .get(1)
         .and_then(|s| s.parse::<u64>().ok())
@@ -171,7 +174,10 @@ fn parse_countdown(args: &[String]) -> Mode {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(0);
-    let debug = args.iter().any(|a| a == "--debug");
+    // Temporary : debug=true by default during smoke. Pass
+    // `--no-debug` to opt back into production behaviour
+    // (force-minimize on paliers in force_minimize_paliers).
+    let debug = !args.iter().any(|a| a == "--no-debug");
     Mode::Countdown { seconds, palier, debug }
 }
 
@@ -256,9 +262,10 @@ mod tests {
 
     #[test]
     fn popup_with_preview() {
+        // Debug is on by default during smoke — see popup_debug_is_default*.
         assert_eq!(
             classify_mode(&as_args(["--popup", "--preview"])),
-            Mode::Popup { preview: true, debug: false }
+            Mode::Popup { preview: true, debug: true }
         );
     }
 
@@ -266,15 +273,20 @@ mod tests {
     fn popup_without_preview() {
         assert_eq!(
             classify_mode(&as_args(["--popup"])),
-            Mode::Popup { preview: false, debug: false }
+            Mode::Popup { preview: false, debug: true }
         );
     }
 
     #[test]
-    fn popup_with_debug() {
+    fn popup_debug_is_default_no_debug_opts_out() {
+        // Temporary during smoke : debug=true by default.
         assert_eq!(
-            classify_mode(&as_args(["--popup", "--debug"])),
+            classify_mode(&as_args(["--popup"])),
             Mode::Popup { preview: false, debug: true }
+        );
+        assert_eq!(
+            classify_mode(&as_args(["--popup", "--no-debug"])),
+            Mode::Popup { preview: false, debug: false }
         );
     }
 
@@ -282,15 +294,15 @@ mod tests {
     fn countdown_parsed() {
         assert_eq!(
             classify_mode(&as_args(["--countdown", "900", "--palier", "15"])),
-            Mode::Countdown { seconds: 900, palier: 15, debug: false }
+            Mode::Countdown { seconds: 900, palier: 15, debug: true }
         );
     }
 
     #[test]
-    fn countdown_with_debug() {
+    fn countdown_no_debug_opts_out() {
         assert_eq!(
-            classify_mode(&as_args(["--countdown", "60", "--palier", "1", "--debug"])),
-            Mode::Countdown { seconds: 60, palier: 1, debug: true }
+            classify_mode(&as_args(["--countdown", "60", "--palier", "1", "--no-debug"])),
+            Mode::Countdown { seconds: 60, palier: 1, debug: false }
         );
     }
 
