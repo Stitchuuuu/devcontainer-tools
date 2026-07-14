@@ -36,12 +36,15 @@ pub fn apply_topmost_toolwindow(hwnd: HWND) -> Result<()> {
 }
 
 /// Disable DWM's non-client rendering (title bar chrome, resize
-/// handles, drop shadow). Even with WS_CAPTION / WS_THICKFRAME
-/// stripped, DWM still composites a subtle shadow around top-level
-/// layered windows — this API tells DWM to render nothing.
+/// handles, drop shadow) AND opt out of Windows 11's auto-rounded
+/// corners. Both APIs are needed on Win11 to get a truly bordless
+/// transparent window : DWMWA_NCRENDERING_POLICY kills the shadow,
+/// DWMWA_WINDOW_CORNER_PREFERENCE prevents the subtle white liseré
+/// that Win11 draws around every top-level window by default.
 pub fn disable_dwm_nc_rendering(hwnd: HWND) -> Result<()> {
     use windows::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
     };
     unsafe {
         let policy = DWMNCRP_DISABLED;
@@ -52,6 +55,17 @@ pub fn disable_dwm_nc_rendering(hwnd: HWND) -> Result<()> {
             std::mem::size_of_val(&policy) as u32,
         )
         .context("DwmSetWindowAttribute(NCRENDERING_POLICY, DISABLED)")?;
+
+        // Win11+ : opt out of the auto-rounded corners that come with
+        // a subtle white outline. Safe no-op on Win10 (returns
+        // E_INVALIDARG which we swallow — the API is 20H1+).
+        let corner = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const _,
+            std::mem::size_of_val(&corner) as u32,
+        );
     }
     Ok(())
 }

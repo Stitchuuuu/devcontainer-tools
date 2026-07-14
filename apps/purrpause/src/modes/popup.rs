@@ -190,18 +190,13 @@ mod windows_impl {
             .context("apply WS_EX_TOOLWINDOW|WS_EX_TOPMOST")?;
         tracing::info!("popup: apply_topmost_toolwindow OK");
 
-        // Same brute-force borderless as the countdown widget — winit
-        // /tao's with_decorations(false) has been observed to leak the
-        // title bar on virtualized graphics stacks. Strip explicitly.
-        window_style::strip_window_frame(hwnd)
-            .context("strip window frame")?;
-        tracing::info!("popup: strip_window_frame OK");
-
-        // Disable DWM non-client rendering so no drop-shadow fringe
-        // appears around a fullscreen transparent overlay.
-        if let Err(e) = window_style::disable_dwm_nc_rendering(hwnd) {
-            tracing::warn!(error = ?e, "popup: disable_dwm_nc_rendering failed");
-        }
+        // NB : strip_window_frame + disable_dwm_nc_rendering are NOT
+        // called on the popup. It's fullscreen borderless — no bord
+        // visible by definition, no DWM shadow either. Both calls
+        // were observed to interfere with WebView2's DirectComposition
+        // transparency, forcing wry to render an opaque white
+        // background. Fullscreen + with_transparent(true) alone
+        // suffices for the popup.
 
         // Debug mode leaves Alt+F4 / Alt+Tab / Win+D / Ctrl+Esc alone
         // so a developer can exit the popup during smoke without
