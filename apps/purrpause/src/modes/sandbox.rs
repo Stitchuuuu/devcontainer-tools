@@ -27,6 +27,9 @@
 //   lwa-alpha-strong            Same but alpha=140 (~55% opacity, obvious see-through).
 //   lwa-borderless              lwa-alpha + borderless + Win32 strip_window_frame (closest to
 //                               the widget's target production look).
+//   circle                      Borderless transparent window with a bouncing red circle.
+//                               Best visual test of per-pixel alpha : if the window bg shows
+//                               the desktop and ONLY the circle is red, D3D12 alpha works.
 //
 // All presets paint a big red square with a black cross so the window
 // is unmistakable. Any preset that shows red = rendering works with
@@ -67,6 +70,8 @@ mod windows_impl {
         /// If Some(alpha), apply WS_EX_LAYERED + SetLayeredWindowAttributes
         /// with the given whole-window alpha value (0–255).
         lwa_alpha: Option<u8>,
+        /// Bouncing red circle animation — best per-pixel alpha test.
+        circle_mode: bool,
     }
 
     fn defaults() -> Cfg {
@@ -82,6 +87,7 @@ mod windows_impl {
             clear: [0.85, 0.15, 0.15, 1.0],
             strip_frame_win32: false,
             lwa_alpha: None,
+            circle_mode: false,
         }
     }
 
@@ -144,6 +150,16 @@ mod windows_impl {
                 cfg.strip_frame_win32 = true;
                 cfg.lwa_alpha = Some(217);
             }
+            "circle" => {
+                cfg.decorations = false;
+                cfg.strip_frame_win32 = true;
+                cfg.transparent = true;
+                cfg.always_on_top = true;
+                cfg.size = [600.0, 600.0];
+                cfg.center = true;
+                cfg.clear = [0.0, 0.0, 0.0, 0.0];
+                cfg.circle_mode = true;
+            }
             _ => {
                 tracing::warn!(
                     preset,
@@ -191,6 +207,7 @@ mod windows_impl {
             clear: cfg.clear,
             strip_frame_win32: cfg.strip_frame_win32,
             lwa_alpha: cfg.lwa_alpha,
+            circle_mode: cfg.circle_mode,
         };
 
         eframe::run_native(
@@ -206,6 +223,7 @@ mod windows_impl {
         clear: [f32; 4],
         strip_frame_win32: bool,
         lwa_alpha: Option<u8>,
+        circle_mode: bool,
     }
 
     struct SandboxApp {
@@ -271,32 +289,64 @@ mod windows_impl {
                 }
             }
 
-            let panel = egui::Frame::new().fill(self.cfg.fill).inner_margin(0);
-            panel.show(ui, |ui| {
-                let rect = ui.max_rect();
-                let painter = ui.painter();
-                // Solid fill (guaranteed via Frame) + a diagonal black cross
-                // for good measure — anywhere red visible = window rendered.
-                painter.line_segment(
-                    [rect.left_top(), rect.right_bottom()],
-                    egui::Stroke::new(4.0, egui::Color32::BLACK),
-                );
-                painter.line_segment(
-                    [rect.right_top(), rect.left_bottom()],
-                    egui::Stroke::new(4.0, egui::Color32::BLACK),
-                );
-                ui.centered_and_justified(|ui| {
-                    ui.label(
-                        egui::RichText::new("SANDBOX OK")
-                            .size(32.0)
-                            .color(egui::Color32::WHITE)
-                            .strong(),
+            if self.cfg.circle_mode {
+                // Fully transparent frame (no fill) so only what we
+                // paint below is visible. On a transparent window
+                // this makes the untouched pixels see-through.
+                let panel = egui::Frame::new().fill(egui::Color32::TRANSPARENT);
+                panel.show(ui, |ui| {
+                    let rect = ui.max_rect();
+                    let painter = ui.painter();
+                    // Bouncing circle : Lissajous curve based on time.
+                    let t = ui.ctx().input(|i| i.time as f32);
+                    let cx = rect.center().x + (rect.width() * 0.35) * (t * 1.7).sin();
+                    let cy = rect.center().y + (rect.height() * 0.35) * (t * 2.3).cos();
+                    let radius = 60.0 + 20.0 * (t * 3.0).sin();
+                    painter.circle_filled(
+                        egui::pos2(cx, cy),
+                        radius,
+                        egui::Color32::from_rgb(220, 40, 40),
+                    );
+                    // Small white text at top so the label always shows
+                    // even if the circle bounces off-frame.
+                    painter.text(
+                        rect.center_top() + egui::vec2(0.0, 20.0),
+                        egui::Align2::CENTER_TOP,
+                        "TRANSPARENT WGPU — bouncing circle",
+                        egui::FontId::proportional(18.0),
+                        egui::Color32::WHITE,
                     );
                 });
-            });
-
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(1000));
+                // 60 fps repaint for smooth animation.
+                ui.ctx().request_repaint();
+            } else {
+                let panel = egui::Frame::new().fill(self.cfg.fill).inner_margin(0);
+                panel.show(ui, |ui| {
+                    let rect = ui.max_rect();
+                    let painter = ui.painter();
+                    // Solid fill (guaranteed via Frame) + a diagonal
+                    // black cross for good measure — anywhere red
+                    // visible = window rendered.
+                    painter.line_segment(
+                        [rect.left_top(), rect.right_bottom()],
+                        egui::Stroke::new(4.0, egui::Color32::BLACK),
+                    );
+                    painter.line_segment(
+                        [rect.right_top(), rect.left_bottom()],
+                        egui::Stroke::new(4.0, egui::Color32::BLACK),
+                    );
+                    ui.centered_and_justified(|ui| {
+                        ui.label(
+                            egui::RichText::new("SANDBOX OK")
+                                .size(32.0)
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        );
+                    });
+                });
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(1000));
+            }
         }
     }
 }
