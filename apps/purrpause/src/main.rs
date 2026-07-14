@@ -82,6 +82,30 @@ fn init_tracing(mode: &Mode) {
             .try_init();
         return;
     }
+
+    // User-session UI modes (Countdown, Popup, Config) have no console
+    // under windows_subsystem = "windows" — route to a file next to the
+    // exe so tracing survives long enough to diagnose crashes. Falls
+    // back to stderr on any error (dead pipe, but harmless).
+    #[cfg(windows)]
+    if matches!(
+        mode,
+        Mode::Countdown { .. } | Mode::Popup { .. } | Mode::Config { .. }
+    ) {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let appender = tracing_appender::rolling::daily(dir, "widget.log");
+                let _ = fmt()
+                    .with_env_filter(filter)
+                    .with_target(false)
+                    .with_ansi(false)
+                    .with_writer(appender)
+                    .try_init();
+                return;
+            }
+        }
+    }
+
     let _ = mode; // silence unused-var on non-Windows
     let _ = fmt()
         .with_env_filter(filter)

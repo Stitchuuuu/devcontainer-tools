@@ -26,8 +26,8 @@ use anyhow::{anyhow, Context, Result};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_NO_TOKEN, HANDLE};
 use windows::Win32::Security::{
-    DuplicateTokenEx, SecurityIdentification, TokenPrimary, SECURITY_ATTRIBUTES,
-    TOKEN_ALL_ACCESS,
+    DuplicateTokenEx, GetTokenInformation, SecurityIdentification, TokenLinkedToken, TokenPrimary,
+    SECURITY_ATTRIBUTES, TOKEN_ALL_ACCESS, TOKEN_LINKED_TOKEN,
 };
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
@@ -57,15 +57,33 @@ pub fn spawn_in_active_user_session(exe: &Path, args: &[&OsStr]) -> Result<u32> 
         return Err(anyhow!("WTSQueryUserToken: {e}"));
     }
 
-    // From here `user_token` must be closed on every path.
-    let primary = match duplicate_to_primary(user_token) {
+    // If the user is a split-token admin (Windows UAC's default), the
+    // token WTSQueryUserToken returned is the filtered "medium
+    // integrity" one — it cannot spawn an exe whose manifest declares
+    // requireAdministrator (fails with ERROR_ELEVATION_REQUIRED
+    // 0x800702E4). Swap to the linked elevated token when available.
+    let elevation_source = match linked_token(user_token) {
+        Ok(Some(linked)) => {
+            tracing::info!("swapped to linked elevated token");
+            unsafe { let _ = CloseHandle(user_token); }
+            linked
+        }
+        Ok(None) => user_token,
+        Err(e) => {
+            tracing::warn!(error = ?e, "linked-token query failed, using filtered token");
+            user_token
+        }
+    };
+
+    // From here `elevation_source` must be closed on every path.
+    let primary = match duplicate_to_primary(elevation_source) {
         Ok(h) => h,
         Err(e) => {
-            unsafe { let _ = CloseHandle(user_token); }
+            unsafe { let _ = CloseHandle(elevation_source); }
             return Err(e);
         }
     };
-    unsafe { let _ = CloseHandle(user_token); }
+    unsafe { let _ = CloseHandle(elevation_source); }
 
     // From here `primary` must be closed on every path.
     let env_block = match create_env_block(primary) {
@@ -118,6 +136,33 @@ pub fn spawn_in_active_user_session(exe: &Path, args: &[&OsStr]) -> Result<u32> 
     }
 
     Ok(process_info.dwProcessId)
+}
+
+/// Return the linked token of an admin split-token user, or `None`
+/// for standard users (non-split-token accounts have no linked token
+/// and `GetTokenInformation(TokenLinkedToken)` fails with
+/// `ERROR_NO_SUCH_LOGON_SESSION` — treated as "not applicable" rather
+/// than an error).
+fn linked_token(base: HANDLE) -> Result<Option<HANDLE>> {
+    let mut info = TOKEN_LINKED_TOKEN::default();
+    let mut ret_len: u32 = 0;
+    let result = unsafe {
+        GetTokenInformation(
+            base,
+            TokenLinkedToken,
+            Some(&mut info as *mut _ as *mut _),
+            size_of::<TOKEN_LINKED_TOKEN>() as u32,
+            &mut ret_len,
+        )
+    };
+    match result {
+        Ok(()) if !info.LinkedToken.is_invalid() => Ok(Some(info.LinkedToken)),
+        Ok(()) => Ok(None),
+        // Standard-user accounts have no linked token — the API
+        // reports this as an error rather than a null handle. Swallow
+        // it as "no linked token" so the caller falls back cleanly.
+        Err(_) => Ok(None),
+    }
 }
 
 fn duplicate_to_primary(impersonation: HANDLE) -> Result<HANDLE> {

@@ -94,10 +94,23 @@ mod windows_impl {
         // excluding the taskbar). Fallback to a plausible 1920×1080
         // origin when the monitor query fails — the widget will still
         // show, just possibly off-position on multi-monitor setups.
-        let (mx, my, mw, _mh) =
-            primary_monitor_work_area().unwrap_or((0, 0, 1920, 1080));
+        let (mx, my, mw, mh) = match primary_monitor_work_area() {
+            Ok(v) => {
+                tracing::info!(
+                    mx = v.0, my = v.1, mw = v.2, mh = v.3,
+                    "primary monitor work area (physical pixels)"
+                );
+                v
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "monitor query failed, using 1920x1080 fallback");
+                (0, 0, 1920, 1080)
+            }
+        };
+
         let x = mx + mw as i32 - WIDTH as i32 - MARGIN;
         let y = my + MARGIN;
+        tracing::info!(x, y, w = WIDTH, h = HEIGHT, "computed widget position");
 
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -115,7 +128,7 @@ mod windows_impl {
         let template = cfg.countdown_template.clone();
         let title = cfg.popup_window_title.clone();
 
-        tracing::info!(seconds, palier, "countdown widget starting");
+        tracing::info!(seconds, palier, monitor_mh = mh, "countdown widget starting");
 
         eframe::run_native(
             &title,
@@ -150,19 +163,25 @@ mod windows_impl {
             // One-shot styling on the first frame : hide from Alt+Tab
             // and the taskbar (WS_EX_TOOLWINDOW) + reinforce topmost.
             if !self.styled_once {
+                tracing::info!("countdown widget: first ui() frame");
                 if let Ok(handle) = frame.window_handle() {
                     if let RawWindowHandle::Win32(win32) = handle.as_raw() {
                         let hwnd = HWND(win32.hwnd.get() as *mut _);
+                        tracing::info!(hwnd = ?hwnd.0, "widget HWND acquired");
                         if let Err(e) =
                             window_style::apply_topmost_toolwindow(hwnd)
                         {
                             tracing::warn!(
-                                error = %e,
+                                error = ?e,
                                 "apply_topmost_toolwindow failed"
                             );
                         }
                         self.styled_once = true;
+                    } else {
+                        tracing::warn!("widget got a non-Win32 window handle — unexpected");
                     }
+                } else {
+                    tracing::warn!("widget: no window_handle available yet");
                 }
             }
 
