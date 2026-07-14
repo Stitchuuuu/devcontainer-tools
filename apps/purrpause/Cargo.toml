@@ -19,7 +19,11 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
 argon2 = "0.5.3"                   # Passcode hashing (pure Rust, no ring)
-rand = "0.9.5"                     # Salt generation
+rand = "0.9.5"                     # General-purpose RNG (tests, animation rotation)
+# argon2 0.5.3 pulls rand_core 0.6 via password-hash, but the transitive
+# feature set omits `getrandom` — force it here so `OsRng` is reachable
+# for salt generation.
+rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 base64 = "0.22.1"                  # Embed default Lottie as data URL
 # Filesystem watcher for hot-reload of state.dat. Confusing name : this is
 # NOT the OS toast notifications — it's inotify/FSEvents/ReadDirectoryChangesW.
@@ -36,13 +40,18 @@ windows-service = "0.8.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",      # ConvertStringSecurityDescriptor, SetNamedSecurityInfoW
     "Win32_Security_Cryptography",       # DPAPI CryptProtectData / CryptUnprotectData
+    "Win32_System_Com",                  # CoInitializeEx / CoCreateInstance
     "Win32_System_RemoteDesktop",        # WTSQueryUserToken
-    "Win32_System_Threading",            # CreateProcessAsUser
-    "Win32_UI_WindowsAndMessaging",      # SetWindowsHookEx, MessageBoxW
-    "Win32_Storage_FileSystem",          # SetFileAttributesW
     "Win32_System_Services",             # SCM helpers not covered by windows-service
     "Win32_System_Registry",             # Runtime service ImagePath queries
+    "Win32_System_TaskScheduler",        # ITaskService COM watchdog registration
+    "Win32_System_Threading",            # CreateProcessAsUser
+    "Win32_System_Variant",              # VARIANT (Task Scheduler COM args)
+    "Win32_Storage_FileSystem",          # SetFileAttributesW
+    "Win32_UI_Shell",                    # ShellExecuteW
+    "Win32_UI_WindowsAndMessaging",      # SetWindowsHookEx, MessageBoxW
 ] }
 webview2-com = "0.39.1"                  # WebView2 runtime detection
 

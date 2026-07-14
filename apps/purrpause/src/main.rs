@@ -10,6 +10,11 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod config;
+mod modes;
+mod password;
+mod platform;
+
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -20,6 +25,18 @@ fn main() -> ExitCode {
 
     tracing::info!(?mode, argv = ?args, "SystemHealthAgent starting");
 
+    // Pre-flight : WebView2 runtime must be available before any UI mode.
+    // The service / countdown / popup modes all end up needing wry, and
+    // installing without WebView2 would leave a broken install. Bail
+    // early with a native MessageBoxW dialog if it's missing.
+    #[cfg(windows)]
+    if mode_needs_webview2(&mode) {
+        if let Err(err) = platform::win32::webview2::ensure_available() {
+            tracing::error!(error = %err, "WebView2 pre-flight failed");
+            return ExitCode::FAILURE;
+        }
+    }
+
     match dispatch(mode) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -27,6 +44,15 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(windows)]
+fn mode_needs_webview2(mode: &Mode) -> bool {
+    // Rollback + uninstall are cleanup paths — no UI needed even if
+    // WebView2 is missing. Every other mode ends up in the WebView2 dep
+    // graph one way or another (popup renders Lottie ; the wizard opens
+    // an egui window that co-exists with the wry runtime).
+    !matches!(mode, Mode::RollbackFromFailedInstall | Mode::Uninstall)
 }
 
 fn init_tracing() {
@@ -95,9 +121,10 @@ fn parse_countdown(args: &[String]) -> Mode {
 
 fn dispatch(mode: Mode) -> anyhow::Result<()> {
     match mode {
-        Mode::InstallOrConfig => {
-            println!("[stub] install-or-config mode (session 2 wires this)");
-        }
+        Mode::InstallOrConfig => modes::install::run()?,
+        Mode::RollbackFromFailedInstall => modes::rollback::run()?,
+        #[cfg(windows)]
+        Mode::Config { first_run: true } => modes::config_first_run::run()?,
         Mode::Service => {
             println!("[stub] service mode (session 3 wires this)");
         }
@@ -121,9 +148,6 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         }
         Mode::Uninstall => {
             println!("[stub] uninstall mode (session 7 wires this)");
-        }
-        Mode::RollbackFromFailedInstall => {
-            println!("[stub] rollback-from-failed-install mode (session 2 wires this)");
         }
         Mode::Unknown(argv) => {
             eprintln!("Unknown argv: {argv:?}");
