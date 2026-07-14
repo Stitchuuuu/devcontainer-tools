@@ -30,6 +30,17 @@
 //   circle                      Borderless transparent window with a bouncing red circle.
 //                               Best visual test of per-pixel alpha : if the window bg shows
 //                               the desktop and ONLY the circle is red, D3D12 alpha works.
+//   circle-fullscreen           Same but fullscreen (no window edges by definition — matches
+//                               the popup's target production shape).
+//   rounded                     Big (500x300) semi-opaque dark rounded rectangle with a
+//                               bouncing circle inside. Windowed borderless transparent :
+//                               tests true Aero-style per-pixel rounded corners without
+//                               any DWM shadow around the round shape.
+//   widget-preview              320x90 top-right dark rounded semi-opaque with label
+//                               (mimicks the production countdown widget look).
+//   mixed-alpha                 Windowed transparent showcase : several shapes with
+//                               different alpha values (100%, 75%, 50%, 25%, 0%) to
+//                               demonstrate arbitrary per-pixel transparency.
 //
 // All presets paint a big red square with a black cross so the window
 // is unmistakable. Any preset that shows red = rendering works with
@@ -56,6 +67,21 @@ mod windows_impl {
 
     use crate::platform::win32::window_style;
 
+    #[derive(Clone, Copy)]
+    enum Style {
+        /// Solid fill + diagonal cross + centered "SANDBOX OK" label.
+        Cross,
+        /// Fully transparent bg + bouncing circle + tiny label.
+        BouncingCircle,
+        /// Dark rounded semi-opaque rectangle + bouncing circle inside.
+        RoundedWithCircle,
+        /// Dark rounded semi-opaque rectangle + static "T-15" label,
+        /// mimicking the production countdown widget.
+        WidgetPreview,
+        /// Multiple shapes at varying alpha values (100/75/50/25/0 %).
+        MixedAlpha,
+    }
+
     struct Cfg {
         title: &'static str,
         size: [f32; 2],
@@ -64,14 +90,15 @@ mod windows_impl {
         always_on_top: bool,
         fullscreen: bool,
         center: bool,
+        top_right: bool,
         fill: egui::Color32,
         clear: [f32; 4],
         strip_frame_win32: bool,
         /// If Some(alpha), apply WS_EX_LAYERED + SetLayeredWindowAttributes
         /// with the given whole-window alpha value (0–255).
         lwa_alpha: Option<u8>,
-        /// Bouncing red circle animation — best per-pixel alpha test.
-        circle_mode: bool,
+        /// What to render inside the window.
+        style: Style,
     }
 
     fn defaults() -> Cfg {
@@ -83,11 +110,12 @@ mod windows_impl {
             always_on_top: false,
             fullscreen: false,
             center: false,
+            top_right: false,
             fill: egui::Color32::from_rgb(220, 40, 40),
             clear: [0.85, 0.15, 0.15, 1.0],
             strip_frame_win32: false,
             lwa_alpha: None,
-            circle_mode: false,
+            style: Style::Cross,
         }
     }
 
@@ -158,7 +186,45 @@ mod windows_impl {
                 cfg.size = [600.0, 600.0];
                 cfg.center = true;
                 cfg.clear = [0.0, 0.0, 0.0, 0.0];
-                cfg.circle_mode = true;
+                cfg.style = Style::BouncingCircle;
+            }
+            "circle-fullscreen" => {
+                cfg.decorations = false;
+                cfg.transparent = true;
+                cfg.always_on_top = true;
+                cfg.fullscreen = true;
+                cfg.clear = [0.0, 0.0, 0.0, 0.0];
+                cfg.style = Style::BouncingCircle;
+            }
+            "rounded" => {
+                cfg.decorations = false;
+                cfg.strip_frame_win32 = true;
+                cfg.transparent = true;
+                cfg.always_on_top = true;
+                cfg.size = [500.0, 300.0];
+                cfg.center = true;
+                cfg.clear = [0.0, 0.0, 0.0, 0.0];
+                cfg.style = Style::RoundedWithCircle;
+            }
+            "widget-preview" => {
+                cfg.decorations = false;
+                cfg.strip_frame_win32 = true;
+                cfg.transparent = true;
+                cfg.always_on_top = true;
+                cfg.size = [320.0, 90.0];
+                cfg.top_right = true;
+                cfg.clear = [0.0, 0.0, 0.0, 0.0];
+                cfg.style = Style::WidgetPreview;
+            }
+            "mixed-alpha" => {
+                cfg.decorations = false;
+                cfg.strip_frame_win32 = true;
+                cfg.transparent = true;
+                cfg.always_on_top = true;
+                cfg.size = [700.0, 260.0];
+                cfg.center = true;
+                cfg.clear = [0.0, 0.0, 0.0, 0.0];
+                cfg.style = Style::MixedAlpha;
             }
             _ => {
                 tracing::warn!(
@@ -192,7 +258,11 @@ mod windows_impl {
         if cfg.fullscreen {
             viewport = viewport.with_fullscreen(true);
         }
-        if !cfg.center && !cfg.fullscreen {
+        if cfg.top_right {
+            // Top-right of a 1440-wide logical screen (approx). Real
+            // widget uses GetMonitorInfo but this is enough for a demo.
+            viewport = viewport.with_position([1440.0 - cfg.size[0] - 20.0, 20.0]);
+        } else if !cfg.center && !cfg.fullscreen {
             // Fixed position top-left corner-ish so we know where to look.
             viewport = viewport.with_position([120.0, 120.0]);
         }
@@ -207,7 +277,7 @@ mod windows_impl {
             clear: cfg.clear,
             strip_frame_win32: cfg.strip_frame_win32,
             lwa_alpha: cfg.lwa_alpha,
-            circle_mode: cfg.circle_mode,
+            style: cfg.style,
         };
 
         eframe::run_native(
@@ -223,7 +293,7 @@ mod windows_impl {
         clear: [f32; 4],
         strip_frame_win32: bool,
         lwa_alpha: Option<u8>,
-        circle_mode: bool,
+        style: Style,
     }
 
     struct SandboxApp {
@@ -278,6 +348,9 @@ mod windows_impl {
                     if let Err(e) = window_style::strip_window_frame(hwnd) {
                         tracing::warn!(error = ?e, "strip_window_frame failed");
                     }
+                    if let Err(e) = window_style::disable_dwm_nc_rendering(hwnd) {
+                        tracing::warn!(error = ?e, "disable_dwm_nc_rendering failed");
+                    }
                     self.strip_applied_once = true;
                 }
                 // LWA_ALPHA gets clobbered by winit on every tick —
@@ -289,63 +362,159 @@ mod windows_impl {
                 }
             }
 
-            if self.cfg.circle_mode {
-                // Fully transparent frame (no fill) so only what we
-                // paint below is visible. On a transparent window
-                // this makes the untouched pixels see-through.
-                let panel = egui::Frame::new().fill(egui::Color32::TRANSPARENT);
-                panel.show(ui, |ui| {
-                    let rect = ui.max_rect();
-                    let painter = ui.painter();
-                    // Bouncing circle : Lissajous curve based on time.
-                    let t = ui.ctx().input(|i| i.time as f32);
-                    let cx = rect.center().x + (rect.width() * 0.35) * (t * 1.7).sin();
-                    let cy = rect.center().y + (rect.height() * 0.35) * (t * 2.3).cos();
-                    let radius = 60.0 + 20.0 * (t * 3.0).sin();
-                    painter.circle_filled(
-                        egui::pos2(cx, cy),
-                        radius,
-                        egui::Color32::from_rgb(220, 40, 40),
-                    );
-                    // Small white text at top so the label always shows
-                    // even if the circle bounces off-frame.
-                    painter.text(
-                        rect.center_top() + egui::vec2(0.0, 20.0),
-                        egui::Align2::CENTER_TOP,
-                        "TRANSPARENT WGPU — bouncing circle",
-                        egui::FontId::proportional(18.0),
-                        egui::Color32::WHITE,
-                    );
-                });
-                // 60 fps repaint for smooth animation.
-                ui.ctx().request_repaint();
-            } else {
-                let panel = egui::Frame::new().fill(self.cfg.fill).inner_margin(0);
-                panel.show(ui, |ui| {
-                    let rect = ui.max_rect();
-                    let painter = ui.painter();
-                    // Solid fill (guaranteed via Frame) + a diagonal
-                    // black cross for good measure — anywhere red
-                    // visible = window rendered.
-                    painter.line_segment(
-                        [rect.left_top(), rect.right_bottom()],
-                        egui::Stroke::new(4.0, egui::Color32::BLACK),
-                    );
-                    painter.line_segment(
-                        [rect.right_top(), rect.left_bottom()],
-                        egui::Stroke::new(4.0, egui::Color32::BLACK),
-                    );
-                    ui.centered_and_justified(|ui| {
-                        ui.label(
-                            egui::RichText::new("SANDBOX OK")
-                                .size(32.0)
-                                .color(egui::Color32::WHITE)
-                                .strong(),
+            match self.cfg.style {
+                Style::Cross => {
+                    let panel = egui::Frame::new().fill(self.cfg.fill).inner_margin(0);
+                    panel.show(ui, |ui| {
+                        let rect = ui.max_rect();
+                        let painter = ui.painter();
+                        painter.line_segment(
+                            [rect.left_top(), rect.right_bottom()],
+                            egui::Stroke::new(4.0, egui::Color32::BLACK),
+                        );
+                        painter.line_segment(
+                            [rect.right_top(), rect.left_bottom()],
+                            egui::Stroke::new(4.0, egui::Color32::BLACK),
+                        );
+                        ui.centered_and_justified(|ui| {
+                            ui.label(
+                                egui::RichText::new("SANDBOX OK")
+                                    .size(32.0)
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            );
+                        });
+                    });
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(1000));
+                }
+                Style::BouncingCircle => {
+                    let panel = egui::Frame::new().fill(egui::Color32::TRANSPARENT);
+                    panel.show(ui, |ui| {
+                        let rect = ui.max_rect();
+                        let painter = ui.painter();
+                        let t = ui.ctx().input(|i| i.time as f32);
+                        let cx = rect.center().x + (rect.width() * 0.35) * (t * 1.7).sin();
+                        let cy = rect.center().y + (rect.height() * 0.35) * (t * 2.3).cos();
+                        let radius = 60.0 + 20.0 * (t * 3.0).sin();
+                        painter.circle_filled(
+                            egui::pos2(cx, cy),
+                            radius,
+                            egui::Color32::from_rgb(220, 40, 40),
+                        );
+                        painter.text(
+                            rect.center_top() + egui::vec2(0.0, 20.0),
+                            egui::Align2::CENTER_TOP,
+                            "TRANSPARENT WGPU — bouncing circle",
+                            egui::FontId::proportional(18.0),
+                            egui::Color32::WHITE,
                         );
                     });
-                });
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(1000));
+                    ui.ctx().request_repaint();
+                }
+                Style::RoundedWithCircle => {
+                    // The outer "ui" area is fully transparent (window
+                    // bg = alpha 0). Paint a semi-opaque dark rounded
+                    // rectangle in the middle ; anything outside its
+                    // corner_radius stays alpha 0 = desktop visible.
+                    let rect = ui.max_rect();
+                    let painter = ui.painter();
+                    painter.rect_filled(
+                        rect,
+                        20.0, // corner radius
+                        egui::Color32::from_rgba_premultiplied(15, 15, 22, 217),
+                    );
+                    let t = ui.ctx().input(|i| i.time as f32);
+                    let cx = rect.center().x + (rect.width() * 0.28) * (t * 1.5).sin();
+                    let cy = rect.center().y + (rect.height() * 0.28) * (t * 2.1).cos();
+                    painter.circle_filled(
+                        egui::pos2(cx, cy),
+                        40.0,
+                        egui::Color32::from_rgb(255, 183, 77),
+                    );
+                    painter.text(
+                        rect.center_top() + egui::vec2(0.0, 12.0),
+                        egui::Align2::CENTER_TOP,
+                        "Rounded corners over transparent desktop",
+                        egui::FontId::proportional(14.0),
+                        egui::Color32::WHITE,
+                    );
+                    ui.ctx().request_repaint();
+                }
+                Style::MixedAlpha => {
+                    // Six regions at descending alpha so you can see
+                    // the desktop bleed through more and more. Any
+                    // per-pixel alpha value works — wgpu D3D12
+                    // gives us full control.
+                    let rect = ui.max_rect();
+                    let painter = ui.painter();
+                    let cols = 5;
+                    let w = rect.width() / cols as f32;
+                    let alphas = [255u8, 192, 128, 64, 20];
+                    let labels = ["100%", "75%", "50%", "25%", "8%"];
+                    for i in 0..cols {
+                        let x = rect.left() + w * i as f32;
+                        let col_rect = egui::Rect::from_min_size(
+                            egui::pos2(x, rect.top() + 40.0),
+                            egui::vec2(w - 8.0, rect.height() - 60.0),
+                        );
+                        // Solid color at declining alpha : reds so the
+                        // per-pixel alpha effect is very legible.
+                        painter.rect_filled(
+                            col_rect,
+                            8.0,
+                            egui::Color32::from_rgba_premultiplied(
+                                (220 * alphas[i] as u32 / 255) as u8,
+                                (40 * alphas[i] as u32 / 255) as u8,
+                                (40 * alphas[i] as u32 / 255) as u8,
+                                alphas[i],
+                            ),
+                        );
+                        painter.text(
+                            col_rect.center_top() + egui::vec2(0.0, -20.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            labels[i],
+                            egui::FontId::proportional(18.0),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    painter.text(
+                        rect.center_top() + egui::vec2(0.0, 6.0),
+                        egui::Align2::CENTER_TOP,
+                        "Per-pixel alpha showcase (100% → 8%)",
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::WHITE,
+                    );
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(1000));
+                }
+                Style::WidgetPreview => {
+                    // Prod widget preview : dark rounded rectangle
+                    // 320x90 with a 2-line palier + counter mock.
+                    let rect = ui.max_rect();
+                    let painter = ui.painter();
+                    painter.rect_filled(
+                        rect,
+                        12.0,
+                        egui::Color32::from_rgba_premultiplied(15, 15, 22, 230),
+                    );
+                    painter.text(
+                        rect.min + egui::vec2(14.0, 12.0),
+                        egui::Align2::LEFT_TOP,
+                        "Prochaine pause dans 15 min",
+                        egui::FontId::proportional(14.0),
+                        egui::Color32::from_rgba_premultiplied(240, 240, 245, 255),
+                    );
+                    painter.text(
+                        rect.min + egui::vec2(14.0, 40.0),
+                        egui::Align2::LEFT_TOP,
+                        "14:32",
+                        egui::FontId::monospace(24.0),
+                        egui::Color32::from_rgb(255, 183, 77),
+                    );
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(1000));
+                }
             }
         }
     }

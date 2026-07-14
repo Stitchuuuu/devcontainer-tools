@@ -1,6 +1,6 @@
 [package]
 name = "purrpause"
-version = "0.3.2"
+version = "0.3.4"
 edition = "2021"
 license = "MIT"
 description = "Break-reminder overlay for Windows — camouflaged Windows Session Health Service"
@@ -40,6 +40,7 @@ raw-window-handle = "0.6"                # Extract HWND from eframe::Frame (coun
 windows-service = "0.8.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",                # DwmSetWindowAttribute (disable NC shadow around transparent widget)
     "Win32_Graphics_Gdi",                # MonitorFromPoint + MONITORINFO (countdown widget positioning)
     "Win32_UI_HiDpi",                    # GetDpiForMonitor (DPI-aware widget positioning)
     "Win32_Security",

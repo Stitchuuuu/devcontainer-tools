@@ -35,6 +35,27 @@ pub fn apply_topmost_toolwindow(hwnd: HWND) -> Result<()> {
     Ok(())
 }
 
+/// Disable DWM's non-client rendering (title bar chrome, resize
+/// handles, drop shadow). Even with WS_CAPTION / WS_THICKFRAME
+/// stripped, DWM still composites a subtle shadow around top-level
+/// layered windows — this API tells DWM to render nothing.
+pub fn disable_dwm_nc_rendering(hwnd: HWND) -> Result<()> {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY,
+    };
+    unsafe {
+        let policy = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            &policy as *const _ as *const _,
+            std::mem::size_of_val(&policy) as u32,
+        )
+        .context("DwmSetWindowAttribute(NCRENDERING_POLICY, DISABLED)")?;
+    }
+    Ok(())
+}
+
 /// Enable DWM-composited whole-window alpha transparency. Works
 /// around eframe/glow/glutin failing to expose an alpha pixel format
 /// on Parallels ARM64's virtualized ANGLE — the window is created
