@@ -43,6 +43,9 @@ windows = { version = "0.62.2", features = [
     "Win32_Security_Authorization",      # ConvertStringSecurityDescriptor, SetNamedSecurityInfoW
     "Win32_Security_Cryptography",       # DPAPI CryptProtectData / CryptUnprotectData
     "Win32_System_Com",                  # CoInitializeEx / CoCreateInstance
+    "Win32_System_Environment",          # CreateEnvironmentBlock / DestroyEnvironmentBlock
+    "Win32_System_IO",                   # OVERLAPPED + GetOverlappedResult (pipe accept)
+    "Win32_System_Pipes",                # CreateNamedPipeW + PIPE_* constants
     "Win32_System_RemoteDesktop",        # WTSQueryUserToken
     "Win32_System_Services",             # SCM helpers not covered by windows-service
     "Win32_System_Registry",             # Runtime service ImagePath queries

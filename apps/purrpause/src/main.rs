@@ -11,17 +11,18 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
+mod ipc;
 mod modes;
 mod password;
 mod platform;
+mod scheduler;
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    init_tracing();
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = classify_mode(&args);
+    init_tracing(&mode);
 
     tracing::info!(?mode, argv = ?args, "SystemHealthAgent starting");
 
@@ -48,17 +49,41 @@ fn main() -> ExitCode {
 
 #[cfg(windows)]
 fn mode_needs_webview2(mode: &Mode) -> bool {
-    // Rollback + uninstall are cleanup paths — no UI needed even if
-    // WebView2 is missing. Every other mode ends up in the WebView2 dep
-    // graph one way or another (popup renders Lottie ; the wizard opens
-    // an egui window that co-exists with the wry runtime).
-    !matches!(mode, Mode::RollbackFromFailedInstall | Mode::Uninstall)
+    // Headless / cleanup paths never need WebView2 — the service runs
+    // in Session 0, the watchdog exits after checking SCM state, and
+    // rollback + uninstall are teardown. Everything else ends up in
+    // the WebView2 dep graph one way or another (popup renders Lottie ;
+    // the wizard opens an egui window that co-exists with wry).
+    !matches!(
+        mode,
+        Mode::Service
+            | Mode::Watchdog
+            | Mode::RollbackFromFailedInstall
+            | Mode::Uninstall
+    )
 }
 
-fn init_tracing() {
+fn init_tracing(mode: &Mode) {
     use tracing_subscriber::{fmt, EnvFilter};
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    #[cfg(windows)]
+    if matches!(mode, Mode::Service | Mode::Watchdog) {
+        let log_dir = std::path::Path::new(modes::install::DIAGNOSTICS_CACHE_DIR);
+        let _ = std::fs::create_dir_all(log_dir);
+        let appender = tracing_appender::rolling::daily(log_dir, "service.log");
+        let _ = fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(appender)
+            .try_init();
+        return;
+    }
+    let _ = mode; // silence unused-var on non-Windows
     let _ = fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(filter)
         .with_target(false)
         .with_writer(std::io::stderr)
         .try_init();
@@ -125,9 +150,8 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         Mode::RollbackFromFailedInstall => modes::rollback::run()?,
         #[cfg(windows)]
         Mode::Config { first_run: true } => modes::config_first_run::run()?,
-        Mode::Service => {
-            println!("[stub] service mode (session 3 wires this)");
-        }
+        Mode::Service => modes::service::run()?,
+        Mode::Watchdog => modes::watchdog::run()?,
         Mode::Popup { preview } => {
             println!(
                 "[stub] popup mode (session 4 wires this) — preview={preview}"
@@ -142,9 +166,6 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
             println!(
                 "[stub] config-ui mode (session 6 wires this) — first_run={first_run}"
             );
-        }
-        Mode::Watchdog => {
-            println!("[stub] watchdog mode (session 7 wires this)");
         }
         Mode::Uninstall => {
             println!("[stub] uninstall mode (session 7 wires this)");
