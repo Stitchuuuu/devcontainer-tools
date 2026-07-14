@@ -11,8 +11,9 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
     GWL_STYLE, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, WS_CAPTION, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    SWP_NOZORDER, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
+    WS_EX_LAYERED, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
 };
 
 pub fn apply_topmost_toolwindow(hwnd: HWND) -> Result<()> {
@@ -69,19 +70,42 @@ pub fn apply_layered_alpha(hwnd: HWND, alpha: u8) -> Result<()> {
 /// user resize.
 pub fn strip_window_frame(hwnd: HWND) -> Result<()> {
     unsafe {
-        let before = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        let mask = (WS_CAPTION.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0
-            | WS_SYSMENU.0) as isize;
-        let new = before & !mask;
-        let read_back = SetWindowLongPtrW(hwnd, GWL_STYLE, new);
-        let after = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        // Strip GWL_STYLE bits : title bar, thick frame, min/max/sysmenu,
+        // plus the 1-pixel WS_BORDER and WS_DLGFRAME that survive most
+        // borderless requests and show up as a thin outline in the
+        // client area after DWM composition.
+        let style_before = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let style_mask = (WS_CAPTION.0
+            | WS_THICKFRAME.0
+            | WS_MINIMIZEBOX.0
+            | WS_MAXIMIZEBOX.0
+            | WS_SYSMENU.0
+            | WS_BORDER.0
+            | WS_DLGFRAME.0) as isize;
+        let style_new = style_before & !style_mask;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style_new);
+
+        // Also strip GWL_EXSTYLE edges — WS_EX_WINDOWEDGE /
+        // CLIENTEDGE / STATICEDGE / DLGMODALFRAME each render a
+        // subtle 1-2px 3D border that survives WS_CAPTION removal.
+        let ex_before = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let ex_mask = (WS_EX_WINDOWEDGE.0
+            | WS_EX_CLIENTEDGE.0
+            | WS_EX_STATICEDGE.0
+            | WS_EX_DLGMODALFRAME.0) as isize;
+        let ex_new = ex_before & !ex_mask;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_new);
+
+        let style_after = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let ex_after = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         tracing::info!(
-            before = format!("0x{:x}", before),
-            after = format!("0x{:x}", after),
-            requested = format!("0x{:x}", new),
-            set_returned = format!("0x{:x}", read_back),
-            "GWL_STYLE strip"
+            style_before = format!("0x{:x}", style_before),
+            style_after = format!("0x{:x}", style_after),
+            ex_before = format!("0x{:x}", ex_before),
+            ex_after = format!("0x{:x}", ex_after),
+            "window frame strip"
         );
+
         SetWindowPos(
             hwnd,
             None,
