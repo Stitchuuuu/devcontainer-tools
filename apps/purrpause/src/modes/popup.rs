@@ -167,21 +167,24 @@ mod windows_impl {
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
         tracing::info!("popup: building tao window (fullscreen transparent borderless)");
-        // Transparency restored : tao's with_transparent(true) uses
-        // WS_EX_LAYERED on Windows (not glutin's alpha framebuffer),
-        // and wry's WebView2 supports the transparent alpha channel
-        // via DirectComposition. Both paths bypass the ANGLE glutin
-        // fail that killed eframe/glow transparency before we moved
-        // eframe to wgpu.
+        // Follows the pattern in wry's own transparent.rs example
+        // exactly : with_undecorated_shadow(false) BEFORE build, then
+        // set_undecorated_shadow(true) AFTER build. Without this
+        // Windows-specific dance the DWM shadow attribute clobbers
+        // the WebView2 DirectComposition alpha and the popup renders
+        // fully white.
+        use tao::platform::windows::{WindowBuilderExtWindows, WindowExtWindows};
         let window = WindowBuilder::new()
             .with_title(&cfg.popup_window_title)
             .with_transparent(true)
             .with_decorations(false)
             .with_always_on_top(true)
             .with_fullscreen(Some(Fullscreen::Borderless(None)))
+            .with_undecorated_shadow(false)
             .build(&event_loop)
             .context("build tao window")?;
-        tracing::info!("popup: tao window built");
+        window.set_undecorated_shadow(true);
+        tracing::info!("popup: tao window built (undecorated shadow dance applied)");
 
         let hwnd = HWND(window.hwnd() as *mut _);
         tracing::info!(hwnd = format!("0x{:x}", window.hwnd() as isize), "popup: HWND acquired");
