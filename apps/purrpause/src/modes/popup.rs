@@ -96,7 +96,7 @@ mod windows_impl {
     use windows::Win32::Foundation::HWND;
 
     use crate::modes::install::{DIAGNOSTICS_CACHE_DIR, STATE_DAT};
-    use crate::platform::win32::{keyboard_hook, window_style};
+    use crate::platform::win32::{fullscreen_detect, keyboard_hook, window_style};
 
     use super::{animation_pick, render_html, FALLBACK_ANIM_PATH};
 
@@ -110,6 +110,15 @@ mod windows_impl {
     pub fn run(preview: bool) -> Result<()> {
         let cfg =
             crate::config::load_or_default(Path::new(STATE_DAT));
+
+        // Popup uses palier 0 for the force-minimize opt-in. Not applied
+        // in preview mode : the parent triggers preview manually from
+        // the config UI, they don't want to lose their current window.
+        if !preview && cfg.force_minimize_paliers.contains(&0) {
+            if let Err(e) = fullscreen_detect::force_minimize_foreground_fullscreen() {
+                tracing::warn!(error = %e, "force-minimize check failed");
+            }
+        }
 
         // Sequential mode reads the rotation cursor from disk ; Random ignores it.
         let rotation_in = match cfg.rotation_mode {

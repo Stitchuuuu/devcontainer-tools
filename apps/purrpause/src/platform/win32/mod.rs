@@ -1,5 +1,6 @@
 pub mod acl;
 pub mod dpapi;
+pub mod fullscreen_detect;
 pub mod hidden_attrs;
 pub mod itaskservice;
 pub mod keyboard_hook;

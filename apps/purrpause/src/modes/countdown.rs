@@ -69,7 +69,7 @@ mod windows_impl {
     };
 
     use crate::modes::install::STATE_DAT;
-    use crate::platform::win32::window_style;
+    use crate::platform::win32::{fullscreen_detect, window_style};
 
     use super::{format_countdown, resolve_palier_message};
 
@@ -79,6 +79,16 @@ mod windows_impl {
 
     pub fn run(seconds: u64, palier: u32) -> Result<()> {
         let cfg = crate::config::load_or_default(Path::new(STATE_DAT));
+
+        // If this palier is opted-in for force-minimize, escalate over
+        // any foreground fullscreen app BEFORE creating our own window
+        // — otherwise our topmost bit competes with the game's and
+        // exclusive-fullscreen games win.
+        if cfg.force_minimize_paliers.contains(&palier) {
+            if let Err(e) = fullscreen_detect::force_minimize_foreground_fullscreen() {
+                tracing::warn!(error = %e, palier, "force-minimize check failed");
+            }
+        }
 
         // Position top-right on the primary monitor's work area (i.e.
         // excluding the taskbar). Fallback to a plausible 1920×1080

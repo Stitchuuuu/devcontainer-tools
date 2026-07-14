@@ -145,6 +145,33 @@ fn parse_countdown(args: &[String]) -> Mode {
     Mode::Countdown { seconds, palier }
 }
 
+/// User-facing stopgap for modes not yet implemented. Under
+/// `windows_subsystem = "windows"` the exe has no console, so `println!`
+/// is invisible — a MessageBox is the only way the user sees anything.
+#[cfg(windows)]
+fn not_yet_available_dialog(title: &str, body: &str) {
+    use std::iter::once;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONINFORMATION, MB_OK,
+    };
+    let title_w: Vec<u16> = title.encode_utf16().chain(once(0)).collect();
+    let body_w: Vec<u16> = body.encode_utf16().chain(once(0)).collect();
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(body_w.as_ptr()),
+            PCWSTR(title_w.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn not_yet_available_dialog(title: &str, body: &str) {
+    eprintln!("[{title}] {body}");
+}
+
 fn dispatch(mode: Mode) -> anyhow::Result<()> {
     match mode {
         Mode::InstallOrConfig => modes::install::run()?,
@@ -158,12 +185,17 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
             modes::countdown::run(seconds, palier)?
         }
         Mode::Config { first_run } => {
-            println!(
-                "[stub] config-ui mode (session 6 wires this) — first_run={first_run}"
+            not_yet_available_dialog(
+                "Paramètres",
+                "L'écran de configuration arrive dans une prochaine version.\n\nEn attendant, tu peux modifier le passcode ou désinstaller en supprimant C:\\ProgramData\\DiagnosticsCache\\state.dat puis en relançant l'application.",
             );
+            let _ = first_run;
         }
         Mode::Uninstall => {
-            println!("[stub] uninstall mode (session 7 wires this)");
+            not_yet_available_dialog(
+                "Désinstallation",
+                "La désinstallation intégrée arrive dans une prochaine version.\n\nProcédure manuelle en attendant :\n1. Ouvrir services.msc et arrêter « Windows Session Health Service ».\n2. Ouvrir taskschd.msc et supprimer la tâche \\Microsoft\\Windows\\SystemHealth\\HealthCheck.\n3. Supprimer C:\\ProgramData\\DiagnosticsCache\\ (nécessite droits admin).",
+            );
         }
         Mode::Unknown(argv) => {
             eprintln!("Unknown argv: {argv:?}");

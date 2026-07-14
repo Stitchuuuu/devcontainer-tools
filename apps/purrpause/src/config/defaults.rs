@@ -31,6 +31,12 @@ pub mod d {
     pub fn pre_notification_minutes() -> Vec<u32> {
         vec![15, 10, 5, 1]
     }
+    pub fn force_minimize_paliers() -> Vec<u32> {
+        // T-1 minute + popup (T=0). Escalation aligned with the
+        // « friction, not fort-knox » philosophy — soft widgets at
+        // T-15/T-10/T-5, hard interruption at T-1 and the popup itself.
+        vec![1, 0]
+    }
     pub fn rotation_mode() -> RotationMode {
         RotationMode::Random
     }

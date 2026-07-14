@@ -63,6 +63,7 @@ struct WizardApp {
     confirm: String,
     error: Option<String>,
     outcome: Arc<Mutex<Outcome>>,
+    focus_grabbed: bool,
 }
 
 impl WizardApp {
@@ -72,6 +73,7 @@ impl WizardApp {
             confirm: String::new(),
             error: None,
             outcome,
+            focus_grabbed: false,
         }
     }
 
@@ -95,55 +97,66 @@ impl WizardApp {
 
 impl eframe::App for WizardApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.add_space(8.0);
-        ui.heading("Choose your passcode");
-        ui.add_space(4.0);
-        ui.label("Numeric, 4 to 12 digits. Needed to open settings or uninstall.");
-        ui.add_space(16.0);
+        // Central panel body has no margin by default (per eframe docs) —
+        // wrap in a Frame with a generous inner margin so the content
+        // doesn't hug the window edge.
+        egui::Frame::new().inner_margin(24).show(ui, |ui| {
+            ui.heading("Choose your passcode");
+            ui.add_space(6.0);
+            ui.label("Numeric, 4 to 12 digits. Needed to open settings or uninstall.");
+            ui.add_space(20.0);
 
-        egui::Grid::new("passcode-grid")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Passcode :");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.passcode)
-                        .password(true)
-                        .desired_width(180.0),
-                );
-                ui.end_row();
-
-                ui.label("Confirm :");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.confirm)
-                        .password(true)
-                        .desired_width(180.0),
-                );
-                ui.end_row();
-            });
-
-        if let Some(err) = &self.error {
-            ui.add_space(8.0);
-            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
-        }
-
-        ui.add_space(20.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(self.can_continue(), egui::Button::new("Continue"))
-                .clicked()
-            {
-                match self.save() {
-                    Ok(()) => {
-                        *self.outcome.lock().unwrap() = Outcome::Saved;
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            egui::Grid::new("passcode-grid")
+                .num_columns(2)
+                .spacing([12.0, 10.0])
+                .show(ui, |ui| {
+                    ui.label("Passcode :");
+                    let passcode_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.passcode)
+                            .password(true)
+                            .desired_width(200.0),
+                    );
+                    // Auto-focus the first field on the first frame — user
+                    // can start typing immediately without clicking.
+                    if !self.focus_grabbed {
+                        passcode_resp.request_focus();
+                        self.focus_grabbed = true;
                     }
-                    Err(e) => self.error = Some(format!("Save failed : {e}")),
+                    ui.end_row();
+
+                    ui.label("Confirm :");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.confirm)
+                            .password(true)
+                            .desired_width(200.0),
+                    );
+                    ui.end_row();
+                });
+
+            if let Some(err) = &self.error {
+                ui.add_space(10.0);
+                ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+            }
+
+            ui.add_space(24.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(self.can_continue(), egui::Button::new("Continue"))
+                    .clicked()
+                {
+                    match self.save() {
+                        Ok(()) => {
+                            *self.outcome.lock().unwrap() = Outcome::Saved;
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        Err(e) => self.error = Some(format!("Save failed : {e}")),
+                    }
                 }
-            }
-            if ui.button("Cancel").clicked() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+                ui.add_space(8.0);
+                if ui.button("Cancel").clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
         });
     }
 }

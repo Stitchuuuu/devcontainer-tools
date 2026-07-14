@@ -20,6 +20,14 @@ pub struct Config {
     #[serde(default = "d::pre_notification_minutes")]
     pub pre_notification_minutes: Vec<u32>,
 
+    /// Paliers where the widget spawn should force-minimize any
+    /// foreground exclusive-fullscreen window before rendering.
+    /// Values : `15`, `10`, `5`, `1` for the countdown widgets ;
+    /// `0` for the popup itself. Default = `[1, 0]` — escalate at
+    /// T-1 and guarantee the popup is visible.
+    #[serde(default = "d::force_minimize_paliers")]
+    pub force_minimize_paliers: Vec<u32>,
+
     // --- Animations ---
     #[serde(default)]
     pub animations: Vec<AnimationEntry>,

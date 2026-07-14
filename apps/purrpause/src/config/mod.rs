@@ -64,6 +64,7 @@ mod tests {
         assert_eq!(cfg.interval_hours, 2.0);
         assert_eq!(cfg.duration_minutes, 5);
         assert_eq!(cfg.pre_notification_minutes, vec![15, 10, 5, 1]);
+        assert_eq!(cfg.force_minimize_paliers, vec![1, 0]);
         assert_eq!(cfg.rotation_mode, RotationMode::Random);
         assert_eq!(cfg.passcode_length, 6);
         assert_eq!(cfg.passcode_hash, "");
