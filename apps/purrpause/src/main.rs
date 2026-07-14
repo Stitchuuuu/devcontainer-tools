@@ -60,6 +60,7 @@ fn mode_needs_webview2(mode: &Mode) -> bool {
             | Mode::Watchdog
             | Mode::RollbackFromFailedInstall
             | Mode::Uninstall
+            | Mode::Countdown { .. }
     )
 }
 
@@ -154,9 +155,7 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         Mode::Watchdog => modes::watchdog::run()?,
         Mode::Popup { preview } => modes::popup::run(preview)?,
         Mode::Countdown { seconds, palier } => {
-            println!(
-                "[stub] countdown mode (session 5 wires this) — seconds={seconds} palier={palier}"
-            );
+            modes::countdown::run(seconds, palier)?
         }
         Mode::Config { first_run } => {
             println!(

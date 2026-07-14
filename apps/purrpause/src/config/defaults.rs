@@ -29,7 +29,7 @@ pub mod d {
         5
     }
     pub fn pre_notification_minutes() -> Vec<u32> {
-        vec![15, 10, 5]
+        vec![15, 10, 5, 1]
     }
     pub fn rotation_mode() -> RotationMode {
         RotationMode::Random
@@ -54,6 +54,7 @@ pub mod d {
         m.insert(15, "Prochaine pause dans 15 min".to_string());
         m.insert(10, "Plus que 10 min avant la pause".to_string());
         m.insert(5, "Pause dans 5 min !".to_string());
+        m.insert(1, "Pause dans 1 min !".to_string());
         m
     }
     pub fn wizard_welcome() -> String {

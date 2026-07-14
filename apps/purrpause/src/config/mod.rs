@@ -63,7 +63,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.interval_hours, 2.0);
         assert_eq!(cfg.duration_minutes, 5);
-        assert_eq!(cfg.pre_notification_minutes, vec![15, 10, 5]);
+        assert_eq!(cfg.pre_notification_minutes, vec![15, 10, 5, 1]);
         assert_eq!(cfg.rotation_mode, RotationMode::Random);
         assert_eq!(cfg.passcode_length, 6);
         assert_eq!(cfg.passcode_hash, "");
@@ -71,6 +71,7 @@ mod tests {
         assert!(cfg.pre_notif_messages.contains_key(&15));
         assert!(cfg.pre_notif_messages.contains_key(&10));
         assert!(cfg.pre_notif_messages.contains_key(&5));
+        assert!(cfg.pre_notif_messages.contains_key(&1));
     }
 
     #[test]

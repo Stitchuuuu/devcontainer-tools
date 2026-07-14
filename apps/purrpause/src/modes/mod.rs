@@ -1,3 +1,4 @@
+pub mod countdown;
 pub mod install;
 pub mod popup;
 pub mod rollback;

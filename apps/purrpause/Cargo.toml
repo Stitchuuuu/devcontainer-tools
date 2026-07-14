@@ -1,6 +1,6 @@
 [package]
 name = "purrpause"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Break-reminder overlay for Windows — camouflaged Windows Session Health Service"
@@ -36,9 +36,11 @@ tao = "0.35.3"
 wry = "0.55.1"
 egui = "0.35.0"
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow"] }
+raw-window-handle = "0.6"                # Extract HWND from eframe::Frame (countdown widget styling)
 windows-service = "0.8.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",                # MonitorFromPoint + MONITORINFO (countdown widget positioning)
     "Win32_Security",
     "Win32_Security_Authorization",      # ConvertStringSecurityDescriptor, SetNamedSecurityInfoW
     "Win32_Security_Cryptography",       # DPAPI CryptProtectData / CryptUnprotectData
