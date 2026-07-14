@@ -9,9 +9,10 @@ use anyhow::{Context, Result};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+    GWL_STYLE, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, WS_CAPTION, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
 };
 
 pub fn apply_topmost_toolwindow(hwnd: HWND) -> Result<()> {
@@ -29,6 +30,33 @@ pub fn apply_topmost_toolwindow(hwnd: HWND) -> Result<()> {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         )
         .context("SetWindowPos HWND_TOPMOST")?;
+    }
+    Ok(())
+}
+
+/// Enable DWM-composited whole-window alpha transparency. Works
+/// around eframe/glow/glutin failing to expose an alpha pixel format
+/// on Parallels ARM64's virtualized ANGLE — the window is created
+/// opaque, then DWM blends the whole framebuffer at `alpha/255`
+/// opacity against the desktop. Uniform alpha only (no per-pixel
+/// alpha), so rounded-corner transparency around a rectangle
+/// requires the heavier UpdateLayeredWindow + bitmap approach.
+///
+/// `alpha = 255` → fully opaque (equivalent to no LWA_ALPHA at all).
+/// `alpha = 217` → ~85% opaque, matches the design's rgba(_, _, _, 0.85).
+/// `alpha = 128` → 50% opaque, quite see-through.
+pub fn apply_layered_alpha(hwnd: HWND, alpha: u8) -> Result<()> {
+    unsafe {
+        let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let new = cur | (WS_EX_LAYERED.0 as isize);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
+        SetLayeredWindowAttributes(
+            hwnd,
+            windows::Win32::Foundation::COLORREF(0),
+            alpha,
+            LWA_ALPHA,
+        )
+        .context("SetLayeredWindowAttributes")?;
     }
     Ok(())
 }

@@ -20,6 +20,13 @@
 //                               eframe's default center-of-primary).
 //   strip                       Borderless opaque + Win32 strip_window_frame post-create.
 //   strip-transparent           Borderless transparent + strip_window_frame.
+//   lwa-alpha                   Opaque window + Win32 SetLayeredWindowAttributes(alpha=217).
+//                               Workaround for glutin+ANGLE transparency fail : the window is
+//                               technically opaque so no alpha pixel format is requested, and
+//                               DWM composites the whole buffer at 85% opacity against the desktop.
+//   lwa-alpha-strong            Same but alpha=140 (~55% opacity, obvious see-through).
+//   lwa-borderless              lwa-alpha + borderless + Win32 strip_window_frame (closest to
+//                               the widget's target production look).
 //
 // All presets paint a big red square with a black cross so the window
 // is unmistakable. Any preset that shows red = rendering works with
@@ -57,6 +64,9 @@ mod windows_impl {
         fill: egui::Color32,
         clear: [f32; 4],
         strip_frame_win32: bool,
+        /// If Some(alpha), apply WS_EX_LAYERED + SetLayeredWindowAttributes
+        /// with the given whole-window alpha value (0–255).
+        lwa_alpha: Option<u8>,
     }
 
     fn defaults() -> Cfg {
@@ -71,6 +81,7 @@ mod windows_impl {
             fill: egui::Color32::from_rgb(220, 40, 40),
             clear: [0.85, 0.15, 0.15, 1.0],
             strip_frame_win32: false,
+            lwa_alpha: None,
         }
     }
 
@@ -122,6 +133,17 @@ mod windows_impl {
                 cfg.strip_frame_win32 = true;
                 cfg.clear = [0.0, 0.0, 0.0, 0.0];
             }
+            "lwa-alpha" => {
+                cfg.lwa_alpha = Some(217);
+            }
+            "lwa-alpha-strong" => {
+                cfg.lwa_alpha = Some(140);
+            }
+            "lwa-borderless" => {
+                cfg.decorations = false;
+                cfg.strip_frame_win32 = true;
+                cfg.lwa_alpha = Some(217);
+            }
             _ => {
                 tracing::warn!(
                     preset,
@@ -137,6 +159,7 @@ mod windows_impl {
             always_on_top = cfg.always_on_top,
             fullscreen = cfg.fullscreen,
             strip_frame_win32 = cfg.strip_frame_win32,
+            lwa_alpha = ?cfg.lwa_alpha,
             fill = ?cfg.fill,
             "sandbox: starting"
         );
@@ -167,6 +190,7 @@ mod windows_impl {
             fill: cfg.fill,
             clear: cfg.clear,
             strip_frame_win32: cfg.strip_frame_win32,
+            lwa_alpha: cfg.lwa_alpha,
         };
 
         eframe::run_native(
@@ -181,12 +205,13 @@ mod windows_impl {
         fill: egui::Color32,
         clear: [f32; 4],
         strip_frame_win32: bool,
+        lwa_alpha: Option<u8>,
     }
 
     struct SandboxApp {
         cfg: SandboxAppCfg,
         first_frame_logged: bool,
-        strip_applied: bool,
+        win32_applied: bool,
     }
 
     impl SandboxApp {
@@ -194,7 +219,7 @@ mod windows_impl {
             Self {
                 cfg,
                 first_frame_logged: false,
-                strip_applied: false,
+                win32_applied: false,
             }
         }
     }
@@ -210,15 +235,26 @@ mod windows_impl {
                 self.first_frame_logged = true;
             }
 
-            if self.cfg.strip_frame_win32 && !self.strip_applied {
+            if !self.win32_applied
+                && (self.cfg.strip_frame_win32 || self.cfg.lwa_alpha.is_some())
+            {
                 if let Ok(handle) = frame.window_handle() {
                     if let RawWindowHandle::Win32(win32) = handle.as_raw() {
                         let hwnd = HWND(win32.hwnd.get() as *mut _);
                         tracing::info!(hwnd = format!("0x{:x}", win32.hwnd.get()), "sandbox: HWND acquired");
-                        if let Err(e) = window_style::strip_window_frame(hwnd) {
-                            tracing::warn!(error = ?e, "strip_window_frame failed");
+                        if self.cfg.strip_frame_win32 {
+                            if let Err(e) = window_style::strip_window_frame(hwnd) {
+                                tracing::warn!(error = ?e, "strip_window_frame failed");
+                            }
                         }
-                        self.strip_applied = true;
+                        if let Some(alpha) = self.cfg.lwa_alpha {
+                            if let Err(e) = window_style::apply_layered_alpha(hwnd, alpha) {
+                                tracing::warn!(error = ?e, alpha, "apply_layered_alpha failed");
+                            } else {
+                                tracing::info!(alpha, "sandbox: LWA_ALPHA applied");
+                            }
+                        }
+                        self.win32_applied = true;
                     }
                 }
             }
