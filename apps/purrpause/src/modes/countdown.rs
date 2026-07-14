@@ -132,17 +132,17 @@ mod windows_impl {
         );
         let _unused_mh = mh;   // kept for context in the log above
 
-        // Note : NOT requesting `with_transparent(true)` — Parallels
-        // ARM64 virtualized graphics stack drops the alpha channel in
-        // the OpenGL framebuffer, rendering the widget as opaque white
-        // no matter what. Ship an opaque dark background instead
-        // (matches the desired look, minus the desktop-showing-through).
+        // wgpu backend + D3D12 direct handles per-pixel alpha
+        // correctly on virtualized graphics stacks (validated in
+        // sandbox on Parallels ARM64). Enable transparency so the
+        // widget's rounded corners show the desktop through.
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([WIDTH, HEIGHT])
                 .with_position([x_l, y_l])
                 .with_resizable(false)
                 .with_decorations(false)
+                .with_transparent(true)
                 .with_always_on_top(),
             ..Default::default()
         };
@@ -185,12 +185,10 @@ mod windows_impl {
     }
 
     impl eframe::App for CountdownApp {
-        // Opaque dark background — same colour as the panel Frame's fill
-        // so the widget looks uniform even before the panel paints, and
-        // survives virtualized graphics stacks that drop the alpha
-        // channel (Parallels ARM64).
+        // Fully transparent clear so the rounded panel we paint below
+        // shows the desktop through the corners.
         fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-            [17.0 / 255.0, 17.0 / 255.0, 26.0 / 255.0, 1.0]
+            [0.0, 0.0, 0.0, 0.0]
         }
 
         fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -216,10 +214,15 @@ mod windows_impl {
 
             if let Some(hwnd_isize) = self.cached_hwnd {
                 let hwnd = HWND(hwnd_isize as *mut _);
-                // Apply topmost only once — sticky.
                 if !self.styled_once {
                     if let Err(e) = window_style::apply_topmost_toolwindow(hwnd) {
                         tracing::warn!(error = ?e, "apply_topmost_toolwindow failed");
+                    }
+                    // Disable DWM's non-client shadow rendering so
+                    // the rounded transparent corners show the desktop
+                    // cleanly (no outline / drop shadow).
+                    if let Err(e) = window_style::disable_dwm_nc_rendering(hwnd) {
+                        tracing::warn!(error = ?e, "disable_dwm_nc_rendering failed");
                     }
                     self.styled_once = true;
                 }
@@ -244,36 +247,45 @@ mod windows_impl {
             // without any mouse/keyboard input.
             ui.ctx().request_repaint_after(Duration::from_millis(500));
 
-            // Fully opaque fill + no corner radius : guarantees every
-            // pixel of the client area is painted by us (no gaps where
-            // the default winit background or the desktop pixels
-            // could leak through as white on Parallels ARM64).
-            let panel = egui::Frame::new()
-                .fill(egui::Color32::from_rgb(17, 17, 26))
-                .inner_margin(12);
+            // Rounded semi-opaque dark panel — wgpu handles per-pixel
+            // alpha so pixels outside the rounded rect stay alpha 0
+            // and show the desktop through cleanly.
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(
+                rect,
+                12.0,
+                egui::Color32::from_rgba_premultiplied(15, 15, 22, 230),
+            );
 
-            panel.show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(&self.message).size(14.0).strong(),
-                    );
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::TOP),
-                        |ui| {
-                            if ui.small_button("×").clicked() {
-                                ui.ctx().send_viewport_cmd(
-                                    egui::ViewportCommand::Close,
-                                );
-                            }
-                        },
-                    );
-                });
-                ui.add_space(4.0);
-                let counter = format_countdown(&self.template, remaining);
-                ui.label(
-                    egui::RichText::new(counter).size(22.0).monospace(),
-                );
-            });
+            // Content laid out inside a small inset from the rounded
+            // background so nothing touches the corners.
+            let content_rect = rect.shrink(12.0);
+
+            let counter = format_countdown(&self.template, remaining);
+            ui.painter().text(
+                content_rect.min,
+                egui::Align2::LEFT_TOP,
+                &self.message,
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgba_premultiplied(240, 240, 245, 255),
+            );
+            ui.painter().text(
+                content_rect.min + egui::vec2(0.0, 28.0),
+                egui::Align2::LEFT_TOP,
+                counter,
+                egui::FontId::monospace(24.0),
+                egui::Color32::from_rgb(255, 183, 77),
+            );
+
+            // Close button on top of everything, small × top-right.
+            let close_size = 22.0;
+            let close_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.right() - close_size, content_rect.top() - 2.0),
+                egui::vec2(close_size, close_size),
+            );
+            if ui.put(close_rect, egui::Button::new("×").frame(false)).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 

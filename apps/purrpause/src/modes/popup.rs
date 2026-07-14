@@ -166,14 +166,16 @@ mod windows_impl {
         tracing::info!("popup: creating event loop");
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
-        tracing::info!("popup: building tao window (fullscreen opaque borderless)");
-        // TEMPORARY smoke : with_transparent(true) is unreliable on
-        // Parallels ARM64 (virt stack drops alpha), causing a white
-        // popup. Ship opaque + let the HTML's own semi-opaque bg do
-        // the visual work. Restore .with_transparent(true) when
-        // shipping to real hardware.
+        tracing::info!("popup: building tao window (fullscreen transparent borderless)");
+        // Transparency restored : tao's with_transparent(true) uses
+        // WS_EX_LAYERED on Windows (not glutin's alpha framebuffer),
+        // and wry's WebView2 supports the transparent alpha channel
+        // via DirectComposition. Both paths bypass the ANGLE glutin
+        // fail that killed eframe/glow transparency before we moved
+        // eframe to wgpu.
         let window = WindowBuilder::new()
             .with_title(&cfg.popup_window_title)
+            .with_transparent(true)
             .with_decorations(false)
             .with_always_on_top(true)
             .with_fullscreen(Some(Fullscreen::Borderless(None)))
@@ -194,6 +196,12 @@ mod windows_impl {
         window_style::strip_window_frame(hwnd)
             .context("strip window frame")?;
         tracing::info!("popup: strip_window_frame OK");
+
+        // Disable DWM non-client rendering so no drop-shadow fringe
+        // appears around a fullscreen transparent overlay.
+        if let Err(e) = window_style::disable_dwm_nc_rendering(hwnd) {
+            tracing::warn!(error = ?e, "popup: disable_dwm_nc_rendering failed");
+        }
 
         // Debug mode leaves Alt+F4 / Alt+Tab / Win+D / Ctrl+Esc alone
         // so a developer can exit the popup during smoke without
