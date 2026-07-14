@@ -61,6 +61,7 @@ fn mode_needs_webview2(mode: &Mode) -> bool {
             | Mode::RollbackFromFailedInstall
             | Mode::Uninstall
             | Mode::Countdown { .. }
+            | Mode::Sandbox { .. }
     )
 }
 
@@ -90,7 +91,10 @@ fn init_tracing(mode: &Mode) {
     #[cfg(windows)]
     if matches!(
         mode,
-        Mode::Countdown { .. } | Mode::Popup { .. } | Mode::Config { .. }
+        Mode::Countdown { .. }
+            | Mode::Popup { .. }
+            | Mode::Config { .. }
+            | Mode::Sandbox { .. }
     ) {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
@@ -128,6 +132,11 @@ enum Mode {
     /// Small corner countdown widget for T-15 / T-10 / T-5 / T-1.
     /// `debug` skips force-minimize so the current window isn't lost.
     Countdown { seconds: u64, palier: u32, debug: bool },
+    /// Isolated diagnostic window with tunable options. Zero
+    /// dependency on the rest of the app (no state.dat load, no
+    /// wry, no keyboard hook). See `modes::sandbox::run` for the
+    /// preset menu.
+    Sandbox { preset: String },
     /// Passcode-gated config UI (egui window).
     Config { first_run: bool },
     /// Health-check task run by Scheduled Task every minute.
@@ -158,6 +167,14 @@ fn classify_mode(args: &[String]) -> Mode {
         Some("--watchdog") => Mode::Watchdog,
         Some("--uninstall") => Mode::Uninstall,
         Some("--rollback-from-failed-install") => Mode::RollbackFromFailedInstall,
+        Some("--sandbox") => Mode::Sandbox {
+            preset: args
+                .iter()
+                .position(|a| a == "--try")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_else(|| "plain".to_string()),
+        },
         Some(_) => Mode::Unknown(args.to_vec()),
     }
 }
@@ -227,6 +244,7 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
             );
             let _ = first_run;
         }
+        Mode::Sandbox { preset } => modes::sandbox::run(&preset)?,
         Mode::Uninstall => {
             not_yet_available_dialog(
                 "Désinstallation",
