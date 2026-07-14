@@ -219,7 +219,11 @@ mod win {
         last_popup: &mut SystemTime,
         fired: &mut std::collections::HashSet<u32>,
     ) -> Result<()> {
-        let args: [&OsStr; 1] = [OsStr::new("--popup")];
+        // --no-debug so the service-spawned popup runs in production
+        // mode : keyboard hook installed + force-minimize honoured.
+        // Debug-default is only for developer manual invocations
+        // from PowerShell during smoke.
+        let args: [&OsStr; 2] = [OsStr::new("--popup"), OsStr::new("--no-debug")];
         match spawn_user::spawn_in_active_user_session(exe, &args) {
             Ok(pid) => {
                 tracing::info!(pid, "popup child spawned");
@@ -246,11 +250,15 @@ mod win {
     ) -> Result<()> {
         let seconds_str = seconds_until_popup.to_string();
         let palier_str = palier.to_string();
-        let args: [&OsStr; 4] = [
+        // Same rationale as fire_popup : --no-debug forces the
+        // service-spawned widget into production mode
+        // (force-minimize per Config::force_minimize_paliers).
+        let args: [&OsStr; 5] = [
             OsStr::new("--countdown"),
             OsStr::new(&seconds_str),
             OsStr::new("--palier"),
             OsStr::new(&palier_str),
+            OsStr::new("--no-debug"),
         ];
         match spawn_user::spawn_in_active_user_session(exe, &args) {
             Ok(pid) => {

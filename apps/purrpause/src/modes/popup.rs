@@ -90,7 +90,8 @@ mod windows_impl {
 
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
-    use tao::platform::windows::WindowExtWindows;
+    // WindowExtWindows / WindowBuilderExtWindows are imported inside
+    // the run() body where the shadow-dance uses them.
     use tao::window::{Fullscreen, WindowBuilder};
 
     use windows::Win32::Foundation::HWND;

@@ -132,17 +132,17 @@ mod windows_impl {
         );
         let _unused_mh = mh;   // kept for context in the log above
 
-        // wgpu backend + D3D12 direct handles per-pixel alpha
-        // correctly on virtualized graphics stacks (validated in
-        // sandbox on Parallels ARM64). Enable transparency so the
-        // widget's rounded corners show the desktop through.
+        // Classic rounding : opaque window, no per-pixel alpha. The
+        // egui panel paints a rounded semi-opaque rectangle inside
+        // the client area — the OS window itself stays a plain
+        // rectangle so the 1px top-edge shadow artifact from
+        // winit's undecorated-shadow default doesn't apply.
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([WIDTH, HEIGHT])
                 .with_position([x_l, y_l])
                 .with_resizable(false)
                 .with_decorations(false)
-                .with_transparent(true)
                 .with_always_on_top(),
             ..Default::default()
         };
@@ -157,7 +157,19 @@ mod windows_impl {
         eframe::run_native(
             &title,
             options,
-            Box::new(move |_cc| {
+            Box::new(move |cc| {
+                // One-shot Win32 style tweak : hide from Alt+Tab +
+                // reinforce topmost. Done here (CreationContext) so
+                // we don't need to run any per-frame styling
+                // machinery in App::ui.
+                if let Ok(handle) = cc.window_handle() {
+                    if let RawWindowHandle::Win32(w) = handle.as_raw() {
+                        let hwnd = HWND(w.hwnd.get() as *mut _);
+                        if let Err(e) = window_style::apply_topmost_toolwindow(hwnd) {
+                            tracing::warn!(error = ?e, "apply_topmost_toolwindow failed");
+                        }
+                    }
+                }
                 Ok(Box::new(CountdownApp::new(deadline, message, template)))
             }),
         )
@@ -168,71 +180,24 @@ mod windows_impl {
         deadline: Instant,
         message: String,
         template: String,
-        styled_once: bool,
-        cached_hwnd: Option<isize>,
     }
 
     impl CountdownApp {
         fn new(deadline: Instant, message: String, template: String) -> Self {
-            Self {
-                deadline,
-                message,
-                template,
-                styled_once: false,
-                cached_hwnd: None,
-            }
+            Self { deadline, message, template }
         }
     }
 
     impl eframe::App for CountdownApp {
-        // Fully transparent clear so the rounded panel we paint below
-        // shows the desktop through the corners.
+        // Opaque dark background matching the panel fill : the whole
+        // client area reads as a solid dark rectangle. Rounded content
+        // painted on top gives the classic look without the winit
+        // undecorated-shadow 1px top-edge artifact.
         fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-            [0.0, 0.0, 0.0, 0.0]
+            [15.0 / 255.0, 15.0 / 255.0, 22.0 / 255.0, 1.0]
         }
 
-        fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-            // Cache the HWND on first frame, then re-strip the frame
-            // every subsequent frame. winit's WndProc may re-apply the
-            // caption/frame styles after our initial strip on some
-            // virtualized graphics stacks (Parallels ARM64) — cheap to
-            // re-strip and guarantees the styles stay off.
-            if self.cached_hwnd.is_none() {
-                tracing::info!("countdown widget: first ui() frame");
-                if let Ok(handle) = frame.window_handle() {
-                    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                        let hwnd_isize = win32.hwnd.get();
-                        tracing::info!(hwnd = format!("0x{:x}", hwnd_isize), "widget HWND acquired");
-                        self.cached_hwnd = Some(hwnd_isize);
-                    } else {
-                        tracing::warn!("widget got a non-Win32 window handle — unexpected");
-                    }
-                } else {
-                    tracing::warn!("widget: no window_handle available yet");
-                }
-            }
-
-            if let Some(hwnd_isize) = self.cached_hwnd {
-                let hwnd = HWND(hwnd_isize as *mut _);
-                if !self.styled_once {
-                    if let Err(e) = window_style::apply_topmost_toolwindow(hwnd) {
-                        tracing::warn!(error = ?e, "apply_topmost_toolwindow failed");
-                    }
-                    // Disable DWM's non-client shadow rendering so
-                    // the rounded transparent corners show the desktop
-                    // cleanly (no outline / drop shadow).
-                    if let Err(e) = window_style::disable_dwm_nc_rendering(hwnd) {
-                        tracing::warn!(error = ?e, "disable_dwm_nc_rendering failed");
-                    }
-                    self.styled_once = true;
-                }
-                // Re-strip every frame — brute-force against winit's
-                // WndProc re-applying default caption on WM_NCPAINT.
-                if let Err(e) = window_style::strip_window_frame(hwnd) {
-                    tracing::warn!(error = ?e, "strip_window_frame failed");
-                }
-            }
-
+        fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             let remaining = self
                 .deadline
                 .saturating_duration_since(Instant::now())

@@ -155,9 +155,15 @@ fn classify_mode(args: &[String]) -> Mode {
         Some("--service") => Mode::Service,
         Some("--popup") => Mode::Popup {
             preview: args.iter().any(|a| a == "--preview"),
-            // Temporary : debug=true by default during smoke. Pass
-            // `--no-debug` to opt back into production behaviour
-            // (keyboard hook + force-minimize).
+            // SMOKE DEFAULT ONLY : debug=true unless --no-debug is
+            // passed. Lets a developer Alt+F4 out of a broken popup
+            // during manual invocation. The service ALWAYS passes
+            // --no-debug when it spawns children so production
+            // behaviour (keyboard hook + force-minimize) is
+            // preserved.
+            //
+            // TODO v1 release : flip the default to false and require
+            // --debug opt-in explicitly. Track in session-6 or later.
             debug: !args.iter().any(|a| a == "--no-debug"),
         },
         Some("--countdown") => parse_countdown(args),
