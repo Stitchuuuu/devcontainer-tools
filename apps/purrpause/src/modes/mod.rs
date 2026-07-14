@@ -1,4 +1,5 @@
 pub mod install;
+pub mod popup;
 pub mod rollback;
 pub mod service;
 pub mod watchdog;

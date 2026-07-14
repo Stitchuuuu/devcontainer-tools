@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use super::schema::RotationMode;
 
+pub const DEFAULT_POPUP_WINDOW_TITLE: &str = "Windows Session Health";
 pub const DEFAULT_POPUP_TITLE: &str = "C'est l'heure de la pause !";
 pub const DEFAULT_POPUP_SUBTITLE: &str =
     "Prends 5 minutes pour t'étirer, boire, regarder au loin.";
@@ -32,6 +33,9 @@ pub mod d {
     }
     pub fn rotation_mode() -> RotationMode {
         RotationMode::Random
+    }
+    pub fn popup_window_title() -> String {
+        DEFAULT_POPUP_WINDOW_TITLE.to_string()
     }
     pub fn popup_title() -> String {
         DEFAULT_POPUP_TITLE.to_string()

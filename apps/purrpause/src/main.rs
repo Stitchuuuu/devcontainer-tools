@@ -152,11 +152,7 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         Mode::Config { first_run: true } => modes::config_first_run::run()?,
         Mode::Service => modes::service::run()?,
         Mode::Watchdog => modes::watchdog::run()?,
-        Mode::Popup { preview } => {
-            println!(
-                "[stub] popup mode (session 4 wires this) — preview={preview}"
-            );
-        }
+        Mode::Popup { preview } => modes::popup::run(preview)?,
         Mode::Countdown { seconds, palier } => {
             println!(
                 "[stub] countdown mode (session 5 wires this) — seconds={seconds} palier={palier}"

@@ -28,6 +28,11 @@ pub struct Config {
     pub rotation_mode: RotationMode,
 
     // --- User-facing strings ---
+    /// OS-level window title. Leaks via Task Manager / accessibility
+    /// APIs even though the popup is borderless — keep bland.
+    #[serde(default = "d::popup_window_title")]
+    pub popup_window_title: String,
+
     #[serde(default = "d::popup_title")]
     pub popup_title: String,
 

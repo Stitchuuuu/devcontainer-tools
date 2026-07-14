@@ -3,23 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PurrPause — Pause</title>
+  <title>{{ WINDOW_TITLE }}</title>
   <!--
     ============================================================================
     PurrPause popup — fullscreen transparent break reminder
     ============================================================================
 
     Placeholders (filled by Rust before loading in wry):
+      {{ WINDOW_TITLE }}      — <title> tag (leaks via Task Manager / a11y)
       {{ POPUP_TITLE }}       — h1 text
       {{ POPUP_SUBTITLE }}    — subtitle text
       {{ DISMISS_LABEL }}     — dismiss button label
+      {{ COUNTDOWN_TEMPLATE }} — countdown format string (placeholders {mm},{ss})
       {{ ANIMATION_PATH }}    — Lottie file path (relative) or data: URL
       {{ COUNTDOWN_SECONDS }} — initial value for data-remaining-seconds
+      {{ POPUP_MODE }}        — "preview" or "live" (runtime flag, not user-visible)
 
     Runtime contract:
       - body.dataset.remainingSeconds is the source of truth for the countdown.
-      - Rust may set it initially via {{ COUNTDOWN_SECONDS }} and/or update
-        it live via wry.evaluate_script("document.body.dataset.remainingSeconds = N").
+      - body.dataset.countdownTemplate is the format string (JS substitutes
+        {mm} + {ss} with two-digit values). Fallback is "{mm}:{ss}".
+      - Rust may set them initially via {{ COUNTDOWN_SECONDS }} / {{ COUNTDOWN_TEMPLATE }}
+        and/or update them live via wry.evaluate_script(...).
       - JS ticks every second, decrements the attribute, updates #countdown text.
       - At 0: #dismiss.disabled = false, .pulse class added.
       - Click #dismiss → window.ipc?.postMessage('dismiss') ?? console.log('dismiss').
@@ -214,7 +219,9 @@
   </style>
 </head>
 <body data-remaining-seconds="{{ COUNTDOWN_SECONDS }}"
-      data-animation-path="{{ ANIMATION_PATH }}">
+      data-animation-path="{{ ANIMATION_PATH }}"
+      data-countdown-template="{{ COUNTDOWN_TEMPLATE }}"
+      data-mode="{{ POPUP_MODE }}">
   <!-- <dotlottie-wc> is mounted by JS in the module script below, AFTER
        setWasmUrl() has pinned the vendored WASM URL. Putting the element
        in the initial HTML races the constructor's _initWasm() against
@@ -251,11 +258,14 @@
       applyAnimConfig(currentAnim);
 
       const defaults = {
+        WINDOW_TITLE: "Windows Session Health",
         POPUP_TITLE: "C'est l'heure de la pause !",
         POPUP_SUBTITLE: "Prends 5 minutes pour t'étirer, boire, regarder au loin.",
         DISMISS_LABEL: "J'ai fait ma pause",
+        COUNTDOWN_TEMPLATE: "Pause dans {mm}:{ss}",
         ANIMATION_PATH: animPath(currentAnim),
         COUNTDOWN_SECONDS: params.get('countdown') || '300',
+        POPUP_MODE: 'live',
       };
       // (--stage-scale and --stage-offset-y were set above by applyAnimConfig
       // and may be overridden below by URL params.)
@@ -346,10 +356,14 @@
     (function () {
       const dismiss = document.getElementById('dismiss');
       const cdEl = document.getElementById('countdown');
+      // Format string is user-configurable via body.dataset.countdownTemplate
+      // (set from Config::countdown_template by Rust). Placeholders {mm} + {ss}
+      // are two-digit-zero-padded. Fallback matches the classical MM:SS shape.
       const fmt = s => {
         const m = Math.floor(s / 60).toString().padStart(2, '0');
         const r = (s % 60).toString().padStart(2, '0');
-        return `${m}:${r}`;
+        const tpl = document.body.dataset.countdownTemplate || '{mm}:{ss}';
+        return tpl.replace(/\{mm\}/g, m).replace(/\{ss\}/g, r);
       };
       const render = () => {
         const s = parseInt(document.body.dataset.remainingSeconds || '0', 10);
@@ -359,6 +373,13 @@
           dismiss.classList.add('pulse');
         }
       };
+      // Preview mode unlocks dismiss immediately so a parent testing the
+      // popup from the config UI can close it without waiting the full
+      // countdown. Countdown text still ticks visibly.
+      if (document.body.dataset.mode === 'preview') {
+        dismiss.disabled = false;
+        dismiss.classList.add('pulse');
+      }
       render();
       setInterval(() => {
         const s = parseInt(document.body.dataset.remainingSeconds || '0', 10);
