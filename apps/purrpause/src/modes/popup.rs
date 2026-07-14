@@ -163,7 +163,10 @@ mod windows_impl {
             "popup mode starting",
         );
 
+        tracing::info!("popup: creating event loop");
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+
+        tracing::info!("popup: building tao window (fullscreen transparent borderless)");
         let window = WindowBuilder::new()
             .with_title(&cfg.popup_window_title)
             .with_transparent(true)
@@ -172,27 +175,33 @@ mod windows_impl {
             .with_fullscreen(Some(Fullscreen::Borderless(None)))
             .build(&event_loop)
             .context("build tao window")?;
+        tracing::info!("popup: tao window built");
 
         let hwnd = HWND(window.hwnd() as *mut _);
+        tracing::info!(hwnd = format!("0x{:x}", window.hwnd() as isize), "popup: HWND acquired");
+
         window_style::apply_topmost_toolwindow(hwnd)
             .context("apply WS_EX_TOOLWINDOW|WS_EX_TOPMOST")?;
+        tracing::info!("popup: apply_topmost_toolwindow OK");
 
         // Debug mode leaves Alt+F4 / Alt+Tab / Win+D / Ctrl+Esc alone
         // so a developer can exit the popup during smoke without
         // killing the process from Task Manager.
         let _kb_guard = if debug {
+            tracing::info!("popup: skipping keyboard hook (--debug)");
             None
         } else {
-            Some(
-                keyboard_hook::install_keyboard_hook()
-                    .context("install keyboard hook")?,
-            )
+            let guard = keyboard_hook::install_keyboard_hook()
+                .context("install keyboard hook")?;
+            tracing::info!("popup: keyboard hook installed");
+            Some(guard)
         };
 
         let proxy = event_loop.create_proxy();
         let protocol_resources = resources_dir.clone();
         let protocol_rendered = rendered.clone();
 
+        tracing::info!("popup: building wry webview");
         let webview = wry::WebViewBuilder::new()
             .with_transparent(true)
             .with_custom_protocol(
@@ -213,6 +222,7 @@ mod windows_impl {
             })
             .build(&window)
             .context("build wry webview")?;
+        tracing::info!("popup: wry webview built, entering event loop");
 
         // Silence the unused-var lint : the webview must live for the
         // event loop's duration ; dropping it destroys the child hwnd.

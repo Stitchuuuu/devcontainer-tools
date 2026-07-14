@@ -41,11 +41,19 @@ pub fn apply_topmost_toolwindow(hwnd: HWND) -> Result<()> {
 /// user resize.
 pub fn strip_window_frame(hwnd: HWND) -> Result<()> {
     unsafe {
-        let cur = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let before = GetWindowLongPtrW(hwnd, GWL_STYLE);
         let mask = (WS_CAPTION.0 | WS_THICKFRAME.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0
             | WS_SYSMENU.0) as isize;
-        let new = cur & !mask;
-        SetWindowLongPtrW(hwnd, GWL_STYLE, new);
+        let new = before & !mask;
+        let read_back = SetWindowLongPtrW(hwnd, GWL_STYLE, new);
+        let after = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        tracing::info!(
+            before = format!("0x{:x}", before),
+            after = format!("0x{:x}", after),
+            requested = format!("0x{:x}", new),
+            set_returned = format!("0x{:x}", read_back),
+            "GWL_STYLE strip"
+        );
         SetWindowPos(
             hwnd,
             None,

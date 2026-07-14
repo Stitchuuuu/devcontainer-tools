@@ -59,14 +59,15 @@ mod windows_impl {
     use std::path::Path;
     use std::time::{Duration, Instant};
 
-    use anyhow::{anyhow, Result};
+    use anyhow::{anyhow, Context, Result};
     use eframe::egui;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use windows::Win32::Foundation::{HWND, POINT};
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+        GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
     };
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 
     use crate::modes::install::STATE_DAT;
     use crate::platform::win32::{fullscreen_detect, window_style};
@@ -98,23 +99,38 @@ mod windows_impl {
         // excluding the taskbar). Fallback to a plausible 1920×1080
         // origin when the monitor query fails — the widget will still
         // show, just possibly off-position on multi-monitor setups.
-        let (mx, my, mw, mh) = match primary_monitor_work_area() {
+        //
+        // eframe/winit's with_position takes LOGICAL points, but
+        // GetMonitorInfoW returns PHYSICAL pixels. On Retina / high-DPI
+        // displays (Parallels default is often 2x on Apple Silicon)
+        // passing physical coords as logical pushes the window
+        // off-screen at scale × factor. Query the monitor's DPI and
+        // divide before feeding eframe.
+        let (mx, my, mw, mh, scale) = match primary_monitor_bounds_and_scale() {
             Ok(v) => {
                 tracing::info!(
-                    mx = v.0, my = v.1, mw = v.2, mh = v.3,
-                    "primary monitor work area (physical pixels)"
+                    mx = v.0, my = v.1, mw = v.2, mh = v.3, scale = v.4,
+                    "primary monitor bounds (physical) + DPI scale"
                 );
                 v
             }
             Err(e) => {
-                tracing::warn!(error = ?e, "monitor query failed, using 1920x1080 fallback");
-                (0, 0, 1920, 1080)
+                tracing::warn!(error = ?e, "monitor/DPI query failed, using 1920x1080 @ 1.0 fallback");
+                (0, 0, 1920, 1080, 1.0)
             }
         };
 
-        let x = mx + mw as i32 - WIDTH as i32 - MARGIN;
-        let y = my + MARGIN;
-        tracing::info!(x, y, w = WIDTH, h = HEIGHT, "computed widget position");
+        // Convert physical → logical for eframe.
+        let mx_l = mx as f32 / scale;
+        let my_l = my as f32 / scale;
+        let mw_l = mw as f32 / scale;
+        let x_l = mx_l + mw_l - WIDTH - MARGIN as f32;
+        let y_l = my_l + MARGIN as f32;
+        tracing::info!(
+            x_logical = x_l, y_logical = y_l, w = WIDTH, h = HEIGHT,
+            "computed widget position (logical points for eframe)"
+        );
+        let _unused_mh = mh;   // kept for context in the log above
 
         // Note : NOT requesting `with_transparent(true)` — Parallels
         // ARM64 virtualized graphics stack drops the alpha channel in
@@ -124,7 +140,7 @@ mod windows_impl {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([WIDTH, HEIGHT])
-                .with_position([x as f32, y as f32])
+                .with_position([x_l, y_l])
                 .with_resizable(false)
                 .with_decorations(false)
                 .with_always_on_top(),
@@ -153,6 +169,7 @@ mod windows_impl {
         message: String,
         template: String,
         styled_once: bool,
+        cached_hwnd: Option<isize>,
     }
 
     impl CountdownApp {
@@ -162,6 +179,7 @@ mod windows_impl {
                 message,
                 template,
                 styled_once: false,
+                cached_hwnd: None,
             }
         }
     }
@@ -176,33 +194,39 @@ mod windows_impl {
         }
 
         fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-            // One-shot styling on the first frame : hide from Alt+Tab
-            // and the taskbar (WS_EX_TOOLWINDOW) + reinforce topmost +
-            // strip the title bar / thick frame that winit sometimes
-            // leaves behind despite `with_decorations(false)`.
-            if !self.styled_once {
+            // Cache the HWND on first frame, then re-strip the frame
+            // every subsequent frame. winit's WndProc may re-apply the
+            // caption/frame styles after our initial strip on some
+            // virtualized graphics stacks (Parallels ARM64) — cheap to
+            // re-strip and guarantees the styles stay off.
+            if self.cached_hwnd.is_none() {
                 tracing::info!("countdown widget: first ui() frame");
                 if let Ok(handle) = frame.window_handle() {
                     if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                        let hwnd = HWND(win32.hwnd.get() as *mut _);
-                        tracing::info!(hwnd = ?hwnd.0, "widget HWND acquired");
-                        if let Err(e) =
-                            window_style::apply_topmost_toolwindow(hwnd)
-                        {
-                            tracing::warn!(
-                                error = ?e,
-                                "apply_topmost_toolwindow failed"
-                            );
-                        }
-                        if let Err(e) = window_style::strip_window_frame(hwnd) {
-                            tracing::warn!(error = ?e, "strip_window_frame failed");
-                        }
-                        self.styled_once = true;
+                        let hwnd_isize = win32.hwnd.get();
+                        tracing::info!(hwnd = format!("0x{:x}", hwnd_isize), "widget HWND acquired");
+                        self.cached_hwnd = Some(hwnd_isize);
                     } else {
                         tracing::warn!("widget got a non-Win32 window handle — unexpected");
                     }
                 } else {
                     tracing::warn!("widget: no window_handle available yet");
+                }
+            }
+
+            if let Some(hwnd_isize) = self.cached_hwnd {
+                let hwnd = HWND(hwnd_isize as *mut _);
+                // Apply topmost only once — sticky.
+                if !self.styled_once {
+                    if let Err(e) = window_style::apply_topmost_toolwindow(hwnd) {
+                        tracing::warn!(error = ?e, "apply_topmost_toolwindow failed");
+                    }
+                    self.styled_once = true;
+                }
+                // Re-strip every frame — brute-force against winit's
+                // WndProc re-applying default caption on WM_NCPAINT.
+                if let Err(e) = window_style::strip_window_frame(hwnd) {
+                    tracing::warn!(error = ?e, "strip_window_frame failed");
                 }
             }
 
@@ -220,9 +244,12 @@ mod windows_impl {
             // without any mouse/keyboard input.
             ui.ctx().request_repaint_after(Duration::from_millis(500));
 
+            // Fully opaque fill + no corner radius : guarantees every
+            // pixel of the client area is painted by us (no gaps where
+            // the default winit background or the desktop pixels
+            // could leak through as white on Parallels ARM64).
             let panel = egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(17, 17, 26, 217))
-                .corner_radius(10)
+                .fill(egui::Color32::from_rgb(17, 17, 26))
                 .inner_margin(12);
 
             panel.show(ui, |ui| {
@@ -250,7 +277,7 @@ mod windows_impl {
         }
     }
 
-    fn primary_monitor_work_area() -> Result<(i32, i32, u32, u32)> {
+    fn primary_monitor_bounds_and_scale() -> Result<(i32, i32, u32, u32, f32)> {
         unsafe {
             let point = POINT { x: 0, y: 0 };
             let hmon = MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY);
@@ -264,7 +291,18 @@ mod windows_impl {
             let rc = info.rcWork;
             let w = (rc.right - rc.left) as u32;
             let h = (rc.bottom - rc.top) as u32;
-            Ok((rc.left, rc.top, w, h))
+            let scale = monitor_scale(hmon).unwrap_or(1.0);
+            Ok((rc.left, rc.top, w, h, scale))
+        }
+    }
+
+    fn monitor_scale(hmon: HMONITOR) -> Result<f32> {
+        unsafe {
+            let mut dpix: u32 = 96;
+            let mut dpiy: u32 = 96;
+            GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpix, &mut dpiy)
+                .context("GetDpiForMonitor")?;
+            Ok(dpix as f32 / 96.0)
         }
     }
 }
