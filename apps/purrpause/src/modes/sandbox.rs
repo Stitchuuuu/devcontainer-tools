@@ -211,7 +211,8 @@ mod windows_impl {
     struct SandboxApp {
         cfg: SandboxAppCfg,
         first_frame_logged: bool,
-        win32_applied: bool,
+        strip_applied_once: bool,
+        cached_hwnd: Option<isize>,
     }
 
     impl SandboxApp {
@@ -219,7 +220,8 @@ mod windows_impl {
             Self {
                 cfg,
                 first_frame_logged: false,
-                win32_applied: false,
+                strip_applied_once: false,
+                cached_hwnd: None,
             }
         }
     }
@@ -235,26 +237,36 @@ mod windows_impl {
                 self.first_frame_logged = true;
             }
 
-            if !self.win32_applied
-                && (self.cfg.strip_frame_win32 || self.cfg.lwa_alpha.is_some())
-            {
+            // Cache the HWND on first frame ; re-apply LWA_ALPHA
+            // every subsequent frame because winit's WndProc resets
+            // SetLayeredWindowAttributes on each redraw/reposition.
+            if self.cached_hwnd.is_none() {
                 if let Ok(handle) = frame.window_handle() {
                     if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                        let hwnd = HWND(win32.hwnd.get() as *mut _);
-                        tracing::info!(hwnd = format!("0x{:x}", win32.hwnd.get()), "sandbox: HWND acquired");
-                        if self.cfg.strip_frame_win32 {
-                            if let Err(e) = window_style::strip_window_frame(hwnd) {
-                                tracing::warn!(error = ?e, "strip_window_frame failed");
-                            }
-                        }
-                        if let Some(alpha) = self.cfg.lwa_alpha {
-                            if let Err(e) = window_style::apply_layered_alpha(hwnd, alpha) {
-                                tracing::warn!(error = ?e, alpha, "apply_layered_alpha failed");
-                            } else {
-                                tracing::info!(alpha, "sandbox: LWA_ALPHA applied");
-                            }
-                        }
-                        self.win32_applied = true;
+                        let hwnd_isize = win32.hwnd.get();
+                        tracing::info!(
+                            hwnd = format!("0x{:x}", hwnd_isize),
+                            "sandbox: HWND acquired"
+                        );
+                        self.cached_hwnd = Some(hwnd_isize);
+                    }
+                }
+            }
+
+            if let Some(hwnd_isize) = self.cached_hwnd {
+                let hwnd = HWND(hwnd_isize as *mut _);
+                // strip_window_frame is sticky enough : one-shot.
+                if self.cfg.strip_frame_win32 && !self.strip_applied_once {
+                    if let Err(e) = window_style::strip_window_frame(hwnd) {
+                        tracing::warn!(error = ?e, "strip_window_frame failed");
+                    }
+                    self.strip_applied_once = true;
+                }
+                // LWA_ALPHA gets clobbered by winit on every tick —
+                // re-apply on every frame. Cheap syscall.
+                if let Some(alpha) = self.cfg.lwa_alpha {
+                    if let Err(e) = window_style::apply_layered_alpha(hwnd, alpha) {
+                        tracing::warn!(error = ?e, alpha, "apply_layered_alpha failed");
                     }
                 }
             }
