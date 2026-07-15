@@ -5,6 +5,7 @@ pub mod hidden_attrs;
 pub mod itaskservice;
 pub mod keyboard_hook;
 pub mod proc_kill;
+pub mod service_config;
 pub mod spawn_user;
 pub mod webview2;
 pub mod window_style;

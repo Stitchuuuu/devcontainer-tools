@@ -16,41 +16,13 @@
 //!
 //! # Path-update contract
 //!
-//! [`path_update`] currently rewires the SCM entry via **delete + recreate**,
-//! not [`ChangeServiceConfigW`]. Reason : `windows-service 0.8.1` doesn't
-//! expose a `Service::change_config` helper. A direct `windows` crate call
-//! to `ChangeServiceConfigW` would work but was deferred to keep the (heavily
-//! hardened) delete-recreate path stable — the recreate side is protected
-//! by [`retry_register_service`] with exponential backoff.
-//!
-//! ## The "marked for deletion" race
-//!
-//! [`Service::delete`] does NOT immediately remove the SCM entry. It marks
-//! the entry `SERVICE_MARKED_FOR_DELETE` (state 4) and the kernel waits
-//! for two conditions before releasing the name :
-//!
-//! 1. Every open `SC_HANDLE` to that service is closed (ours, plus any
-//!    third-party tool that happens to hold one — `services.msc`, Process
-//!    Explorer, another SCM query in a sibling process).
-//! 2. The service's own process (if any) has exited.
-//!
-//! Until both hold, `CreateServiceW` with the same name returns
-//! `ERROR_SERVICE_MARKED_FOR_DELETE (1072)`. [`retry_register_service`]
-//! handles this by sleeping with exponential backoff (500ms × attempt,
-//! max 6 attempts ≈ 10 s total) so the kernel's cleanup window has time
-//! to elapse. Empirically the wait is under 2 s when nothing else touches
-//! the entry.
-//!
-//! # TODO — migrate to `ChangeServiceConfigW`
-//!
-//! When someone has 30 min to burn, switch [`path_update`] to open the
-//! existing service with `SERVICE_CHANGE_CONFIG` and call
-//! `windows::Win32::System::Services::ChangeServiceConfigW` with a new
-//! `lpBinaryPathName`. That eliminates the marked-for-deletion race
-//! entirely, removes the retry backoff, and simplifies this module by
-//! ~40 lines. The scheduled-task action still needs delete + recreate
-//! (Task Scheduler's mutation API is verbose ; `RegisterTask` with
-//! `TASK_CREATE_OR_UPDATE` is idempotent), so that side stays as-is.
+//! [`path_update`] rewires the SCM entry via a direct
+//! [`ChangeServiceConfigW`] call (see
+//! [`crate::platform::win32::service_config`]). One atomic mutation,
+//! no `SERVICE_MARKED_FOR_DELETE` race, no retry backoff. Scheduled
+//! task action still updated separately via
+//! [`crate::platform::win32::itaskservice::update_watchdog_action`]
+//! (`RegisterTask` with `TASK_CREATE_OR_UPDATE` is idempotent).
 //!
 //! # Called from
 //!
@@ -62,7 +34,6 @@
 //! disagrees with the SCM ImagePath).
 //!
 //! [`ChangeServiceConfigW`]: https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfigw
-//! [`Service::delete`]: windows_service::service::Service::delete
 
 use std::path::{Path, PathBuf};
 
@@ -336,36 +307,6 @@ fn fresh_install(current_exe: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Register the service, retrying a few times if SCM refuses because
-/// the name is still "marked for deletion" (all handles must close +
-/// short kernel window). Used only in the path-update flow.
-#[cfg(windows)]
-fn retry_register_service(current_exe: &Path) -> Result<()> {
-    const MAX_ATTEMPTS: u32 = 6;
-    const BACKOFF_MS: u64 = 500;
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 1..=MAX_ATTEMPTS {
-        match register_service(current_exe) {
-            Ok(()) => {
-                if attempt > 1 {
-                    tracing::info!(attempt, "re-register service succeeded after retry");
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::warn!(
-                    attempt,
-                    error = %e,
-                    "re-register service failed (SCM likely still marked-for-deletion) — retrying"
-                );
-                last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS * attempt as u64));
-            }
-        }
-    }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry_register_service: exhausted attempts")))
-}
-
 #[cfg(windows)]
 pub(crate) fn register_service(current_exe: &Path) -> Result<()> {
     use std::ffi::OsString;
@@ -482,14 +423,15 @@ pub(crate) fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
             ServiceAccess::CHANGE_CONFIG
                 | ServiceAccess::STOP
                 | ServiceAccess::START
-                | ServiceAccess::QUERY_STATUS
-                | ServiceAccess::DELETE,
+                | ServiceAccess::QUERY_STATUS,
         )
         .context("open service for update")?;
 
-    // Best-effort stop before rewiring ImagePath. Poll a short window
-    // so a running service actually reaches Stopped before we delete
-    // it (SCM refuses delete on a running service on some hosts).
+    // Stop before mutating ImagePath. SCM accepts the change on a
+    // running service but the swap only takes effect after a
+    // stop/start cycle - stopping now lets ChangeServiceConfigW +
+    // start below produce the new binary in one shot without an
+    // intermediate window pointing at the old path.
     let _ = svc.stop();
     for _ in 0..20 {
         match svc.query_status() {
@@ -502,19 +444,12 @@ pub(crate) fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
         }
     }
 
-    // Update the service action to point at the new exe. The
-    // windows-service crate re-exports ChangeServiceConfigW via
-    // Service::change_config in recent versions ; if unavailable, we
-    // fall back to delete + create (heavier but portable).
-    // For MVP we delete + recreate — task update follows the same path.
-    svc.delete().context("delete old service entry")?;
-    // SCM defers actual removal until every handle is closed AND every
-    // process using the name has exited. Drop ours and any transitively
-    // held SCM handle, then retry register with backoff — "marked for
-    // deletion" typically clears within a few seconds.
+    // Direct ChangeServiceConfigW - no delete + recreate, no
+    // SERVICE_MARKED_FOR_DELETE race, no backoff loop. See
+    // platform::win32::service_config for the FFI shape.
+    crate::platform::win32::service_config::change_service_binary_path(&svc, current_exe)
+        .context("update SCM ImagePath in place")?;
     drop(svc);
-    retry_register_service(current_exe)
-        .context("re-register service at new path (SCM marked-for-deletion contention)")?;
 
     // Same treatment for the scheduled task.
     crate::platform::win32::itaskservice::update_watchdog_action(current_exe)
