@@ -105,6 +105,32 @@ pub(crate) fn paths_equal_ci(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
+/// Extract the executable path from a Windows service `BINARY_PATH_NAME`
+/// (a.k.a. command line). SCM stores the exe path and launch arguments
+/// as one string ; `query_config().executable_path` returns the whole
+/// thing including args. Comparing that to `env::current_exe()` (which
+/// is bare) always shows a mismatch and falsely triggers `PathUpdate`.
+///
+/// Handles both conventions per Windows service registration :
+/// - Unquoted : split on the first ASCII whitespace.
+/// - Quoted : take everything between the first and second `"`.
+///
+/// If input is malformed (unmatched quote, empty), returns the input
+/// verbatim — `classify()` will then decide what to do with it.
+pub(crate) fn parse_exe_from_command_line(cmdline: &str) -> PathBuf {
+    let s = cmdline.trim_start();
+    if let Some(rest) = s.strip_prefix('"') {
+        return PathBuf::from(
+            rest.split_once('"').map(|(exe, _)| exe).unwrap_or(rest),
+        );
+    }
+    PathBuf::from(
+        s.split_once(|c: char| c.is_ascii_whitespace())
+            .map(|(exe, _)| exe)
+            .unwrap_or(s),
+    )
+}
+
 #[cfg(windows)]
 pub fn run() -> Result<()> {
     use std::env;
@@ -136,7 +162,11 @@ fn query_service_image_path() -> Option<PathBuf> {
     let scm = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).ok()?;
     let svc = scm.open_service(SERVICE_NAME, ServiceAccess::QUERY_CONFIG).ok()?;
     let cfg = svc.query_config().ok()?;
-    Some(cfg.executable_path)
+    // executable_path is the full BINARY_PATH_NAME (exe + args as one
+    // string). Strip the args so classify() sees just the exe path.
+    Some(parse_exe_from_command_line(
+        &cfg.executable_path.to_string_lossy(),
+    ))
 }
 
 #[cfg(windows)]
@@ -447,5 +477,50 @@ mod tests {
             InstallAction::PathUpdate { old_path } => assert_eq!(old_path, existing),
             other => panic!("expected PathUpdate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_command_line_unquoted_with_args() {
+        assert_eq!(
+            parse_exe_from_command_line(r"C:\TT\Foo\SystemHealthAgent.exe --service"),
+            PathBuf::from(r"C:\TT\Foo\SystemHealthAgent.exe"),
+        );
+    }
+
+    #[test]
+    fn parse_command_line_unquoted_no_args() {
+        assert_eq!(
+            parse_exe_from_command_line(r"C:\TT\Foo\SystemHealthAgent.exe"),
+            PathBuf::from(r"C:\TT\Foo\SystemHealthAgent.exe"),
+        );
+    }
+
+    #[test]
+    fn parse_command_line_quoted_with_spaces_and_args() {
+        assert_eq!(
+            parse_exe_from_command_line(r#""C:\Program Files\Foo\SystemHealthAgent.exe" --service"#),
+            PathBuf::from(r"C:\Program Files\Foo\SystemHealthAgent.exe"),
+        );
+    }
+
+    #[test]
+    fn parse_command_line_quoted_no_args() {
+        assert_eq!(
+            parse_exe_from_command_line(r#""C:\Program Files\Foo\SystemHealthAgent.exe""#),
+            PathBuf::from(r"C:\Program Files\Foo\SystemHealthAgent.exe"),
+        );
+    }
+
+    #[test]
+    fn classify_ignores_launch_arguments_via_parser() {
+        // Regression : SCM's BINARY_PATH_NAME includes launch args, and a
+        // pre-parse version of query_service_image_path returned "<exe>
+        // --service" which classify() would flag as a spurious PathUpdate
+        // on every relaunch. Verify the fix by feeding a raw command line
+        // through the parser and checking the result equals the bare exe.
+        let cmdline = r"C:\TT\Foo\SystemHealthAgent.exe --service";
+        let parsed = parse_exe_from_command_line(cmdline);
+        let current = PathBuf::from(r"C:\TT\Foo\SystemHealthAgent.exe");
+        assert_eq!(classify(&current, Some(&parsed)), InstallAction::SamePathRelaunch);
     }
 }
