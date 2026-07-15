@@ -134,6 +134,17 @@ fn pack_target(target: &Target, version: &str, skip_build: bool) -> Result<()> {
         }
     }
 
+    // LICENSE + NOTICE.md. Required by Lottie Simple License (copyleft-lite
+    // redistribution clause) and MIT (must ship license text alongside).
+    // Absent files are a hard error - shipping without these breaches the
+    // upstream license obligations.
+    for src_name in ["LICENSE", "NOTICE.md"] {
+        let src = PathBuf::from(src_name);
+        let arc_name = format!("{stage_name}/{src_name}");
+        add_file(&mut zip, &src, &arc_name, options)?;
+        count += 1;
+    }
+
     zip.finish().context("finalize zip")?;
 
     let size = fs::metadata(&zip_path)?.len();
