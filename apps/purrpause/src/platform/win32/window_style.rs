@@ -238,6 +238,7 @@ unsafe extern "system" fn lock_chromeless_proc(
 ///
 /// SWP_FRAMECHANGED triggers a re-evaluation of the DWM non-client
 /// rect so the change is immediately visible.
+#[allow(dead_code)] // ready-to-use knob during popup style smoke ; unused in final shape
 pub fn force_popup_style(hwnd: HWND) -> Result<()> {
     use windows::Win32::Graphics::Gdi::{
         RedrawWindow, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,

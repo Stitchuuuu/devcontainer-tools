@@ -8,6 +8,7 @@ pub mod rollback;
 // alongside the --debug default flip.
 pub mod sandbox;
 pub mod service;
+pub mod uninstall;
 pub mod watchdog;
 
 #[cfg(windows)]

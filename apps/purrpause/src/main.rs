@@ -101,11 +101,21 @@ fn init_tracing(mode: &Mode) {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // Service and watchdog both run in SYSTEM context, write to
+    // C:\ProgramData\DiagnosticsCache\, but land in DIFFERENT files so a
+    // grep for "watchdog tick" doesn't have to wade through service loop
+    // noise (and vice versa). Both are rolled daily and never rotated
+    // otherwise — the DiagnosticsCache folder is wiped by --uninstall.
     #[cfg(windows)]
     if matches!(mode, Mode::Service | Mode::Watchdog) {
         let log_dir = std::path::Path::new(modes::install::DIAGNOSTICS_CACHE_DIR);
         let _ = std::fs::create_dir_all(log_dir);
-        let appender = tracing_appender::rolling::daily(log_dir, "service.log");
+        let filename = if matches!(mode, Mode::Watchdog) {
+            "watchdog.log"
+        } else {
+            "service.log"
+        };
+        let appender = tracing_appender::rolling::daily(log_dir, filename);
         let _ = fmt()
             .with_env_filter(filter)
             .with_target(false)
@@ -307,33 +317,6 @@ fn parse_countdown(args: &[String]) -> Mode {
     Mode::Countdown { seconds, palier, debug, config_override }
 }
 
-/// User-facing stopgap for modes not yet implemented. Under
-/// `windows_subsystem = "windows"` the exe has no console, so `println!`
-/// is invisible — a MessageBox is the only way the user sees anything.
-#[cfg(windows)]
-fn not_yet_available_dialog(title: &str, body: &str) {
-    use std::iter::once;
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, MB_ICONINFORMATION, MB_OK,
-    };
-    let title_w: Vec<u16> = title.encode_utf16().chain(once(0)).collect();
-    let body_w: Vec<u16> = body.encode_utf16().chain(once(0)).collect();
-    unsafe {
-        let _ = MessageBoxW(
-            None,
-            PCWSTR(body_w.as_ptr()),
-            PCWSTR(title_w.as_ptr()),
-            MB_OK | MB_ICONINFORMATION,
-        );
-    }
-}
-
-#[cfg(not(windows))]
-fn not_yet_available_dialog(title: &str, body: &str) {
-    eprintln!("[{title}] {body}");
-}
-
 fn dispatch(mode: Mode) -> anyhow::Result<()> {
     match mode {
         Mode::InstallOrConfig => modes::install::run()?,
@@ -354,12 +337,7 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
             anyhow::bail!("config wizard is Windows-only")
         }
         Mode::Sandbox { preset } => modes::sandbox::run(&preset)?,
-        Mode::Uninstall => {
-            not_yet_available_dialog(
-                "Désinstallation",
-                "La désinstallation intégrée arrive dans une prochaine version.\n\nProcédure manuelle en attendant :\n1. Ouvrir services.msc et arrêter « Windows Session Health Service ».\n2. Ouvrir taskschd.msc et supprimer la tâche \\Microsoft\\Windows\\SystemHealth\\HealthCheck.\n3. Supprimer C:\\ProgramData\\DiagnosticsCache\\ (nécessite droits admin).",
-            );
-        }
+        Mode::Uninstall => modes::uninstall::run()?,
         Mode::Unknown(argv) => {
             eprintln!("Unknown argv: {argv:?}");
             eprintln!("Valid modes: --service | --popup [--preview] [--anim <file>] | --countdown <secs> --palier <15|10|5> | --config [--first-run] | --watchdog | --uninstall | --rollback-from-failed-install | --sandbox --try <preset>");

@@ -1,50 +1,246 @@
-// Minimal watchdog mode. Invoked every minute by the Scheduled Task
-// (registered by the install flow). Job for this session : if the
-// service isn't running, start it. Anything more elaborate (self-heal,
-// crash-log rotation, path-drift detection) belongs to a later session.
+//! Watchdog mode — health check invoked every minute by the Scheduled
+//! Task. Three things it can do on each tick :
+//!
+//! 1. Nothing (service present + running).
+//! 2. Kick the service (present + stopped).
+//! 3. Reinstall the service (absent, but `state.dat` still there — user
+//!    hasn't explicitly uninstalled, someone or something tampered with
+//!    the SCM entry).
+//!
+//! Plus a fourth diagnostic : if the SCM `ImagePath` doesn't match the
+//! current `env::current_exe()`, invoke the install-flow's `path_update`
+//! to rewire everything to the new binary location — this handles the
+//! "user moved the exe while the service was stopped" case that the
+//! interactive install-flow only catches on the next double-clic.
+//!
+//! ## The state.dat single-signal rule
+//!
+//! `state.dat` presence is the ONLY signal of "user still wants this app".
+//! If it's gone, `--uninstall` or `Nettoyer.bat` explicitly cleaned up ;
+//! respect that intent and bail immediately. Never resurrect based on
+//! exe-path heuristics or SCM leftovers.
 
 use anyhow::Result;
 
+/// What the watchdog decided to do this tick. Extracted for unit tests.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WatchdogAction {
+    /// Service present + running or start-pending — no work to do.
+    Nop,
+    /// Service present but not running — try to start it.
+    Start,
+    /// Service entry is gone from SCM — reinstall it.
+    Reinstall,
+}
+
+/// Pure classifier. `None` means "SCM has no such service" — either the
+/// entry was never created or it was deleted by tampering.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn classify<S: ServiceStateLike>(scm_status: Option<S>) -> WatchdogAction {
+    match scm_status {
+        Some(s) if s.is_running_or_starting() => WatchdogAction::Nop,
+        Some(_) => WatchdogAction::Start,
+        None => WatchdogAction::Reinstall,
+    }
+}
+
+/// Trait so the classifier can be tested without pulling in
+/// `windows-service` on non-Windows targets. The Windows impl wraps
+/// `ServiceState` ; the test impl uses a lightweight enum.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) trait ServiceStateLike {
+    fn is_running_or_starting(&self) -> bool;
+}
+
+#[cfg(windows)]
+impl ServiceStateLike for windows_service::service::ServiceState {
+    fn is_running_or_starting(&self) -> bool {
+        matches!(
+            self,
+            windows_service::service::ServiceState::Running
+                | windows_service::service::ServiceState::StartPending
+        )
+    }
+}
+
 #[cfg(windows)]
 pub fn run() -> Result<()> {
+    use std::path::Path;
+
     use anyhow::Context;
+    use tracing::{info, warn};
     use windows_service::service::{ServiceAccess, ServiceState};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-    use crate::modes::install::SERVICE_NAME;
+    use crate::modes::install::{
+        self, paths_equal_ci, path_update, register_service, SERVICE_NAME, STATE_DAT,
+    };
+
+    // 1. Respect Nettoyer.bat / --uninstall intent — no state.dat, no
+    //    resurrection.
+    if !Path::new(STATE_DAT).exists() {
+        info!("watchdog tick — state.dat missing, user has uninstalled, bailing");
+        return Ok(());
+    }
+
+    let current_exe = std::env::current_exe().context("env::current_exe()")?;
 
     let scm = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .context("open SCM")?;
 
-    let svc = match scm.open_service(
+    // Query state + image path in one open. If open_service fails for any
+    // reason, treat it as "absent" and trigger reinstall — the reinstall
+    // path re-opens SCM with CREATE_SERVICE and will surface any deeper
+    // problem (permission, SCM broken) with a proper error.
+    let (state, image_path) = match scm.open_service(
         SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS | ServiceAccess::START,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG | ServiceAccess::START,
     ) {
-        Ok(s) => s,
+        Ok(svc) => {
+            let state = svc.query_status().ok().map(|s| s.current_state);
+            let path = svc.query_config().ok().map(|c| c.executable_path);
+            (state, path)
+        }
         Err(e) => {
-            tracing::warn!(error = %e, "watchdog: service not registered");
-            return Ok(());
+            info!(error = %e, "watchdog tick — service absent from SCM");
+            (None, None)
         }
     };
 
-    let status = svc.query_status().context("query_status")?;
-    if matches!(
-        status.current_state,
-        ServiceState::Running | ServiceState::StartPending
-    ) {
-        tracing::debug!(?status.current_state, "watchdog: service healthy");
-        return Ok(());
-    }
+    let action = classify::<ServiceState>(state);
+    info!(?state, ?action, "watchdog tick");
 
-    tracing::info!(?status.current_state, "watchdog: starting service");
-    let empty: [&str; 0] = [];
-    if let Err(e) = svc.start(&empty) {
-        tracing::warn!(error = %e, "watchdog: failed to start service");
+    match action {
+        WatchdogAction::Nop => {
+            // 2. Path-drift heal only makes sense when the service is
+            // fully present — if the ImagePath disagrees with our current
+            // location, run path_update. We only trigger while the
+            // service is running/starting so we're the only actor
+            // touching the SCM entry (avoids racing the interactive
+            // install-flow).
+            if let Some(old) = image_path {
+                if !paths_equal_ci(&current_exe, &old) {
+                    info!(
+                        current = %current_exe.display(),
+                        registered = %old.display(),
+                        "watchdog: exe moved, running path_update"
+                    );
+                    if let Err(e) = path_update(&current_exe, &old) {
+                        warn!(error = %e, "watchdog: path_update failed");
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        WatchdogAction::Start => {
+            // Path drift is diagnosed here too — if the exe moved AND the
+            // service is stopped, path_update will register the new path
+            // and start it. Otherwise just start the existing entry.
+            if let Some(old) = &image_path {
+                if !paths_equal_ci(&current_exe, old) {
+                    info!(
+                        current = %current_exe.display(),
+                        registered = %old.display(),
+                        "watchdog: exe moved (service stopped), running path_update"
+                    );
+                    if let Err(e) = path_update(&current_exe, old) {
+                        warn!(error = %e, "watchdog: path_update failed");
+                    }
+                    return Ok(());
+                }
+            }
+            // Plain start.
+            let svc = scm
+                .open_service(SERVICE_NAME, ServiceAccess::START)
+                .context("open service for start")?;
+            let empty: [&str; 0] = [];
+            if let Err(e) = svc.start(&empty) {
+                warn!(error = %e, "watchdog: failed to start service");
+            } else {
+                info!("watchdog: service start kicked");
+            }
+            Ok(())
+        }
+
+        WatchdogAction::Reinstall => {
+            info!(
+                exe = %current_exe.display(),
+                "watchdog: state.dat present but SCM entry gone, re-registering"
+            );
+            if let Err(e) = register_service(&current_exe) {
+                warn!(error = %e, "watchdog: reinstall register_service failed");
+                return Ok(());
+            }
+            // After re-registering, kick it. Best-effort — a subsequent
+            // tick will Start if this one fails.
+            let scm2 = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                .context("re-open SCM after reinstall")?;
+            if let Ok(svc) = scm2.open_service(SERVICE_NAME, ServiceAccess::START) {
+                let empty: [&str; 0] = [];
+                let _ = svc.start(&empty);
+            }
+            info!("watchdog: reinstall complete");
+            let _ = install::DIAGNOSTICS_CACHE_DIR; // silence unused import on some configs
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 #[cfg(not(windows))]
 pub fn run() -> Result<()> {
     anyhow::bail!("watchdog is Windows-only")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug)]
+    enum FakeState {
+        Running,
+        StartPending,
+        Stopped,
+        Paused,
+    }
+
+    impl ServiceStateLike for FakeState {
+        fn is_running_or_starting(&self) -> bool {
+            matches!(self, FakeState::Running | FakeState::StartPending)
+        }
+    }
+
+    #[test]
+    fn classify_running_is_nop() {
+        assert_eq!(classify(Some(FakeState::Running)), WatchdogAction::Nop);
+    }
+
+    #[test]
+    fn classify_start_pending_is_nop() {
+        assert_eq!(
+            classify(Some(FakeState::StartPending)),
+            WatchdogAction::Nop
+        );
+    }
+
+    #[test]
+    fn classify_stopped_is_start() {
+        assert_eq!(classify(Some(FakeState::Stopped)), WatchdogAction::Start);
+    }
+
+    #[test]
+    fn classify_paused_is_start() {
+        // Any non-running present state means "kick it" — the service
+        // shouldn't be paused in normal operation.
+        assert_eq!(classify(Some(FakeState::Paused)), WatchdogAction::Start);
+    }
+
+    #[test]
+    fn classify_absent_is_reinstall() {
+        assert_eq!(
+            classify::<FakeState>(None),
+            WatchdogAction::Reinstall
+        );
+    }
 }

@@ -1,14 +1,68 @@
-// First-run install flow — 10 ordered steps per design § "Flow d'install".
-//
-// Entry is `run()` — called from main() when the binary is invoked with no
-// argv. It queries the SCM for the `WindowsSystemHealth` service, then
-// dispatches on one of three actions :
-//
-//   FreshInstall        — no prior service. Run the full 10-step install.
-//   SamePathRelaunch    — service already registered pointing at THIS exe.
-//                         Just open the config UI (session 6 fleshes out).
-//   PathUpdate          — service points at a different path (user moved
-//                         the binary). Stop → change ImagePath → restart.
+//! First-run install flow and path-update contract.
+//!
+//! `run()` is invoked from `main()` when the binary is launched with no
+//! argv. It queries the SCM for the `WindowsSystemHealth` service and
+//! dispatches on one of three [`InstallAction`]s returned by [`classify`] :
+//!
+//! - [`InstallAction::FreshInstall`] — no prior service. Runs the full
+//!   10-step install (animations dir, config dir with restrictive DACL,
+//!   scheduled task, DPAPI-encrypted state.dat, service registration,
+//!   service start, config UI launch).
+//! - [`InstallAction::SamePathRelaunch`] — service already registered
+//!   pointing at THIS exe. Just opens the config UI.
+//! - [`InstallAction::PathUpdate`] — service points at a different path
+//!   (user moved the binary between launches). Rewires the SCM ImagePath
+//!   and the scheduled task action to the new location, then restarts.
+//!
+//! # Path-update contract
+//!
+//! [`path_update`] currently rewires the SCM entry via **delete + recreate**,
+//! not [`ChangeServiceConfigW`]. Reason : `windows-service 0.8.1` doesn't
+//! expose a `Service::change_config` helper. A direct `windows` crate call
+//! to `ChangeServiceConfigW` would work but was deferred to keep the (heavily
+//! hardened) delete-recreate path stable — the recreate side is protected
+//! by [`retry_register_service`] with exponential backoff.
+//!
+//! ## The "marked for deletion" race
+//!
+//! [`Service::delete`] does NOT immediately remove the SCM entry. It marks
+//! the entry `SERVICE_MARKED_FOR_DELETE` (state 4) and the kernel waits
+//! for two conditions before releasing the name :
+//!
+//! 1. Every open `SC_HANDLE` to that service is closed (ours, plus any
+//!    third-party tool that happens to hold one — `services.msc`, Process
+//!    Explorer, another SCM query in a sibling process).
+//! 2. The service's own process (if any) has exited.
+//!
+//! Until both hold, `CreateServiceW` with the same name returns
+//! `ERROR_SERVICE_MARKED_FOR_DELETE (1072)`. [`retry_register_service`]
+//! handles this by sleeping with exponential backoff (500ms × attempt,
+//! max 6 attempts ≈ 10 s total) so the kernel's cleanup window has time
+//! to elapse. Empirically the wait is under 2 s when nothing else touches
+//! the entry.
+//!
+//! # TODO — migrate to `ChangeServiceConfigW`
+//!
+//! When someone has 30 min to burn, switch [`path_update`] to open the
+//! existing service with `SERVICE_CHANGE_CONFIG` and call
+//! `windows::Win32::System::Services::ChangeServiceConfigW` with a new
+//! `lpBinaryPathName`. That eliminates the marked-for-deletion race
+//! entirely, removes the retry backoff, and simplifies this module by
+//! ~40 lines. The scheduled-task action still needs delete + recreate
+//! (Task Scheduler's mutation API is verbose ; `RegisterTask` with
+//! `TASK_CREATE_OR_UPDATE` is idempotent), so that side stays as-is.
+//!
+//! # Called from
+//!
+//! [`register_service`] and [`path_update`] are `pub(crate)` so the
+//! watchdog mode can resurrect a fully-deleted SCM entry
+//! ([`crate::modes::watchdog`] triggers `register_service` when state.dat
+//! still exists but the SCM entry is gone) and heal a moved exe while the
+//! service is stopped (triggers `path_update` when `env::current_exe()`
+//! disagrees with the SCM ImagePath).
+//!
+//! [`ChangeServiceConfigW`]: https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfigw
+//! [`Service::delete`]: windows_service::service::Service::delete
 
 use std::path::{Path, PathBuf};
 
@@ -47,7 +101,7 @@ pub fn classify(current: &Path, existing_image_path: Option<&Path>) -> InstallAc
     }
 }
 
-fn paths_equal_ci(a: &Path, b: &Path) -> bool {
+pub(crate) fn paths_equal_ci(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
@@ -197,7 +251,7 @@ fn retry_register_service(current_exe: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn register_service(current_exe: &Path) -> Result<()> {
+pub(crate) fn register_service(current_exe: &Path) -> Result<()> {
     use std::ffi::OsString;
     use windows_service::service::{
         ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType,
@@ -260,7 +314,7 @@ fn launch_config_ui(current_exe: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
+pub(crate) fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
     use windows_service::service::ServiceAccess;
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 

@@ -2,7 +2,10 @@
 setlocal
 title Nettoyer completement PurrPause
 
-:: Auto-elevate to admin — service delete + task delete + programdata rm need it.
+:: Auto-elevate to admin — the installed exe's --uninstall mode assumes
+:: it runs elevated (SCM delete + task delete + programdata rm all need
+:: admin). Config UI's Securite button already shells out from an
+:: elevated context ; a double-clic on this .bat gets us there.
 NET SESSION >nul 2>&1
 if %errorlevel% NEQ 0 (
   echo Elevation requise, ouverture UAC...
@@ -13,13 +16,34 @@ if %errorlevel% NEQ 0 (
 echo.
 echo === PurrPause : nettoyage complet ===
 echo.
-echo Ce script va :
-echo   1. Arreter puis desinstaller le service WindowsSystemHealth
-echo   2. Supprimer la tache planifiee \Microsoft\Windows\SystemHealth\HealthCheck
-echo   3. Effacer le dossier C:\ProgramData\DiagnosticsCache (config + logs + passcode)
-echo.
-echo L'exe SystemHealthAgent.exe et son manifest restent sur disque
-echo (a toi de les supprimer manuellement si tu veux desinstaller definitivement).
+
+:: Locate the installed exe. Priority :
+::   1. Same folder as this .bat (the zip ships them together — normal case).
+::   2. Fall back to the SCM ImagePath registered under WindowsSystemHealth.
+::   3. Fall back to the legacy manual teardown (sc + schtasks + rmdir) if
+::      the exe can't be found anywhere.
+set "EXE=%~dp0SystemHealthAgent.exe"
+if not exist "%EXE%" (
+  set "EXE="
+  for /f "tokens=1,* delims=:" %%A in ('sc.exe qc WindowsSystemHealth 2^>nul ^| findstr /C:"BINARY_PATH_NAME"') do (
+    :: BINARY_PATH_NAME line looks like:
+    ::   BINARY_PATH_NAME   : "C:\path\SystemHealthAgent.exe" --service
+    :: Strip the trailing " --service" — the exe path we want is the
+    :: quoted first token. We rely on the space-separated launch args
+    :: convention set in install::register_service.
+    for /f "tokens=1 delims= " %%X in ("%%B") do set "EXE=%%~X"
+  )
+)
+
+if defined EXE (
+  if exist "%EXE%" (
+    echo Wrapper vers "%EXE%" --uninstall
+    "%EXE%" --uninstall
+    exit /b %ERRORLEVEL%
+  )
+)
+
+echo Exe introuvable — bascule sur le teardown manuel.
 echo.
 choice /C ON /N /M "Continuer ? [O]ui / [N]on : "
 if errorlevel 2 (
