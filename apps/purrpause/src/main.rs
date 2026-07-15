@@ -246,16 +246,11 @@ fn classify_mode(args: &[String]) -> Mode {
         Some("--service") => Mode::Service,
         Some("--popup") => Mode::Popup {
             preview: args.iter().any(|a| a == "--preview"),
-            // SMOKE DEFAULT ONLY : debug=true unless --no-debug is
-            // passed. Lets a developer Alt+F4 out of a broken popup
-            // during manual invocation. The service ALWAYS passes
-            // --no-debug when it spawns children so production
-            // behaviour (keyboard hook + force-minimize) is
-            // preserved.
-            //
-            // TODO v1 release : flip the default to false and require
-            // --debug opt-in explicitly. Track in session-6 or later.
-            debug: !args.iter().any(|a| a == "--no-debug"),
+            // Prod default : debug=false (keyboard hook + force-minimize
+            // enforced). Developers opt-in via --debug for manual smoke.
+            // `--no-debug` is still parsed harmlessly by service.rs and
+            // config UI preview spawns as belt-and-suspenders redundancy.
+            debug: args.iter().any(|a| a == "--debug"),
             anim_override: parse_anim_override(args),
             config_override: parse_config_override(args),
             test_countdown_secs: parse_u32_after(args, "--test-countdown-secs"),
@@ -314,7 +309,7 @@ fn parse_u32_after(args: &[String], flag: &str) -> Option<u32> {
 }
 
 fn parse_countdown(args: &[String]) -> Mode {
-    // Shape: --countdown <secs> --palier <15|10|5|1> [--no-debug] [--config-override <path>]
+    // Shape: --countdown <secs> --palier <15|10|5|1> [--debug] [--config-override <path>]
     let seconds = args
         .get(1)
         .and_then(|s| s.parse::<u64>().ok())
@@ -325,10 +320,10 @@ fn parse_countdown(args: &[String]) -> Mode {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(0);
-    // Temporary : debug=true by default during smoke. Pass
-    // `--no-debug` to opt back into production behaviour
-    // (force-minimize on paliers in force_minimize_paliers).
-    let debug = !args.iter().any(|a| a == "--no-debug");
+    // Prod default : debug=false. --debug opts in (skips force-minimize
+    // for manual dev iteration). Legacy `--no-debug` still parsed
+    // harmlessly by callers as belt-and-suspenders redundancy.
+    let debug = args.iter().any(|a| a == "--debug");
     let config_override = parse_config_override(args);
     Mode::Countdown { seconds, palier, debug, config_override }
 }
@@ -383,10 +378,9 @@ mod tests {
 
     #[test]
     fn popup_with_preview() {
-        // Debug is on by default during smoke — see popup_debug_is_default*.
         assert_eq!(
             classify_mode(&as_args(["--popup", "--preview"])),
-            Mode::Popup { preview: true, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
+            Mode::Popup { preview: true, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
@@ -394,17 +388,28 @@ mod tests {
     fn popup_without_preview() {
         assert_eq!(
             classify_mode(&as_args(["--popup"])),
+            Mode::Popup { preview: false, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
+        );
+    }
+
+    #[test]
+    fn popup_default_has_no_debug() {
+        assert_eq!(
+            classify_mode(&as_args(["--popup"])),
+            Mode::Popup { preview: false, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
+        );
+    }
+
+    #[test]
+    fn popup_debug_opts_in() {
+        assert_eq!(
+            classify_mode(&as_args(["--popup", "--debug"])),
             Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
     #[test]
-    fn popup_debug_is_default_no_debug_opts_out() {
-        // Temporary during smoke : debug=true by default.
-        assert_eq!(
-            classify_mode(&as_args(["--popup"])),
-            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
-        );
+    fn popup_legacy_no_debug_is_ignored() {
         assert_eq!(
             classify_mode(&as_args(["--popup", "--no-debug"])),
             Mode::Popup { preview: false, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
@@ -415,7 +420,7 @@ mod tests {
     fn popup_anim_override_accepted() {
         assert_eq!(
             classify_mode(&as_args([
-                "--popup", "--preview", "--anim", "dance-cat.lottie", "--no-debug"
+                "--popup", "--preview", "--anim", "dance-cat.lottie"
             ])),
             Mode::Popup {
                 preview: true,
@@ -429,21 +434,16 @@ mod tests {
 
     #[test]
     fn popup_anim_traversal_rejected() {
-        // A `..` in the anim path is dropped silently — the popup falls
-        // back to its normal animation picker.
         assert_eq!(
             classify_mode(&as_args(["--popup", "--anim", "../etc/passwd"])),
-            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
+            Mode::Popup { preview: false, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
     #[test]
-    fn popup_test_countdown_combined_with_no_debug() {
-        // Parent's "Test prod full" button — full prod behaviour
-        // (keyboard hook + force-minimize) with a 10s countdown for
-        // quick Alt-Tab / dismiss verification.
+    fn popup_test_countdown_combined_prod() {
         assert_eq!(
-            classify_mode(&as_args(["--popup", "--no-debug", "--test-countdown-secs", "10"])),
+            classify_mode(&as_args(["--popup", "--test-countdown-secs", "10"])),
             Mode::Popup {
                 preview: false,
                 debug: false,
@@ -458,7 +458,7 @@ mod tests {
     fn popup_anim_absolute_path_rejected() {
         assert_eq!(
             classify_mode(&as_args(["--popup", "--anim", "/etc/hosts"])),
-            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
+            Mode::Popup { preview: false, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
@@ -466,12 +466,28 @@ mod tests {
     fn countdown_parsed() {
         assert_eq!(
             classify_mode(&as_args(["--countdown", "900", "--palier", "15"])),
-            Mode::Countdown { seconds: 900, palier: 15, debug: true, config_override: None }
+            Mode::Countdown { seconds: 900, palier: 15, debug: false, config_override: None }
         );
     }
 
     #[test]
-    fn countdown_no_debug_opts_out() {
+    fn countdown_default_has_no_debug() {
+        assert_eq!(
+            classify_mode(&as_args(["--countdown", "60", "--palier", "1"])),
+            Mode::Countdown { seconds: 60, palier: 1, debug: false, config_override: None }
+        );
+    }
+
+    #[test]
+    fn countdown_debug_opts_in() {
+        assert_eq!(
+            classify_mode(&as_args(["--countdown", "60", "--palier", "1", "--debug"])),
+            Mode::Countdown { seconds: 60, palier: 1, debug: true, config_override: None }
+        );
+    }
+
+    #[test]
+    fn countdown_legacy_no_debug_is_ignored() {
         assert_eq!(
             classify_mode(&as_args(["--countdown", "60", "--palier", "1", "--no-debug"])),
             Mode::Countdown { seconds: 60, palier: 1, debug: false, config_override: None }
