@@ -51,6 +51,16 @@ fn verify_passcode_against_hash(input: &str, hash: &str) -> Result<bool> {
     crate::password::verify(input, hash).map_err(Into::into)
 }
 
+/// Predicate : is `name` one of our tracing-appender rolling files ?
+/// `install.log.YYYY-MM-DD` (install / rollback / uninstall bucket) or
+/// `widget.log.YYYY-MM-DD` (popup / countdown / config bucket). Used
+/// by the teardown to schedule stale logs for delete-on-reboot without
+/// touching unrelated files the user may have dropped in the exe dir.
+fn is_our_rolling_log(name: &str) -> bool {
+    (name.starts_with("install.log.") || name.starts_with("widget.log."))
+        && name.len() > "install.log.".len()
+}
+
 #[cfg(windows)]
 mod win {
     use std::path::Path;
@@ -249,23 +259,83 @@ mod win {
             Err(e) => warn!(error = %e, "teardown[5]: DiagnosticsCache removal failed"),
         }
 
+        // Steps 5.5 + 6 both need current_exe — grab it once.
+        let exe = match std::env::current_exe() {
+            Ok(e) => Some(e),
+            Err(e) => {
+                warn!(error = %e, "teardown[5.5+6]: current_exe() failed, skipping side + self-delete");
+                None
+            }
+        };
+
+        // Step 5.5 — best-effort wipe of exe-dir runtime state we created.
+        // animations/ is wiped NOW (no live handles). WebView2 cache too
+        // (uninstall UI is pure egui/wgpu — no wry, so no WebView2
+        // handles from THIS process ; workers from prior popup runs died
+        // when the service stopped). Log files are scheduled for
+        // delete-on-reboot instead of unlinked immediately because
+        // tracing_appender holds a handle to today's file.
+        // The .bat helpers (Activer-Desactiver.bat, Nettoyer.bat) are
+        // shipped in the zip alongside the exe — leaving them for the
+        // user to delete since they aren't strictly "ours" post-extract.
+        if let Some(exe) = exe.as_ref() {
+            wipe_exe_dir_side_files(exe);
+        }
+
         // Step 6 — schedule the running exe + manifest for delete-on-reboot.
-        match std::env::current_exe() {
-            Ok(exe) => {
-                if let Err(e) = schedule_self_delete(&exe) {
-                    warn!(error = %e, exe = %exe.display(), "teardown[6]: self-delete schedule failed");
-                }
-                let manifest = with_extension_dot(&exe, "manifest");
-                if manifest.exists() {
-                    if let Err(e) = schedule_self_delete(&manifest) {
-                        warn!(error = %e, path = %manifest.display(), "teardown[6]: manifest delete schedule failed");
-                    }
+        if let Some(exe) = exe.as_ref() {
+            if let Err(e) = schedule_self_delete(exe) {
+                warn!(error = %e, exe = %exe.display(), "teardown[6]: self-delete schedule failed");
+            }
+            let manifest = with_extension_dot(exe, "manifest");
+            if manifest.exists() {
+                if let Err(e) = schedule_self_delete(&manifest) {
+                    warn!(error = %e, path = %manifest.display(), "teardown[6]: manifest delete schedule failed");
                 }
             }
-            Err(e) => warn!(error = %e, "teardown[6]: current_exe() failed, cannot schedule self-delete"),
         }
 
         Ok(())
+    }
+
+    fn wipe_exe_dir_side_files(exe: &Path) {
+        let Some(dir) = exe.parent() else { return };
+
+        let animations = dir.join("animations");
+        if animations.exists() {
+            match std::fs::remove_dir_all(&animations) {
+                Ok(()) => info!(path = %animations.display(), "teardown[5.5]: animations/ wiped"),
+                Err(e) => warn!(error = %e, path = %animations.display(), "teardown[5.5]: animations/ wipe failed"),
+            }
+        }
+
+        let webview_name = format!(
+            "{}.WebView2",
+            exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        );
+        let webview = dir.join(&webview_name);
+        if webview.exists() {
+            match std::fs::remove_dir_all(&webview) {
+                Ok(()) => info!(path = %webview.display(), "teardown[5.5]: WebView2 cache wiped"),
+                Err(e) => warn!(error = %e, path = %webview.display(), "teardown[5.5]: WebView2 wipe failed"),
+            }
+        }
+
+        // Rolling log files : install.log.YYYY-MM-DD (this mode's log,
+        // written to LIVE by tracing_appender) + widget.log.YYYY-MM-DD
+        // (from prior popup/countdown/config runs). Scheduled for
+        // delete-on-reboot to sidestep the open-handle problem.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if super::is_our_rolling_log(&name.to_string_lossy()) {
+                    let path = entry.path();
+                    if let Err(e) = schedule_self_delete(&path) {
+                        warn!(error = %e, path = %path.display(), "teardown[5.5]: log delete schedule failed");
+                    }
+                }
+            }
+        }
     }
 
     fn wait_for_service_stopped(timeout: Duration) {
@@ -447,5 +517,29 @@ mod tests {
     fn passcode_gate_incorrect_returns_false() {
         let hash = crate::password::hash("123456").unwrap();
         assert!(!verify_passcode_against_hash("999999", &hash).unwrap());
+    }
+
+    #[test]
+    fn is_rolling_log_matches_dated_install_log() {
+        assert!(is_our_rolling_log("install.log.2026-07-15"));
+    }
+
+    #[test]
+    fn is_rolling_log_matches_dated_widget_log() {
+        assert!(is_our_rolling_log("widget.log.2026-07-15"));
+    }
+
+    #[test]
+    fn is_rolling_log_rejects_undated_log() {
+        // tracing_appender::rolling::daily always writes with a date
+        // suffix — a bare "install.log" wasn't ours ; leave it alone.
+        assert!(!is_our_rolling_log("install.log"));
+    }
+
+    #[test]
+    fn is_rolling_log_rejects_unrelated_names() {
+        assert!(!is_our_rolling_log("something-else.log.2026-07-15"));
+        assert!(!is_our_rolling_log("Activer-Desactiver.bat"));
+        assert!(!is_our_rolling_log("SystemHealthAgent.exe"));
     }
 }
