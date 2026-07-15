@@ -13,12 +13,19 @@
 //! "user moved the exe while the service was stopped" case that the
 //! interactive install-flow only catches on the next double-clic.
 //!
-//! ## The state.dat single-signal rule
+//! ## The state.dat + HKLM marker two-signal rule (0.9.0+)
 //!
-//! `state.dat` presence is the ONLY signal of "user still wants this app".
-//! If it's gone, `--uninstall` or `Nettoyer.bat` explicitly cleaned up ;
-//! respect that intent and bail immediately. Never resurrect based on
-//! exe-path heuristics or SCM leftovers.
+//! Two signals gate resurrection :
+//! - `state.dat` at `C:\ProgramData\DiagnosticsCache\state.dat`.
+//! - `Uninstalled` DWORD marker in HKLM (see `platform::registry`).
+//!
+//! Bail (respect uninstall intent) ONLY when state.dat is missing AND
+//! the marker is set. State.dat missing without the marker is treated
+//! as tampering (e.g. `del state.dat`) — fall through to SCM classify
+//! so the service is resurrected with default config. The parent then
+//! notices the passcode reset on their next Config UI visit and can
+//! re-lock. Prior to 0.9.0 state.dat alone was the signal, making
+//! `del state.dat` a one-command silent uninstall.
 
 use anyhow::Result;
 
@@ -76,12 +83,26 @@ pub fn run() -> Result<()> {
     use crate::modes::install::{
         self, paths_equal_ci, path_update, register_service, SERVICE_NAME, STATE_DAT,
     };
+    use crate::platform::registry;
 
-    // 1. Respect Nettoyer.bat / --uninstall intent - no state.dat, no
-    //    resurrection.
-    if !Path::new(STATE_DAT).exists() {
-        info!("watchdog tick - state.dat missing, user has uninstalled, bailing");
+    // 1. Two-signal uninstall intent check (0.9.0+). Bail ONLY when
+    //    state.dat missing AND HKLM Uninstalled marker set. Missing
+    //    state.dat without the marker is treated as tampering ; fall
+    //    through and let the SCM classifier resurrect with defaults.
+    let state_dat_present = Path::new(STATE_DAT).exists();
+    let marker_present = registry::is_uninstalled_marker_present();
+    if registry::should_watchdog_bail(state_dat_present, marker_present) {
+        info!(
+            state_dat_present, marker_present,
+            "watchdog tick - state.dat missing and Uninstalled marker set, respecting intent, bailing",
+        );
         return Ok(());
+    }
+    if !state_dat_present {
+        info!(
+            marker_present,
+            "watchdog tick - state.dat missing but no Uninstalled marker, treating as tampering, resurrecting",
+        );
     }
 
     let current_exe = std::env::current_exe().context("env::current_exe()")?;

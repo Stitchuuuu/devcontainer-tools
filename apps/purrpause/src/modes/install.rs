@@ -219,6 +219,15 @@ pub(crate) fn scm_image_path() -> Option<PathBuf> {
 fn fresh_install(current_exe: &Path) -> Result<()> {
     use crate::platform::win32::{acl, hidden_attrs, itaskservice};
 
+    // Step 0 — clear the "Uninstalled" HKLM marker unconditionally. A
+    // fresh install rewrites the user's intent from "uninstalled" (if
+    // the marker was set by a prior --uninstall) to "installed and
+    // active" ; leaving the marker would confuse the watchdog if
+    // state.dat were later wiped.
+    if let Err(e) = crate::platform::registry::clear_uninstalled_marker() {
+        tracing::warn!(error = %e, "step 0: clear_uninstalled_marker failed");
+    }
+
     // Handle the "broken install" recovery path : files from a
     // previous 0.6.x install may still be on disk even though the SCM
     // entry is gone (e.g. previous path_update failed halfway). Move

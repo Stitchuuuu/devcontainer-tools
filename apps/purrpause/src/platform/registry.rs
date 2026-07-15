@@ -1,18 +1,25 @@
-// PendingFileRenameOperations defuse.
+// Windows registry helpers.
 //
-// When a previous `--uninstall` scheduled the exe for delete-on-reboot
-// via `MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)`, Windows records the
-// pending rename in
-// `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations`
-// (REG_MULTI_SZ). If the user reinstalls the app to the same folder
-// BEFORE rebooting, the OS still fires the pending delete at next boot
-// - silently zapping the fresh install. This module reads that key,
-// filters out any entry whose source matches the current install exe
-// (or its `.manifest` sidecar), and rewrites the value.
+// Two responsibilities live here :
 //
-// Both the codec (`parse_multi_sz` / `encode_multi_sz`) and the filter
-// (`filter_pending_rename_operations`) are pure and Linux-testable.
-// Only the actual registry read/write is `#[cfg(windows)]`.
+// 1. **PendingFileRenameOperations defuse** — when a previous `--uninstall`
+//    scheduled the exe for delete-on-reboot via
+//    `MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)`, Windows records the
+//    pending rename in
+//    `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations`
+//    (REG_MULTI_SZ). If the user reinstalls before rebooting, the OS
+//    silently zaps the fresh install. `defuse_pending_rename_for` reads
+//    the key, filters out matching sources, and rewrites.
+//
+// 2. **Uninstalled marker** — a DWORD flag under a camouflaged HKLM
+//    subkey, set by `uninstall::teardown` and cleared by
+//    `install::fresh_install`. Distinguishes "user intentionally
+//    uninstalled" (watchdog bails) from "state.dat vanished
+//    accidentally" (watchdog resurrects). Without this marker, deleting
+//    state.dat alone would silently kill the app.
+//
+// Pure codecs / filters / predicates are Linux-testable ; only the
+// actual registry syscalls are `#[cfg(windows)]`.
 
 use std::path::Path;
 
@@ -211,6 +218,193 @@ pub fn defuse_pending_rename_for(_paths: &[&Path]) -> Result<()> {
     anyhow::bail!("defuse_pending_rename_for is Windows-only")
 }
 
+// ---------------------------------------------------------------------------
+// Uninstalled marker (HKLM DWORD)
+// ---------------------------------------------------------------------------
+
+/// Camouflaged subkey path under HKLM. The parent chain
+/// (`Microsoft\Windows\CurrentVersion\Diagnostics`) is a common
+/// Microsoft namespace ; `SessionHealth` mirrors the service naming
+/// (`WindowsSystemHealth`). Values written here are indistinguishable
+/// from legitimate OS telemetry state at casual inspection.
+pub const UNINSTALLED_MARKER_SUBKEY: &str =
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\Diagnostics\SessionHealth";
+
+/// DWORD value name. `1` = user has intentionally uninstalled ;
+/// absent or `0` = no uninstall intent recorded.
+pub const UNINSTALLED_MARKER_VALUE: &str = "Uninstalled";
+
+/// Pure predicate : should the watchdog respect an uninstall intent and
+/// bail (skip resurrection) ? Extracted for Linux-side unit tests.
+/// Truth table :
+///   state.dat present + any marker  → false (normal SCM classify path)
+///   state.dat absent + marker set   → true  (respect intent)
+///   state.dat absent + marker unset → false (treat as tampering,
+///                                            resurrect via SCM classify)
+pub fn should_watchdog_bail(state_dat_present: bool, marker_present: bool) -> bool {
+    !state_dat_present && marker_present
+}
+
+#[cfg(windows)]
+pub fn mark_uninstalled() -> Result<()> {
+    use std::iter::once;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE,
+        REG_CREATE_KEY_DISPOSITION, REG_DWORD, REG_OPTION_NON_VOLATILE,
+    };
+
+    let subkey: Vec<u16> = UNINSTALLED_MARKER_SUBKEY
+        .encode_utf16()
+        .chain(once(0))
+        .collect();
+    let value_name: Vec<u16> = UNINSTALLED_MARKER_VALUE
+        .encode_utf16()
+        .chain(once(0))
+        .collect();
+
+    unsafe {
+        let mut hkey = HKEY::default();
+        let mut disposition = REG_CREATE_KEY_DISPOSITION(0);
+        let create = RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey.as_ptr()),
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut hkey,
+            Some(&mut disposition),
+        );
+        if create != ERROR_SUCCESS {
+            anyhow::bail!("mark_uninstalled: RegCreateKeyExW failed: {:?}", create);
+        }
+        let value: u32 = 1;
+        let bytes = value.to_le_bytes();
+        let write = RegSetValueExW(
+            hkey,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            REG_DWORD,
+            Some(&bytes),
+        );
+        let _ = RegCloseKey(hkey);
+        if write != ERROR_SUCCESS {
+            anyhow::bail!("mark_uninstalled: RegSetValueExW failed: {:?}", write);
+        }
+        tracing::info!("mark_uninstalled: Uninstalled=1 set in HKLM marker key");
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn mark_uninstalled() -> Result<()> {
+    anyhow::bail!("mark_uninstalled is Windows-only")
+}
+
+#[cfg(windows)]
+pub fn clear_uninstalled_marker() -> Result<()> {
+    use std::iter::once;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE,
+    };
+
+    let subkey: Vec<u16> = UNINSTALLED_MARKER_SUBKEY
+        .encode_utf16()
+        .chain(once(0))
+        .collect();
+    let value_name: Vec<u16> = UNINSTALLED_MARKER_VALUE
+        .encode_utf16()
+        .chain(once(0))
+        .collect();
+
+    unsafe {
+        let mut hkey = HKEY::default();
+        let open = RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey.as_ptr()),
+            None,
+            KEY_SET_VALUE,
+            &mut hkey,
+        );
+        if open == ERROR_FILE_NOT_FOUND {
+            tracing::debug!("clear_uninstalled_marker: subkey absent, nothing to clear");
+            return Ok(());
+        }
+        if open != ERROR_SUCCESS {
+            tracing::warn!(err = ?open, "clear_uninstalled_marker: RegOpenKeyExW failed");
+            return Ok(());
+        }
+        let del = RegDeleteValueW(hkey, PCWSTR(value_name.as_ptr()));
+        let _ = RegCloseKey(hkey);
+        if del != ERROR_SUCCESS && del != ERROR_FILE_NOT_FOUND {
+            tracing::warn!(err = ?del, "clear_uninstalled_marker: RegDeleteValueW failed");
+        } else {
+            tracing::info!("clear_uninstalled_marker: marker cleared");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn clear_uninstalled_marker() -> Result<()> {
+    anyhow::bail!("clear_uninstalled_marker is Windows-only")
+}
+
+#[cfg(windows)]
+pub fn is_uninstalled_marker_present() -> bool {
+    use std::iter::once;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+    };
+
+    let subkey: Vec<u16> = UNINSTALLED_MARKER_SUBKEY
+        .encode_utf16()
+        .chain(once(0))
+        .collect();
+    let value_name: Vec<u16> = UNINSTALLED_MARKER_VALUE
+        .encode_utf16()
+        .chain(once(0))
+        .collect();
+
+    unsafe {
+        let mut hkey = HKEY::default();
+        let open = RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey.as_ptr()),
+            None,
+            KEY_READ,
+            &mut hkey,
+        );
+        if open != ERROR_SUCCESS {
+            return false;
+        }
+        let mut value: u32 = 0;
+        let mut size: u32 = std::mem::size_of::<u32>() as u32;
+        let query = RegQueryValueExW(
+            hkey,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            None,
+            Some(&mut value as *mut u32 as *mut u8),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(hkey);
+        query == ERROR_SUCCESS && value != 0
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_uninstalled_marker_present() -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +472,38 @@ mod tests {
         let bytes: Vec<u16> = [b's' as u16, b'r' as u16, b'c' as u16, 0, 0].to_vec();
         let strings = parse_multi_sz(&bytes);
         assert_eq!(strings, vec!["src".to_string()]);
+    }
+
+    // ----- Uninstalled marker predicate matrix -----
+
+    #[test]
+    fn watchdog_bails_only_when_state_dat_missing_and_marker_set() {
+        // Legitimate uninstall path : parent ran Nettoyer.bat, marker
+        // was set, state.dat teardown ran. Watchdog respects intent.
+        assert!(should_watchdog_bail(false, true));
+    }
+
+    #[test]
+    fn watchdog_resurrects_when_state_dat_missing_without_marker() {
+        // Tampering path : kid deleted state.dat but never triggered
+        // the uninstall flow. Watchdog treats as attack and resurrects
+        // (falls through to normal SCM classify → Reinstall / Start).
+        assert!(!should_watchdog_bail(false, false));
+    }
+
+    #[test]
+    fn watchdog_ignores_marker_when_state_dat_present() {
+        // Marker leftover from an aborted uninstall then reinstall :
+        // state.dat is back, marker was never cleared. State.dat wins,
+        // watchdog operates normally. fresh_install clears the marker
+        // on the next full install path to avoid ambiguity.
+        assert!(!should_watchdog_bail(true, true));
+    }
+
+    #[test]
+    fn watchdog_healthy_path_neither_bails_nor_needs_resurrection() {
+        // Nominal steady state : state.dat present, no marker. Watchdog
+        // falls through to SCM classify (Nop / Start / Reinstall).
+        assert!(!should_watchdog_bail(true, false));
     }
 }

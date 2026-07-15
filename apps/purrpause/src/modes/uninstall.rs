@@ -254,6 +254,16 @@ mod win {
     // ----- Teardown ----------------------------------------------------
 
     fn teardown() -> Result<()> {
+        // Step 0 — set the "Uninstalled" HKLM marker BEFORE any
+        // destructive step. If teardown crashes mid-way (power off,
+        // panic), the marker remains and the watchdog respects the
+        // uninstall intent instead of resurrecting.
+        if let Err(e) = crate::platform::registry::mark_uninstalled() {
+            warn!(error = %e, "teardown[0]: mark_uninstalled failed - watchdog may resurrect");
+        } else {
+            info!("teardown[0]: Uninstalled marker set");
+        }
+
         // Step 1 — send Shutdown so the service drains cleanly.
         match crate::ipc::send(crate::ipc::Message::Shutdown) {
             Ok(()) => info!("teardown[1]: sent IPC Shutdown"),
