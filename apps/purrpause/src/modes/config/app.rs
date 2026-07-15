@@ -94,6 +94,16 @@ pub fn run() -> Result<()> {
         Box::new(move |cc| {
             tracing::info!("config UI: eframe CreationContext fired");
 
+            // Slightly lighter panel bg so the passcode gate, tabs and
+            // uninstall dialog inside this window read consistently
+            // with the wizard + standalone uninstall dialog (which
+            // apply the same override in their own CreationContext).
+            for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                cc.egui_ctx.style_mut_of(theme, |s| {
+                    s.visuals.panel_fill = egui::Color32::from_gray(48);
+                });
+            }
+
             // The config UI runs elevated (inherited UAC token from the
             // double-clicked exe). Explorer typically runs as the normal
             // user — Windows UIPI blocks WM_DROPFILES from lower-integrity

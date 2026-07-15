@@ -39,7 +39,10 @@ pub fn run() -> Result<()> {
     eframe::run_native(
         "Windows Session Health Service — First run",
         options,
-        Box::new(move |_cc| Ok(Box::new(WizardApp::new(outcome_clone)))),
+        Box::new(move |cc| {
+            apply_shared_bg(&cc.egui_ctx);
+            Ok(Box::new(WizardApp::new(outcome_clone)))
+        }),
     )
     .map_err(|e| anyhow!("eframe: {e}"))?;
 
@@ -55,6 +58,20 @@ pub fn run() -> Result<()> {
             // which the install flow reads as "cancelled → rollback".
             Err(anyhow!("wizard cancelled"))
         }
+    }
+}
+
+/// Egui-default dark theme paints `panel_fill` as `Color32::from_gray(27)`
+/// which the popup/wizard user reports as "too dark, inputs vanish".
+/// Bump it a couple stops lighter across the wizard / passcode gate /
+/// uninstall dialog so the three passcode-adjacent windows share a
+/// consistent, slightly lighter background — the default black
+/// `extreme_bg_color` of `TextEdit` then contrasts as visible boxes.
+fn apply_shared_bg(ctx: &egui::Context) {
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            s.visuals.panel_fill = egui::Color32::from_gray(48);
+        });
     }
 }
 

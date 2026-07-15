@@ -37,7 +37,7 @@ pub const FRESH_INSTALL_GRACE: Duration = Duration::from_secs(300);
 /// scheduler bumps `last_popup` forward so the next popup fires at
 /// least this many seconds from now. Keeps a reduced interval from
 /// firing instantly on Save.
-pub const RELOAD_MIN_GRACE: Duration = Duration::from_secs(300);
+pub const RELOAD_MIN_GRACE: Duration = Duration::from_secs(120);
 
 /// Inputs for [`resolve_last_popup`] - the decision that answers "what
 /// value should `last_popup` hold right now given cold-start context /
@@ -128,6 +128,26 @@ pub fn resolve_last_popup(inputs: ResolveInputs, config: &Config) -> SystemTime 
         return now;
     }
     lp
+}
+
+/// Preview helper : given a candidate `proposed_interval` the user is
+/// dragging in the Config UI, return the wall-clock time at which the
+/// next popup would fire IF they clicked Save right now. Applies the
+/// same `RELOAD_MIN_GRACE` clamp as [`resolve_last_popup`]'s reload
+/// branch, so the preview stays truthful even when the user reduces
+/// the interval into the past.
+pub fn next_popup_after_reload(
+    now: SystemTime,
+    last_popup: SystemTime,
+    proposed_interval: Duration,
+) -> SystemTime {
+    let naive = last_popup + proposed_interval;
+    let floor = now + RELOAD_MIN_GRACE;
+    if naive >= floor {
+        naive
+    } else {
+        floor
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -473,7 +493,7 @@ mod tests {
     #[test]
     fn resolve_reload_no_reduction_leaves_last_popup_unchanged() {
         // Interval 2h ; last popup 30min ago ; user reloads but didn't
-        // change interval. lp + 2h = now + 90min >> now + 5min ⇒ keep lp.
+        // change interval. lp + 2h = now + 90min >> now + 2min ⇒ keep lp.
         let cfg = config_with(2.0, vec![15, 10, 5], false);
         let now = epoch_plus(10_000);
         let lp = epoch_plus(10_000 - 30 * 60);
@@ -490,9 +510,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_reload_reduced_interval_landing_in_past_clamps_to_now_plus_5min() {
+    fn resolve_reload_reduced_interval_landing_in_past_clamps_to_now_plus_2min() {
         // Interval reduced from 2h → 45min. Last popup 2h ago ⇒
-        // lp + 45min lands 75min in the past. Clamp to now + 5min.
+        // lp + 45min lands 75min in the past. Clamp to now + 2min.
         let cfg = config_with(0.75, vec![], false); // 45 min
         let now = epoch_plus(3 * 3600);
         let lp = epoch_plus(3 * 3600 - 2 * 3600);
@@ -505,17 +525,17 @@ mod tests {
             },
             &cfg,
         );
-        // got + 45min should equal now + 5min.
+        // got + 45min should equal now + 2min.
         assert_eq!(got + Duration::from_secs(45 * 60), now + RELOAD_MIN_GRACE);
     }
 
     #[test]
-    fn resolve_reload_reduced_landing_within_5min_clamps_to_now_plus_5min() {
-        // Interval reduced to 45 min, lp was 42 min ago ⇒ next = now+3min.
-        // Under floor (5min) ⇒ clamp so next = now+5min.
+    fn resolve_reload_reduced_landing_within_2min_clamps_to_now_plus_2min() {
+        // Interval reduced to 45 min, lp was 44 min ago ⇒ next = now+1min.
+        // Under floor (2min) ⇒ clamp so next = now+2min.
         let cfg = config_with(0.75, vec![], false);
         let now = epoch_plus(10_000);
-        let lp = epoch_plus(10_000 - 42 * 60);
+        let lp = epoch_plus(10_000 - 44 * 60);
         let got = resolve_last_popup(
             ResolveInputs {
                 now,
@@ -529,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_reload_reduced_still_beyond_5min_no_clamp() {
+    fn resolve_reload_reduced_still_beyond_2min_no_clamp() {
         // 45 min interval, lp 30 min ago ⇒ next = now+15min. Above floor ⇒ keep lp.
         let cfg = config_with(0.75, vec![], false);
         let now = epoch_plus(10_000);
@@ -710,5 +730,49 @@ mod tests {
             &cfg,
         );
         assert_eq!(got, now);
+    }
+
+    // --- next_popup_after_reload : Config UI live preview helper ---
+
+    #[test]
+    fn next_popup_after_reload_above_grace_passes_through() {
+        // lp 30 min ago, proposed interval 45 min ⇒ next = now+15min.
+        // Above 2 min floor ⇒ return naive next.
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 30 * 60);
+        let got = next_popup_after_reload(now, lp, Duration::from_secs(45 * 60));
+        assert_eq!(got, lp + Duration::from_secs(45 * 60));
+    }
+
+    #[test]
+    fn next_popup_after_reload_below_grace_clamps_to_floor() {
+        // lp 44 min ago, proposed interval 45 min ⇒ next = now+1min.
+        // Under 2 min floor ⇒ clamp to now + 2min.
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 44 * 60);
+        let got = next_popup_after_reload(now, lp, Duration::from_secs(45 * 60));
+        assert_eq!(got, now + RELOAD_MIN_GRACE);
+    }
+
+    #[test]
+    fn next_popup_after_reload_naive_in_past_clamps_to_floor() {
+        // lp 2h ago, proposed interval 45 min ⇒ next = 75 min in the past.
+        // Clamp to now + RELOAD_MIN_GRACE.
+        let now = epoch_plus(3 * 3600);
+        let lp = epoch_plus(3600);
+        let got = next_popup_after_reload(now, lp, Duration::from_secs(45 * 60));
+        assert_eq!(got, now + RELOAD_MIN_GRACE);
+    }
+
+    #[test]
+    fn next_popup_after_reload_exactly_at_floor_no_clamp() {
+        // lp + interval == now + RELOAD_MIN_GRACE exactly. Boundary case.
+        let now = epoch_plus(10_000);
+        let interval = Duration::from_secs(45 * 60);
+        let lp = (now + RELOAD_MIN_GRACE)
+            .checked_sub(interval)
+            .unwrap();
+        let got = next_popup_after_reload(now, lp, interval);
+        assert_eq!(got, lp + interval);
     }
 }

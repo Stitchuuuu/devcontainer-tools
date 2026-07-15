@@ -15,7 +15,10 @@
 //   6. CreateProcessAsUserW with CREATE_UNICODE_ENVIRONMENT +
 //      CREATE_NO_WINDOW + NORMAL_PRIORITY_CLASS. bInheritHandles = FALSE
 //      because cross-session handle inheritance is undefined.
-//   7. Close everything — we track spawned children by PID only.
+//   7. Close the thread handle immediately ; the process HANDLE is
+//      kept in the returned SpawnedChild so the caller can
+//      TerminateProcess on it later (HANDLE is stable across PID reuse,
+//      whereas OpenProcess(pid) at kill time isn't).
 
 use std::ffi::c_void;
 use std::ffi::OsStr;
@@ -32,15 +35,54 @@ use windows::Win32::Security::{
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
 use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, NORMAL_PRIORITY_CLASS,
-    PROCESS_INFORMATION, STARTUPINFOW,
+    CreateProcessAsUserW, TerminateProcess, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
+    NORMAL_PRIORITY_CLASS, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 use crate::platform::argv::build_command_line;
 
 const NO_USER_SESSION: u32 = 0xFFFFFFFF;
 
-pub fn spawn_in_active_user_session(exe: &Path, args: &[&OsStr]) -> Result<u32> {
+/// A spawned user-session process. Owns the process HANDLE so
+/// TerminateProcess targets the specific process even after PID reuse.
+/// Drop closes the HANDLE ; callers never need to CloseHandle manually.
+pub struct SpawnedChild {
+    pub pid: u32,
+    handle: HANDLE,
+}
+
+// HANDLE is a raw Windows opaque pointer ; all our uses cross a thread
+// boundary via the service tick loop's owned state, so it needs Send.
+unsafe impl Send for SpawnedChild {}
+unsafe impl Sync for SpawnedChild {}
+
+impl SpawnedChild {
+    /// TerminateProcess the tracked process by its HANDLE (immune to
+    /// PID recycle). Idempotent : silently returns Ok if the process
+    /// already exited (user clicked Dismiss, Alt+F4 post-countdown,
+    /// crashed…). Never propagates the failure ; the caller's contract
+    /// is best-effort cleanup.
+    pub fn terminate(&self) {
+        match unsafe { TerminateProcess(self.handle, 0) } {
+            Ok(()) => tracing::info!(pid = self.pid, "spawned child terminated"),
+            Err(e) => tracing::debug!(
+                pid = self.pid,
+                error = ?e,
+                "TerminateProcess (best effort — process may already be dead)"
+            ),
+        }
+    }
+}
+
+impl Drop for SpawnedChild {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+pub fn spawn_in_active_user_session(exe: &Path, args: &[&OsStr]) -> Result<SpawnedChild> {
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
     if session_id == NO_USER_SESSION {
         anyhow::bail!("no active console session");
@@ -129,13 +171,17 @@ pub fn spawn_in_active_user_session(exe: &Path, args: &[&OsStr]) -> Result<u32> 
 
     create.context("CreateProcessAsUserW")?;
 
-    // Close child handles immediately — no tracking.
+    // Close the thread handle immediately ; keep the process handle
+    // alive in SpawnedChild so the caller can TerminateProcess it
+    // later without racing against PID reuse.
     unsafe {
         let _ = CloseHandle(process_info.hThread);
-        let _ = CloseHandle(process_info.hProcess);
     }
 
-    Ok(process_info.dwProcessId)
+    Ok(SpawnedChild {
+        pid: process_info.dwProcessId,
+        handle: process_info.hProcess,
+    })
 }
 
 /// Return the linked token of an admin split-token user, or `None`

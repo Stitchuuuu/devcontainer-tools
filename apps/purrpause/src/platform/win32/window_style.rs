@@ -5,7 +5,20 @@
 // certain virtualized graphics stacks (Parallels ARM64) and to drop
 // the topmost bit after a Fullscreen::Borderless.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Context, Result};
+
+/// Defense-in-depth flag read by `lock_chromeless_proc` on WM_SYSCOMMAND
+/// to decide whether to swallow SC_CLOSE (Alt+F4). The LL keyboard hook
+/// is the primary defense but has been observed to miss keystrokes on
+/// certain virtualized graphics stacks ; the subclass acts as a fallback
+/// so Alt+F4 during the countdown lockdown is never a single point of
+/// failure. Popup process = one boolean's worth of state, so a static
+/// AtomicBool is sufficient. Popup subprocess starts with false ; the
+/// Track A CountdownExpired handler flips it to true when the dismiss
+/// button appears.
+pub static POPUP_UNLOCKED: AtomicBool = AtomicBool::new(false);
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -135,7 +148,7 @@ unsafe extern "system" fn lock_chromeless_proc(
 ) -> LRESULT {
     use windows::Win32::UI::Shell::DefSubclassProc;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SC_MINIMIZE, STYLESTRUCT, WM_ACTIVATE, WM_ERASEBKGND, WM_NCACTIVATE, WM_NCPAINT,
+        SC_CLOSE, SC_MINIMIZE, STYLESTRUCT, WM_ACTIVATE, WM_ERASEBKGND, WM_NCACTIVATE, WM_NCPAINT,
         WM_STYLECHANGED, WM_STYLECHANGING, WM_SYSCOMMAND, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING,
     };
     match umsg {
@@ -187,6 +200,16 @@ unsafe extern "system" fn lock_chromeless_proc(
             let cmd = wparam.0 & 0xFFF0;
             if cmd == SC_MINIMIZE as usize {
                 tracing::info!("subclass: blocked SC_MINIMIZE (Win+D or similar)");
+                return LRESULT(0);
+            }
+            // SC_CLOSE = 0xF060 fires on Alt+F4 (and on other close
+            // paths). Block during lockdown ; allow post-countdown
+            // once the popup process flipped POPUP_UNLOCKED to true.
+            // Defense-in-depth : the LL keyboard hook is the primary
+            // Alt+F4 barrier but has been observed to miss keystrokes
+            // on some virtualized graphics stacks, so we double up.
+            if cmd == SC_CLOSE as usize && !POPUP_UNLOCKED.load(Ordering::Relaxed) {
+                tracing::info!("subclass: blocked SC_CLOSE (lockdown active)");
                 return LRESULT(0);
             }
             tracing::info!(cmd = format!("0x{:x}", cmd), "subclass: WM_SYSCOMMAND (allowed)");

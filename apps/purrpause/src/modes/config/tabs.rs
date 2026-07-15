@@ -5,6 +5,7 @@
 // coupling with no code-size win.
 
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use eframe::egui;
 
@@ -17,6 +18,8 @@ use crate::config::defaults::{
 };
 use crate::config::{defaults, AnimationEntry, Config, RotationMode};
 use crate::modes::install::STATE_DAT;
+use crate::runtime_dat;
+use crate::scheduler;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -271,6 +274,21 @@ fn write_preview_override(cfg: &Config) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Ceil-minutes from now to the next popup fire time, given the current
+/// slider value. Uses runtime.dat if present (usual case, mirrors the
+/// service's reload clamp) ; falls back to `now + interval` if absent.
+fn next_popup_preview_minutes(interval_hours: f32) -> u64 {
+    let now = SystemTime::now();
+    let interval = Duration::from_secs((interval_hours * 3600.0).round() as u64);
+    let next = match runtime_dat::read() {
+        Some(lp) => scheduler::next_popup_after_reload(now, lp, interval),
+        None => now + interval,
+    };
+    let delta = next.duration_since(now).unwrap_or(Duration::ZERO);
+    // Ceil so "dans 0 min" never appears when the clamp actually holds.
+    (delta.as_secs() + 59) / 60
+}
+
 fn ui_general(ui: &mut egui::Ui, cfg: &mut Config, dirty: &mut bool) {
     ui.heading("Général");
     ui.add_space(8.0);
@@ -293,6 +311,13 @@ fn ui_general(ui: &mut egui::Ui, cfg: &mut Config, dirty: &mut bool) {
             *dirty = true;
         }
     });
+
+    // Live "prochain contrôle" preview — mirrors the service's reload
+    // clamp so the user can see the effect of a slider change before
+    // saving. Truthful when runtime.dat exists (usual case) ; falls
+    // back to a bare `now + interval` otherwise.
+    let preview_min = next_popup_preview_minutes(cfg.interval_hours);
+    ui.label(format!("Prochain contrôle : dans {} min", preview_min));
 
     ui.horizontal(|ui| {
         ui.label("Durée d'une pause :");

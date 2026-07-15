@@ -147,6 +147,7 @@ pub fn run(
 mod windows_impl {
     use std::borrow::Cow;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use anyhow::{Context, Result};
 
@@ -168,6 +169,7 @@ mod windows_impl {
     #[derive(Debug, Clone)]
     enum UserEvent {
         Dismiss,
+        CountdownExpired,
     }
 
     pub fn run(
@@ -436,7 +438,7 @@ mod windows_impl {
         // Debug mode leaves Alt+F4 / Alt+Tab / Win+D / Ctrl+Esc alone
         // so a developer can exit the popup during smoke without
         // killing the process from Task Manager.
-        let _kb_guard = if debug {
+        let mut kb_guard = if debug {
             tracing::info!("popup: skipping keyboard hook (--debug)");
             None
         } else {
@@ -445,6 +447,20 @@ mod windows_impl {
             tracing::info!("popup: keyboard hook installed (post-wry init)");
             Some(guard)
         };
+
+        // Post-countdown unlock timer. After `countdown` seconds the
+        // dismiss button appears — no reason to keep the lockdown
+        // (LL hook, always-on-top, focus theft) active past that point.
+        // The proxy is Send ; sleeping on a dedicated thread avoids
+        // adding polling to tao's message pump.
+        let timer_proxy = event_loop.create_proxy();
+        let timer_secs = countdown as u64;
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(timer_secs));
+            let _ = timer_proxy.send_event(UserEvent::CountdownExpired);
+        });
+
+        let mut countdown_expired = false;
         tracing::info!("popup: entering event loop");
 
         event_loop.run(move |event, _target, control_flow| {
@@ -454,13 +470,31 @@ mod windows_impl {
                     tracing::info!("popup dismissed by user");
                     *control_flow = ControlFlow::Exit;
                 }
+                Event::UserEvent(UserEvent::CountdownExpired) => {
+                    // Break-enforcement window over. Uninstall the LL
+                    // keyboard hook on the same thread that installed
+                    // it (tao's main = here, per SetWindowsHookEx docs),
+                    // flip the subclass unlock flag (so SC_CLOSE stops
+                    // being blocked as a defense-in-depth), lift
+                    // always-on-top so Task Manager / other windows can
+                    // overlay, and set the closure flag that neutralises
+                    // the focus handlers below.
+                    let _ = kb_guard.take();
+                    window_style::POPUP_UNLOCKED
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    window.set_always_on_top(false);
+                    countdown_expired = true;
+                    tracing::info!("popup: countdown expired, restrictions lifted");
+                }
                 Event::WindowEvent {
                     event: WindowEvent::CloseRequested,
                     ..
                 } => {
                     *control_flow = ControlFlow::Exit;
                 }
-                Event::WindowEvent { event: WindowEvent::Focused(true), .. } => {
+                Event::WindowEvent { event: WindowEvent::Focused(true), .. }
+                    if !countdown_expired =>
+                {
                     // Re-strip title-bar bits + re-remove taskbar entry
                     // on every focus regain — Win+D that slipped past
                     // the hook, restore-from-minimize etc. can re-add
@@ -475,7 +509,9 @@ mod windows_impl {
                         tracing::warn!(error = ?e, "popup: re-remove from taskbar on focus failed");
                     }
                 }
-                Event::WindowEvent { event: WindowEvent::Focused(false), .. } if !debug => {
+                Event::WindowEvent { event: WindowEvent::Focused(false), .. }
+                    if !debug && !countdown_expired =>
+                {
                     // Focus lost = user hit Win+D (system hotkey that
                     // bypasses our LL keyboard hook), or clicked another
                     // window somehow. Steal focus back so the popup can't

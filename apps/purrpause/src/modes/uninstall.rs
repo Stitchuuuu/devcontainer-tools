@@ -155,7 +155,16 @@ mod win {
         eframe::run_native(
             "Désinstallation",
             options,
-            Box::new(move |_cc| Ok(Box::new(UninstallPromptApp::new(outcome_clone)))),
+            Box::new(move |cc| {
+                // Same slightly-lighter bg as the install wizard + passcode
+                // gate — keeps the passcode-adjacent windows consistent.
+                for theme in [egui::Theme::Dark, egui::Theme::Light] {
+                    cc.egui_ctx.style_mut_of(theme, |s| {
+                        s.visuals.panel_fill = egui::Color32::from_gray(48);
+                    });
+                }
+                Ok(Box::new(UninstallPromptApp::new(outcome_clone)))
+            }),
         )
         .map_err(|e| anyhow!("eframe: {e}"))?;
 

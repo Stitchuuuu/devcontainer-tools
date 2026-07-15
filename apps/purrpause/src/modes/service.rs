@@ -27,15 +27,15 @@ pub fn run() -> Result<()> {
 
 #[cfg(windows)]
 mod win {
+    use std::collections::HashMap;
     use std::env;
     use std::ffi::{OsStr, OsString};
-    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime};
 
     use anyhow::{Context, Result};
     use windows::Win32::Foundation::CloseHandle;
@@ -51,12 +51,12 @@ mod win {
     use crate::config::{self, Config};
     use crate::ipc::{self, Message};
     use crate::modes::install::{DIAGNOSTICS_CACHE_DIR, SERVICE_NAME, STATE_DAT};
-    use crate::platform::win32::spawn_user;
+    use crate::platform::win32::spawn_user::{self, SpawnedChild};
+    use crate::runtime_dat;
     use crate::scheduler::{self, SchedulerDecision};
 
     const TICK_INTERVAL: Duration = Duration::from_secs(5);
     const DEBOUNCE: Duration = Duration::from_millis(300);
-    const RUNTIME_DAT: &str = r"C:\ProgramData\DiagnosticsCache\runtime.dat";
     const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
     #[derive(Debug, Clone, Copy)]
@@ -102,7 +102,7 @@ mod win {
         let state_path = PathBuf::from(STATE_DAT);
         let mut config = config::load_or_default(&state_path);
         let now = SystemTime::now();
-        let runtime_last = read_runtime_dat();
+        let runtime_last = runtime_dat::read();
         let had_runtime = runtime_last.is_some();
         let mut last_popup = scheduler::resolve_last_popup(
             scheduler::ResolveInputs {
@@ -116,7 +116,7 @@ mod win {
         // Persist the resolved timestamp so a mid-cycle restart doesn't
         // re-enter the migration branch and re-derive from scratch.
         if !had_runtime {
-            let _ = write_runtime_dat(last_popup);
+            let _ = runtime_dat::write(last_popup);
         }
         let mut fired = scheduler::derive_already_fired(now, &config, last_popup);
         tracing::info!(
@@ -134,8 +134,25 @@ mod win {
         let notify_running_flag = Arc::new(AtomicBool::new(true));
         let notify_thread = spawn_notify(tx.clone(), notify_running_flag.clone());
 
+        // Track spawned children so we can TerminateProcess a stale
+        // predecessor before spawning a replacement — the post-countdown
+        // unlock (0.7.1 Track A) lets a user Alt+Tab away from a still-
+        // running popup, so two popups would otherwise stack up on the
+        // next schedule tick. Handle-based (not PID-based) so a recycled
+        // PID cannot cause us to terminate an unrelated process.
+        let mut last_popup_child: Option<SpawnedChild> = None;
+        let mut last_widget_children: HashMap<u32, SpawnedChild> = HashMap::new();
+
         // Main tick loop.
-        let loop_result = tick_loop(&mut config, &mut last_popup, &mut fired, &exe, &rx);
+        let loop_result = tick_loop(
+            &mut config,
+            &mut last_popup,
+            &mut fired,
+            &mut last_popup_child,
+            &mut last_widget_children,
+            &exe,
+            &rx,
+        );
 
         // Signal shutdown.
         notify_running_flag.store(false, Ordering::Relaxed);
@@ -173,6 +190,8 @@ mod win {
         config: &mut Config,
         last_popup: &mut SystemTime,
         fired: &mut std::collections::HashSet<u32>,
+        last_popup_child: &mut Option<SpawnedChild>,
+        last_widget_children: &mut HashMap<u32, SpawnedChild>,
         exe: &Path,
         rx: &mpsc::Receiver<TickCommand>,
     ) -> Result<()> {
@@ -184,7 +203,7 @@ mod win {
                 }
                 Ok(TickCommand::Trigger) => {
                     tracing::info!("TriggerPopupNow received");
-                    if let Err(e) = fire_popup(exe, last_popup, fired) {
+                    if let Err(e) = fire_popup(exe, last_popup, fired, last_popup_child) {
                         tracing::warn!(error = ?e, "trigger popup failed");
                     }
                 }
@@ -196,7 +215,7 @@ mod win {
                     // If the user reduced interval_hours enough that
                     // `last_popup + new_interval` lands in the past
                     // (or within RELOAD_MIN_GRACE), bump last_popup
-                    // forward so the next popup fires at now+5min
+                    // forward so the next popup fires at now+2min
                     // rather than instantly on Save.
                     let clamped = scheduler::resolve_last_popup(
                         scheduler::ResolveInputs {
@@ -214,12 +233,19 @@ mod win {
                             "reload: interval reduced, clamping last_popup forward",
                         );
                         *last_popup = clamped;
-                        let _ = write_runtime_dat(*last_popup);
+                        let _ = runtime_dat::write(*last_popup);
                     }
                     *fired = scheduler::derive_already_fired(now, config, *last_popup);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Err(e) = maybe_fire(config, last_popup, fired, exe) {
+                    if let Err(e) = maybe_fire(
+                        config,
+                        last_popup,
+                        fired,
+                        last_popup_child,
+                        last_widget_children,
+                        exe,
+                    ) {
                         tracing::warn!(error = ?e, "tick maybe_fire failed");
                     }
                 }
@@ -235,16 +261,24 @@ mod win {
         config: &Config,
         last_popup: &mut SystemTime,
         fired: &mut std::collections::HashSet<u32>,
+        last_popup_child: &mut Option<SpawnedChild>,
+        last_widget_children: &mut HashMap<u32, SpawnedChild>,
         exe: &Path,
     ) -> Result<()> {
         let now = SystemTime::now();
         match scheduler::next_event(now, config, *last_popup, fired) {
             SchedulerDecision::Nothing => Ok(()),
-            SchedulerDecision::FirePopup => fire_popup(exe, last_popup, fired),
+            SchedulerDecision::FirePopup => fire_popup(exe, last_popup, fired, last_popup_child),
             SchedulerDecision::FireCountdown {
                 palier_minutes,
                 seconds_until_popup,
-            } => fire_countdown(exe, palier_minutes, seconds_until_popup, fired),
+            } => fire_countdown(
+                exe,
+                palier_minutes,
+                seconds_until_popup,
+                fired,
+                last_widget_children,
+            ),
         }
     }
 
@@ -252,21 +286,31 @@ mod win {
         exe: &Path,
         last_popup: &mut SystemTime,
         fired: &mut std::collections::HashSet<u32>,
+        last_popup_child: &mut Option<SpawnedChild>,
     ) -> Result<()> {
+        // Kill any predecessor popup left behind by an Alt+Tab'd user
+        // (post-countdown unlock, 0.7.1 Track A) before spawning the
+        // new one. Terminate goes through the stored HANDLE — PID
+        // reuse can't send us at the wrong target.
+        if let Some(prev) = last_popup_child.take() {
+            prev.terminate();
+            drop(prev);
+        }
         // --no-debug so the service-spawned popup runs in production
         // mode : keyboard hook installed + force-minimize honoured.
         // Debug-default is only for developer manual invocations
         // from PowerShell during smoke.
         let args: [&OsStr; 2] = [OsStr::new("--popup"), OsStr::new("--no-debug")];
         match spawn_user::spawn_in_active_user_session(exe, &args) {
-            Ok(pid) => {
-                tracing::info!(pid, "popup child spawned");
+            Ok(child) => {
+                tracing::info!(pid = child.pid, "popup child spawned");
                 let now = SystemTime::now();
                 *last_popup = now;
                 fired.clear();
-                if let Err(e) = write_runtime_dat(now) {
+                if let Err(e) = runtime_dat::write(now) {
                     tracing::warn!(error = ?e, "write runtime.dat failed");
                 }
+                *last_popup_child = Some(child);
                 Ok(())
             }
             Err(e) => {
@@ -281,7 +325,15 @@ mod win {
         palier: u32,
         seconds_until_popup: u64,
         fired: &mut std::collections::HashSet<u32>,
+        last_widget_children: &mut HashMap<u32, SpawnedChild>,
     ) -> Result<()> {
+        // Kill any predecessor widget for the same palier — normally
+        // widget lifetimes are short (5-15 s) so this rarely triggers,
+        // but coherence with fire_popup is worth 5 lines.
+        if let Some(prev) = last_widget_children.remove(&palier) {
+            prev.terminate();
+            drop(prev);
+        }
         let seconds_str = seconds_until_popup.to_string();
         let palier_str = palier.to_string();
         // Same rationale as fire_popup : --no-debug forces the
@@ -295,9 +347,10 @@ mod win {
             OsStr::new("--no-debug"),
         ];
         match spawn_user::spawn_in_active_user_session(exe, &args) {
-            Ok(pid) => {
-                tracing::info!(pid, palier, "countdown child spawned");
+            Ok(child) => {
+                tracing::info!(pid = child.pid, palier, "countdown child spawned");
                 fired.insert(palier);
+                last_widget_children.insert(palier, child);
                 Ok(())
             }
             Err(e) => {
@@ -395,34 +448,6 @@ mod win {
             .paths
             .iter()
             .any(|p| p.file_name().map(|n| n == target).unwrap_or(false))
-    }
-
-    fn read_runtime_dat() -> Option<SystemTime> {
-        let bytes = std::fs::read(RUNTIME_DAT).ok()?;
-        if bytes.len() != 8 {
-            return None;
-        }
-        let secs = u64::from_be_bytes(bytes.try_into().ok()?);
-        Some(UNIX_EPOCH + Duration::from_secs(secs))
-    }
-
-    fn write_runtime_dat(t: SystemTime) -> Result<()> {
-        let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let bytes = secs.to_be_bytes();
-        let path = Path::new(RUNTIME_DAT);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let tmp = path.with_extension("dat.tmp");
-        {
-            let mut f = std::fs::File::create(&tmp)
-                .with_context(|| format!("create {}", tmp.display()))?;
-            f.write_all(&bytes)?;
-            f.sync_all()?;
-        }
-        std::fs::rename(&tmp, path)
-            .with_context(|| format!("rename to {}", path.display()))?;
-        Ok(())
     }
 
     fn running() -> ServiceStatus {
