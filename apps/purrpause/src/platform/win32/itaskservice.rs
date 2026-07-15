@@ -79,11 +79,23 @@ fn with_com<F, R>(body: F) -> Result<R>
 where
     F: FnOnce() -> Result<R>,
 {
-    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-        .ok()
-        .context("CoInitializeEx")?;
+    use windows::core::HRESULT;
+    // RPC_E_CHANGED_MODE : COM is already initialized on this thread in a
+    // different apartment mode (e.g. eframe's wgpu backend initialized STA
+    // before we reached here during the uninstall flow). COM is usable —
+    // we just don't own the init and must skip the paired CoUninitialize.
+    const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x80010106u32 as i32);
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let we_own_init = if hr == RPC_E_CHANGED_MODE {
+        false
+    } else {
+        hr.ok().context("CoInitializeEx")?;
+        true
+    };
     let result = body();
-    unsafe { CoUninitialize() };
+    if we_own_init {
+        unsafe { CoUninitialize() };
+    }
     result
 }
 
