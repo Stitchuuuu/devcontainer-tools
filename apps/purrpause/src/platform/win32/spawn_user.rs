@@ -82,6 +82,27 @@ impl Drop for SpawnedChild {
     }
 }
 
+impl crate::platform::ChildHandle for SpawnedChild {
+    fn terminate(&self) {
+        SpawnedChild::terminate(self);
+    }
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+}
+
+/// Production `Spawner` : wraps `spawn_in_active_user_session`. Zero
+/// state ; passed as `&RealSpawner` at every call site so the trait dispatch
+/// stays statically monomorphized (no dyn overhead) and LTO absorbs it.
+pub(crate) struct RealSpawner;
+
+impl crate::platform::Spawner for RealSpawner {
+    type Child = SpawnedChild;
+    fn spawn(&self, exe: &Path, args: &[&OsStr]) -> Result<SpawnedChild> {
+        spawn_in_active_user_session(exe, args)
+    }
+}
+
 pub fn spawn_in_active_user_session(exe: &Path, args: &[&OsStr]) -> Result<SpawnedChild> {
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
     if session_id == NO_USER_SESSION {

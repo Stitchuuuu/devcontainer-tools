@@ -145,26 +145,21 @@ mod win {
         let outcome: Arc<Mutex<Outcome>> = Arc::new(Mutex::new(Outcome::Cancelled));
         let outcome_clone = outcome.clone();
 
+        let mut viewport = egui::ViewportBuilder::default()
+            .with_inner_size([480.0, 220.0])
+            .with_resizable(false);
+        if let Some(icon) = crate::modes::config::decoration::load_cat_icon() {
+            viewport = viewport.with_icon(icon);
+        }
         let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([480.0, 220.0])
-                .with_resizable(false),
+            viewport,
             ..Default::default()
         };
 
         eframe::run_native(
             "Désinstallation",
             options,
-            Box::new(move |cc| {
-                // Same slightly-lighter bg as the install wizard + passcode
-                // gate — keeps the passcode-adjacent windows consistent.
-                for theme in [egui::Theme::Dark, egui::Theme::Light] {
-                    cc.egui_ctx.style_mut_of(theme, |s| {
-                        s.visuals.panel_fill = egui::Color32::from_gray(48);
-                    });
-                }
-                Ok(Box::new(UninstallPromptApp::new(outcome_clone)))
-            }),
+            Box::new(move |_cc| Ok(Box::new(UninstallPromptApp::new(outcome_clone)))),
         )
         .map_err(|e| anyhow!("eframe: {e}"))?;
 
@@ -193,6 +188,10 @@ mod win {
 
     impl eframe::App for UninstallPromptApp {
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+            // CentralPanel wrap so panel_fill default paints the viewport
+            // — same treatment as the Config UI tabs, keeps all 4 windows
+            // visually consistent.
+            egui::CentralPanel::default().show(ui, |ui| {
             egui::Frame::new().inner_margin(24).show(ui, |ui| {
                 ui.heading("Désinstallation");
                 ui.add_space(6.0);
@@ -229,30 +228,27 @@ mod win {
                     }
                 });
             });
+            }); // CentralPanel
         }
     }
 
-    /// Wraps `TextEdit::singleline().password(true)` in a visible `Frame`.
-    /// egui's default `TextEdit` frame is too subtle for a password field
-    /// — the box gets a 1-px gray stroke + rounded corners so the user
-    /// reads it as "type here".
+    /// Password `TextEdit` with a visible 1-px border. The border is
+    /// applied to the widget itself via a scoped visuals override, so it
+    /// hugs the field's desired_width instead of the full row width like
+    /// the old outer-Frame version did.
     fn bordered_password_input(ui: &mut egui::Ui, input: &mut String) -> egui::Response {
-        egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(140)))
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(6, 4))
-            .show(ui, |ui| {
-                // TextEdit::frame() in egui 0.35 takes a Frame, not a
-                // bool ; skip the inner frame entirely so ours is the
-                // only visible border. Padding is provided by the outer
-                // Frame's inner_margin.
-                ui.add(
-                    egui::TextEdit::singleline(input)
-                        .password(true)
-                        .desired_width(200.0),
-                )
-            })
-            .inner
+        ui.scope(|ui| {
+            let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(140));
+            ui.visuals_mut().widgets.inactive.bg_stroke = stroke;
+            ui.visuals_mut().widgets.hovered.bg_stroke = stroke;
+            ui.visuals_mut().widgets.active.bg_stroke = stroke;
+            ui.add(
+                egui::TextEdit::singleline(input)
+                    .password(true)
+                    .desired_width(200.0),
+            )
+        })
+        .inner
     }
 
     // ----- Teardown ----------------------------------------------------
@@ -588,5 +584,39 @@ mod tests {
         let ghost = tmp.path().join("does-not-exist");
         let order = collect_tree_post_order(&ghost);
         assert!(order.is_empty());
+    }
+
+    // -------- verify_passcode_against_hash — 3 additional coverage bumps --------
+
+    #[test]
+    fn passcode_gate_empty_input_rejected() {
+        // Empty passcode never matches a non-empty-passcode hash. argon2
+        // returns Ok(false), not an error — the gate handles the false path
+        // by showing "Mot de passe incorrect", not by crashing.
+        let hash = crate::password::hash("123456").unwrap();
+        assert!(!verify_passcode_against_hash("", &hash).unwrap());
+    }
+
+    #[test]
+    fn passcode_gate_unicode_passcode_roundtrips() {
+        // Users may set non-ASCII passcodes ("é$", emoji, katakana). argon2
+        // hashes the raw UTF-8 bytes ; verify must handle the same bytes.
+        let passcode = "café🐈🍩キツネ";
+        let hash = crate::password::hash(passcode).unwrap();
+        assert!(verify_passcode_against_hash(passcode, &hash).unwrap());
+        assert!(!verify_passcode_against_hash("café", &hash).unwrap());
+    }
+
+    #[test]
+    fn passcode_gate_cross_install_hash_still_verifies() {
+        // Cross-version compat : a hash string produced by argon2 0.5.x on
+        // one machine must verify on another. Salt is embedded in the PHC
+        // string so verify only needs the passcode + hash. This concrete
+        // fixture (generated once via crate::password::hash("test-cross-install"))
+        // pins the wire format — a future argon2 bump that changes it trips
+        // the test.
+        let stored_hash = "$argon2id$v=19$m=19456,t=2,p=1$SDig+t2BBcD7iSKZdSlMOg$P8ytb4Ick+FrXgze86oS69dB4ygUVkecy7fKoLko51Y";
+        assert!(verify_passcode_against_hash("test-cross-install", stored_hash).unwrap());
+        assert!(!verify_passcode_against_hash("wrong", stored_hash).unwrap());
     }
 }

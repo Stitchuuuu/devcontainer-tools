@@ -17,7 +17,6 @@ mod lottie_sanitize;
 mod modes;
 mod password;
 mod platform;
-#[cfg(windows)]
 mod runtime_dat;
 mod scheduler;
 #[cfg(test)]

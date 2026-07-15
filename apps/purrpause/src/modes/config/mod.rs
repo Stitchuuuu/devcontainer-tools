@@ -8,7 +8,7 @@
 pub mod lockout;
 
 #[cfg(windows)]
-mod decoration;
+pub(crate) mod decoration;
 #[cfg(windows)]
 mod passcode;
 #[cfg(windows)]

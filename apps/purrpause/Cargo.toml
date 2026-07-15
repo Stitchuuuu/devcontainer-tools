@@ -1,6 +1,6 @@
 [package]
 name = "purrpause"
-version = "0.7.4"
+version = "0.8.3"
 edition = "2021"
 license = "MIT"
 description = "Break-reminder overlay for Windows — camouflaged Windows Session Health Service"
@@ -59,12 +59,14 @@ windows = { version = "0.62.2", features = [
     "Win32_Security_Authorization",      # ConvertStringSecurityDescriptor, SetNamedSecurityInfoW
     "Win32_Security_Cryptography",       # DPAPI CryptProtectData / CryptUnprotectData
     "Win32_System_Com",                  # CoInitializeEx / CoCreateInstance
+    "Win32_System_Diagnostics_ToolHelp", # CreateToolhelp32Snapshot + PROCESSENTRY32W (orphan WebView2 sweep)
     "Win32_System_Environment",          # CreateEnvironmentBlock / DestroyEnvironmentBlock
     "Win32_System_IO",                   # OVERLAPPED + GetOverlappedResult (pipe accept)
     "Win32_System_Pipes",                # CreateNamedPipeW + PIPE_* constants
     "Win32_System_RemoteDesktop",        # WTSQueryUserToken
     "Win32_System_Services",             # SCM helpers not covered by windows-service
     "Win32_System_Registry",             # Runtime service ImagePath queries
+    "Win32_System_Time",                 # FileTimeToSystemTime + SystemTimeToTzSpecificLocalTime (Config UI anchor label)
     "Win32_System_TaskScheduler",        # ITaskService COM watchdog registration
     "Win32_System_Threading",            # CreateProcessAsUser
     "Win32_System_Variant",              # VARIANT (Task Scheduler COM args)

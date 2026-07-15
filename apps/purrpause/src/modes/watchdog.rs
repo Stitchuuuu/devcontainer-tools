@@ -201,6 +201,9 @@ mod tests {
         StartPending,
         Stopped,
         Paused,
+        StopPending,
+        PausePending,
+        ContinuePending,
     }
 
     impl ServiceStateLike for FakeState {
@@ -257,5 +260,39 @@ mod tests {
         let parsed = parse_exe_from_command_line(cmdline);
         let current = PathBuf::from(r"C:\TT\Foo\SystemHealthAgent.exe");
         assert_eq!(classify(&current, Some(&parsed)), InstallAction::SamePathRelaunch);
+    }
+
+    // -------- 3 additional coverage bumps for transient SCM states --------
+
+    #[test]
+    fn classify_stop_pending_treated_as_needing_start() {
+        // Service is in the middle of stopping. Watchdog kicks it back —
+        // by the next tick either the stop completed (StartPending path
+        // takes over) or the start hits an already-running state.
+        assert_eq!(
+            classify(Some(FakeState::StopPending)),
+            WatchdogAction::Start
+        );
+    }
+
+    #[test]
+    fn classify_pause_pending_treated_as_needing_start() {
+        // Pause-in-progress → not currently serving. Kick it.
+        assert_eq!(
+            classify(Some(FakeState::PausePending)),
+            WatchdogAction::Start
+        );
+    }
+
+    #[test]
+    fn classify_continue_pending_treated_as_needing_start() {
+        // Coming back from paused but not yet Running. Current impl treats
+        // this as needing a start — SCM will no-op the redundant start on
+        // a service already transitioning. Locks in that we don't add
+        // ContinuePending to is_running_or_starting without a decision.
+        assert_eq!(
+            classify(Some(FakeState::ContinuePending)),
+            WatchdogAction::Start
+        );
     }
 }

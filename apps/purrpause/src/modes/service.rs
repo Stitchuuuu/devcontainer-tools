@@ -50,8 +50,10 @@ mod win {
 
     use crate::config::{self, Config};
     use crate::ipc::{self, Message};
-    use crate::modes::install::{DIAGNOSTICS_CACHE_DIR, SERVICE_NAME, STATE_DAT};
-    use crate::platform::win32::spawn_user::{self, SpawnedChild};
+    use crate::modes::install::{webview2_dir, DIAGNOSTICS_CACHE_DIR, SERVICE_NAME, STATE_DAT};
+    use crate::platform::win32::proc_kill::kill_orphan_webview2_workers;
+    use crate::platform::win32::spawn_user::{RealSpawner, SpawnedChild};
+    use crate::platform::{spawn_replacing, spawn_replacing_keyed};
     use crate::runtime_dat;
     use crate::scheduler::{self, SchedulerDecision};
 
@@ -98,6 +100,14 @@ mod win {
 
         let exe = env::current_exe().context("env::current_exe()")?;
         tracing::info!(exe = %exe.display(), "service running");
+
+        // Startup sweep : any msedgewebview2.exe still running from our
+        // install's Data\WebView2 is an orphan from a prior session
+        // (session-9 Track B-primary revert left this hole). Kill them
+        // before we spawn any new popups.
+        if let Some(exe_parent) = exe.parent() {
+            kill_orphan_webview2_workers(&webview2_dir(exe_parent));
+        }
 
         let state_path = PathBuf::from(STATE_DAT);
         let mut config = config::load_or_default(&state_path);
@@ -288,20 +298,22 @@ mod win {
         fired: &mut std::collections::HashSet<u32>,
         last_popup_child: &mut Option<SpawnedChild>,
     ) -> Result<()> {
-        // Kill any predecessor popup left behind by an Alt+Tab'd user
-        // (post-countdown unlock, 0.7.1 Track A) before spawning the
-        // new one. Terminate goes through the stored HANDLE — PID
-        // reuse can't send us at the wrong target.
-        if let Some(prev) = last_popup_child.take() {
-            prev.terminate();
-            drop(prev);
+        // Pre-spawn sweep : belt-and-braces. Startup already fires once ;
+        // this catches workers leaked between our own popup lifetimes.
+        if let Some(exe_parent) = exe.parent() {
+            kill_orphan_webview2_workers(&webview2_dir(exe_parent));
         }
         // --no-debug so the service-spawned popup runs in production
         // mode : keyboard hook installed + force-minimize honoured.
         // Debug-default is only for developer manual invocations
         // from PowerShell during smoke.
         let args: [&OsStr; 2] = [OsStr::new("--popup"), OsStr::new("--no-debug")];
-        match spawn_user::spawn_in_active_user_session(exe, &args) {
+        // Spawn-first, kill-on-success. Predecessor left behind by an
+        // Alt+Tab'd user (post-countdown unlock, 0.7.1 Track A) is
+        // terminated only if the new spawn succeeded — better a stale
+        // popup than none at all. HANDLE-based terminate is immune to
+        // PID recycle.
+        match spawn_replacing(&RealSpawner, exe, &args, last_popup_child) {
             Ok(child) => {
                 tracing::info!(pid = child.pid, "popup child spawned");
                 let now = SystemTime::now();
@@ -327,13 +339,6 @@ mod win {
         fired: &mut std::collections::HashSet<u32>,
         last_widget_children: &mut HashMap<u32, SpawnedChild>,
     ) -> Result<()> {
-        // Kill any predecessor widget for the same palier — normally
-        // widget lifetimes are short (5-15 s) so this rarely triggers,
-        // but coherence with fire_popup is worth 5 lines.
-        if let Some(prev) = last_widget_children.remove(&palier) {
-            prev.terminate();
-            drop(prev);
-        }
         let seconds_str = seconds_until_popup.to_string();
         let palier_str = palier.to_string();
         // Same rationale as fire_popup : --no-debug forces the
@@ -346,11 +351,12 @@ mod win {
             OsStr::new(&palier_str),
             OsStr::new("--no-debug"),
         ];
-        match spawn_user::spawn_in_active_user_session(exe, &args) {
-            Ok(child) => {
-                tracing::info!(pid = child.pid, palier, "countdown child spawned");
+        // Spawn-first, kill-on-success — same invariant as fire_popup.
+        // Different-palier widgets remain untouched.
+        match spawn_replacing_keyed(&RealSpawner, exe, &args, palier, last_widget_children) {
+            Ok(()) => {
+                tracing::info!(palier, "countdown child spawned");
                 fired.insert(palier);
-                last_widget_children.insert(palier, child);
                 Ok(())
             }
             Err(e) => {

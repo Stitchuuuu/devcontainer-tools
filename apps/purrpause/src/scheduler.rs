@@ -150,6 +150,24 @@ pub fn next_popup_after_reload(
     }
 }
 
+/// Config UI live-preview kernel : ceil-minutes from `now` to the next
+/// popup fire, respecting the reload clamp when `last_popup` is known.
+/// Pure — no I/O — so it's Linux-testable. The tabs.rs wrapper injects
+/// `SystemTime::now()` + `runtime_dat::read()` at call time.
+pub fn preview_minutes(
+    now: SystemTime,
+    last_popup: Option<SystemTime>,
+    interval: Duration,
+) -> u64 {
+    let next = match last_popup {
+        Some(lp) => next_popup_after_reload(now, lp, interval),
+        None => now + interval,
+    };
+    let delta = next.duration_since(now).unwrap_or(Duration::ZERO);
+    // Ceil so "dans 0 min" never appears when the clamp actually holds.
+    (delta.as_secs() + 59) / 60
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SchedulerDecision {
     Nothing,
@@ -774,5 +792,92 @@ mod tests {
             .unwrap();
         let got = next_popup_after_reload(now, lp, interval);
         assert_eq!(got, lp + interval);
+    }
+
+    // -------- preview_minutes (Track A-2) --------
+
+    #[test]
+    fn preview_minutes_above_grace_reflects_naive_delta() {
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(9_400); // 10 min ago
+        let interval = Duration::from_secs(60 * 60); // 1h
+        // next = lp + 1h = epoch+13_000 ; delta = 3_000 s = 50 min.
+        assert_eq!(preview_minutes(now, Some(lp), interval), 50);
+    }
+
+    #[test]
+    fn preview_minutes_below_grace_clamps_to_reload_min_grace() {
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(9_000); // ~17 min ago
+        let interval = Duration::from_secs(60); // 1 min — well below grace
+        // Naive next = lp + 60 = epoch+9_060, in the past.
+        // Clamped to now + RELOAD_MIN_GRACE (120 s) → 2 min preview.
+        assert_eq!(preview_minutes(now, Some(lp), interval), 2);
+    }
+
+    #[test]
+    fn preview_minutes_none_last_popup_uses_fresh_install_fallback() {
+        let now = epoch_plus(10_000);
+        let interval = Duration::from_secs(45 * 60); // 45 min
+        assert_eq!(preview_minutes(now, None, interval), 45);
+    }
+
+    #[test]
+    fn preview_minutes_one_minute_interval_boundary() {
+        // Fresh install, 1-min interval → exactly 1 min preview.
+        let now = epoch_plus(10_000);
+        assert_eq!(preview_minutes(now, None, Duration::from_secs(60)), 1);
+    }
+
+    #[test]
+    fn preview_minutes_twelve_hour_interval_boundary() {
+        // Fresh install, 720-min (12 h) interval → 720 min preview.
+        let now = epoch_plus(10_000);
+        assert_eq!(
+            preview_minutes(now, None, Duration::from_secs(720 * 60)),
+            720
+        );
+    }
+
+    #[test]
+    fn preview_minutes_past_next_returns_grace_never_negative() {
+        // Regression guard for the "-4 min" bug : any `last_popup + interval`
+        // in the past MUST clamp to the RELOAD_MIN_GRACE floor, never produce
+        // a negative or wrap-around value.
+        let now = epoch_plus(1_000_000);
+        let lp = epoch_plus(100_000); // 6 h ago
+        let interval = Duration::from_secs(60 * 60); // 1 h — naive next is 5 h in past
+        let out = preview_minutes(now, Some(lp), interval);
+        // Clamped to RELOAD_MIN_GRACE = 120 s → 2 min preview.
+        assert_eq!(out, 2);
+    }
+
+    // -------- ceil-boundary edges (Track A-3) --------
+    // The `(delta.as_secs() + 59) / 60` ceil MUST hold at exact-multiple
+    // boundaries so the C-2 "dans 2 min" display never regresses silently.
+
+    #[test]
+    fn preview_ceil_60_seconds_reads_as_1_minute() {
+        let now = epoch_plus(10_000);
+        // Fresh install + 60 s interval = delta 60 s exactly → 1 min.
+        assert_eq!(preview_minutes(now, None, Duration::from_secs(60)), 1);
+    }
+
+    #[test]
+    fn preview_ceil_61_seconds_reads_as_2_minutes() {
+        let now = epoch_plus(10_000);
+        assert_eq!(preview_minutes(now, None, Duration::from_secs(61)), 2);
+    }
+
+    #[test]
+    fn preview_ceil_119_seconds_reads_as_2_minutes() {
+        let now = epoch_plus(10_000);
+        assert_eq!(preview_minutes(now, None, Duration::from_secs(119)), 2);
+    }
+
+    #[test]
+    fn preview_ceil_120_seconds_reads_as_2_minutes() {
+        let now = epoch_plus(10_000);
+        assert_eq!(preview_minutes(now, None, Duration::from_secs(120)), 2);
     }
 }

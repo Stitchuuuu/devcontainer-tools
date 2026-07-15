@@ -408,7 +408,17 @@ fn start_service() -> Result<()> {
 
 #[cfg(windows)]
 fn launch_config_ui(current_exe: &Path) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+
     tracing::info!(exe = %current_exe.display(), "launching config UI child (fire-and-forget)");
+    // Permit ANY subsequently-spawned child process to take foreground.
+    // Windows' anti-focus-stealing normally blocks a background parent
+    // from handing focus to a fresh child ; ASFW_ANY relaxes that scope.
+    // Combined with the child's ViewportBuilder::with_active(true), the
+    // Config UI opens focused instead of behind whatever was on screen.
+    unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    }
     // Fire-and-forget : the child owns the window loop, the parent
     // (this install-flow process) exits immediately. Using .status()
     // here would block until the child dies and leave a phantom parent
@@ -780,6 +790,105 @@ mod tests {
         let parsed = parse_exe_from_command_line(cmdline);
         let current = PathBuf::from(r"C:\TT\Foo\SystemHealthAgent.exe");
         assert_eq!(classify(&current, Some(&parsed)), InstallAction::SamePathRelaunch);
+    }
+
+    // -------- classify — 4 additional coverage bumps --------
+
+    #[test]
+    fn classify_non_ascii_paths_case_insensitive() {
+        // French folder names are common on Windows FR ("Bureau", "Téléchargements").
+        // Case-insensitive compare is ASCII lowercase — non-ASCII lowercases per
+        // Rust's to_lowercase which handles Unicode. Ensure that survives.
+        let current = PathBuf::from(r"C:\Users\Élise\Bureau\SystemHealthAgent.exe");
+        let existing = PathBuf::from(r"c:\users\élise\bureau\systemhealthagent.exe");
+        assert_eq!(
+            classify(&current, Some(&existing)),
+            InstallAction::SamePathRelaunch
+        );
+    }
+
+    #[test]
+    fn classify_mixed_forward_and_back_slash_treated_as_different() {
+        // paths_equal_ci does raw string compare — no separator normalization.
+        // Lock in this behavior : mixed slashes = PathUpdate. If we ever add
+        // normalization, this test breaks intentionally.
+        let current = PathBuf::from(r"C:\Users\alice\SystemHealthAgent.exe");
+        let existing = PathBuf::from("C:/Users/alice/SystemHealthAgent.exe");
+        match classify(&current, Some(&existing)) {
+            InstallAction::PathUpdate { .. } => {}
+            other => panic!("expected PathUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_trailing_whitespace_treated_as_different() {
+        // No trimming ; a stray trailing space would flag PathUpdate. Behavior
+        // lock-in — SCM shouldn't produce such paths, but if it does the
+        // watchdog would rewire rather than silently masking the drift.
+        let current = PathBuf::from(r"C:\Users\alice\SystemHealthAgent.exe");
+        let existing = PathBuf::from("C:\\Users\\alice\\SystemHealthAgent.exe ");
+        match classify(&current, Some(&existing)) {
+            InstallAction::PathUpdate { .. } => {}
+            other => panic!("expected PathUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_unc_paths_case_insensitive_equal() {
+        // UNC paths (\\server\share\...) are compared verbatim — case-insensitive
+        // just like drive-letter paths. Users may have deployed to a network
+        // share ; the healer should identify same-share as SamePathRelaunch.
+        let current = PathBuf::from(r"\\SERVER\Share\Purr\SystemHealthAgent.exe");
+        let existing = PathBuf::from(r"\\server\share\purr\systemhealthagent.exe");
+        assert_eq!(
+            classify(&current, Some(&existing)),
+            InstallAction::SamePathRelaunch
+        );
+    }
+
+    // -------- paths_equal_ci — 5 tests locking in lowercase-string semantics --------
+
+    #[test]
+    fn paths_equal_ci_pure_case_difference_equal() {
+        assert!(paths_equal_ci(
+            Path::new(r"C:\Foo\Bar.exe"),
+            Path::new(r"c:\foo\bar.exe"),
+        ));
+    }
+
+    #[test]
+    fn paths_equal_ci_forward_vs_back_slash_not_equal() {
+        // Raw string compare : no separator normalization.
+        assert!(!paths_equal_ci(
+            Path::new(r"C:\foo\bar.exe"),
+            Path::new("C:/foo/bar.exe"),
+        ));
+    }
+
+    #[test]
+    fn paths_equal_ci_quoted_vs_unquoted_not_equal() {
+        // Quotes are part of the string.
+        assert!(!paths_equal_ci(
+            Path::new(r#""C:\Foo\Bar.exe""#),
+            Path::new(r"C:\Foo\Bar.exe"),
+        ));
+    }
+
+    #[test]
+    fn paths_equal_ci_whitespace_not_trimmed() {
+        assert!(!paths_equal_ci(
+            Path::new(r"C:\Foo\Bar.exe"),
+            Path::new(r"C:\Foo\Bar.exe "),
+        ));
+    }
+
+    #[test]
+    fn paths_equal_ci_relative_vs_absolute_not_equal() {
+        // Trailing "Bar.exe" from both, but relative form doesn't match absolute.
+        assert!(!paths_equal_ci(
+            Path::new(r"Bar.exe"),
+            Path::new(r"C:\Foo\Bar.exe"),
+        ));
     }
 
     #[test]

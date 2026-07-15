@@ -1,13 +1,14 @@
 // Post-build packaging tool. Runs on the host (Linux devcontainer),
-// invokes `cargo xwin build --release --target aarch64-pc-windows-msvc`
-// then bundles the resulting `SystemHealthAgent.exe` + sidecar
-// `.manifest` into `target/dist/SystemHealthAgent-<version>-aarch64.zip`.
+// invokes `cargo xwin build --release --target <triple>` for each
+// requested target, then bundles the resulting `SystemHealthAgent.exe`
+// + sidecar `.manifest` + convenience `.bat` scripts into
+// `target/dist/SystemHealthAgent-<version>-<arch>.zip`.
 //
-// Since the assets are all embedded now (session 6, 0.5.5+), the zip
-// only ships 2 files : exe + manifest. Nothing else.
-//
-// Invoke : `cargo run --bin pack --release`
-// Skip the cross-compile step : `cargo run --bin pack --release -- --no-build`
+// Invoke examples :
+//   cargo run --bin pack --release                 # both aarch64 + x64
+//   cargo run --bin pack --release -- --aarch64    # aarch64 only
+//   cargo run --bin pack --release -- --x64        # x64 only
+//   cargo run --bin pack --release -- --no-build   # skip cargo xwin (both, reuse exes)
 
 use std::env;
 use std::fs;
@@ -17,36 +18,66 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-const TARGET: &str = "aarch64-pc-windows-msvc";
 const EXE_NAME: &str = "SystemHealthAgent.exe";
 const MANIFEST_NAME: &str = "SystemHealthAgent.exe.manifest";
+
+struct Target {
+    triple: &'static str,
+    arch_suffix: &'static str,
+}
+
+const AARCH64: Target = Target {
+    triple: "aarch64-pc-windows-msvc",
+    arch_suffix: "aarch64",
+};
+
+const X64: Target = Target {
+    triple: "x86_64-pc-windows-msvc",
+    arch_suffix: "x64",
+};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let skip_build = args.iter().any(|a| a == "--no-build");
+    let only_aarch64 = args.iter().any(|a| a == "--aarch64");
+    let only_x64 = args.iter().any(|a| a == "--x64");
 
-    // Read version from Cargo.toml so the zip name always matches.
+    let targets: Vec<&Target> = match (only_aarch64, only_x64) {
+        (true, false) => vec![&AARCH64],
+        (false, true) => vec![&X64],
+        // Default (no flag) or both flags set : build both.
+        _ => vec![&AARCH64, &X64],
+    };
+
     let version = read_cargo_version()?;
-    println!("[pack] purrpause v{version} → {TARGET}");
+
+    for target in targets {
+        pack_target(target, &version, skip_build)?;
+    }
+    Ok(())
+}
+
+fn pack_target(target: &Target, version: &str, skip_build: bool) -> Result<()> {
+    println!("[pack] purrpause v{version} → {}", target.triple);
 
     if !skip_build {
-        println!("[pack] cargo xwin build --release --target {TARGET}");
+        println!("[pack] cargo xwin build --release --target {}", target.triple);
         let status = Command::new("cargo")
             .arg("xwin")
             .arg("build")
             .arg("--release")
             .arg("--target")
-            .arg(TARGET)
+            .arg(target.triple)
             .status()
             .context("spawn cargo xwin build")?;
         if !status.success() {
-            anyhow::bail!("cargo xwin build failed (exit {status})");
+            anyhow::bail!("cargo xwin build failed for {} (exit {status})", target.triple);
         }
     } else {
-        println!("[pack] --no-build : skipping cargo xwin build");
+        println!("[pack] --no-build : skipping cargo xwin build for {}", target.triple);
     }
 
-    let release_dir = PathBuf::from("target").join(TARGET).join("release");
+    let release_dir = PathBuf::from("target").join(target.triple).join("release");
     let exe = release_dir.join(EXE_NAME);
     let manifest = release_dir.join(MANIFEST_NAME);
     if !exe.exists() {
@@ -56,7 +87,7 @@ fn main() -> Result<()> {
         anyhow::bail!("manifest not found : {}", manifest.display());
     }
 
-    let stage_name = format!("SystemHealthAgent-{version}-aarch64");
+    let stage_name = format!("SystemHealthAgent-{version}-{}", target.arch_suffix);
     let dist_dir = PathBuf::from("target").join("dist");
     fs::create_dir_all(&dist_dir).context("mkdir target/dist")?;
 
@@ -84,7 +115,7 @@ fn main() -> Result<()> {
         count += 1;
     }
 
-    // Optional convenience .bat scripts (Activer/Desactiver + Nettoyer).
+    // Optional convenience .bat scripts (Activer/Desactiver + Nettoyer + Reset-Clean).
     // Silently skipped if missing so the pack still succeeds for a
     // scripts-less checkout.
     let scripts_dir = PathBuf::from("scripts");

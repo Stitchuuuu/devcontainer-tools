@@ -29,20 +29,21 @@ pub fn run() -> Result<()> {
     let outcome = Arc::new(Mutex::new(Outcome::Cancelled));
     let outcome_clone = outcome.clone();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([480.0, 280.0])
+        .with_resizable(false);
+    if let Some(icon) = crate::modes::config::decoration::load_cat_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([480.0, 280.0])
-            .with_resizable(false),
+        viewport,
         ..Default::default()
     };
 
     eframe::run_native(
         "Windows Session Health Service — First run",
         options,
-        Box::new(move |cc| {
-            apply_shared_bg(&cc.egui_ctx);
-            Ok(Box::new(WizardApp::new(outcome_clone)))
-        }),
+        Box::new(move |_cc| Ok(Box::new(WizardApp::new(outcome_clone)))),
     )
     .map_err(|e| anyhow!("eframe: {e}"))?;
 
@@ -58,20 +59,6 @@ pub fn run() -> Result<()> {
             // which the install flow reads as "cancelled → rollback".
             Err(anyhow!("wizard cancelled"))
         }
-    }
-}
-
-/// Egui-default dark theme paints `panel_fill` as `Color32::from_gray(27)`
-/// which the popup/wizard user reports as "too dark, inputs vanish".
-/// Bump it a couple stops lighter across the wizard / passcode gate /
-/// uninstall dialog so the three passcode-adjacent windows share a
-/// consistent, slightly lighter background — the default black
-/// `extreme_bg_color` of `TextEdit` then contrasts as visible boxes.
-fn apply_shared_bg(ctx: &egui::Context) {
-    for theme in [egui::Theme::Dark, egui::Theme::Light] {
-        ctx.style_mut_of(theme, |s| {
-            s.visuals.panel_fill = egui::Color32::from_gray(48);
-        });
     }
 }
 
@@ -114,9 +101,11 @@ impl WizardApp {
 
 impl eframe::App for WizardApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Central panel body has no margin by default (per eframe docs) —
-        // wrap in a Frame with a generous inner margin so the content
-        // doesn't hug the window edge.
+        // Wrap in CentralPanel so the default panel_fill actually paints
+        // the viewport bg — bare App::ui + Frame::new() would show the
+        // wgpu clear color (near-black), inconsistent with the Config UI
+        // which uses CentralPanel and paints the default dark gray.
+        egui::CentralPanel::default().show(ui, |ui| {
         egui::Frame::new().inner_margin(24).show(ui, |ui| {
             ui.heading("Choose your passcode");
             ui.add_space(6.0);
@@ -163,6 +152,18 @@ impl eframe::App for WizardApp {
                 {
                     match self.save() {
                         Ok(()) => {
+                            // Grant ASFW_ANY BEFORE closing : the wizard is
+                            // the foreground process right now, so the call
+                            // succeeds and lets the install-flow parent
+                            // (or its next-spawned config UI child) take
+                            // foreground when the wizard exits.
+                            #[cfg(windows)]
+                            unsafe {
+                                use windows::Win32::UI::WindowsAndMessaging::{
+                                    AllowSetForegroundWindow, ASFW_ANY,
+                                };
+                                let _ = AllowSetForegroundWindow(ASFW_ANY);
+                            }
                             *self.outcome.lock().unwrap() = Outcome::Saved;
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -175,5 +176,6 @@ impl eframe::App for WizardApp {
                 }
             });
         });
+        }); // CentralPanel
     }
 }

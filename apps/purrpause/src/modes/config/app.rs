@@ -57,7 +57,11 @@ pub fn run() -> Result<()> {
         .with_title(CONFIG_WINDOW_TITLE)
         .with_inner_size([WINDOW_W, WINDOW_H])
         .with_min_inner_size([MIN_W, MIN_H])
-        .with_resizable(true);
+        .with_resizable(true)
+        // Ensure the window opens focused. Combined with the install flow's
+        // AllowSetForegroundWindow(ASFW_ANY) call before spawn, this works
+        // around Windows' anti-focus-stealing policy on parent→child spawn.
+        .with_active(true);
 
     if let Some(icon) = load_cat_icon() {
         viewport = viewport.with_icon(icon);
@@ -93,16 +97,6 @@ pub fn run() -> Result<()> {
         options,
         Box::new(move |cc| {
             tracing::info!("config UI: eframe CreationContext fired");
-
-            // Slightly lighter panel bg so the passcode gate, tabs and
-            // uninstall dialog inside this window read consistently
-            // with the wizard + standalone uninstall dialog (which
-            // apply the same override in their own CreationContext).
-            for theme in [egui::Theme::Dark, egui::Theme::Light] {
-                cc.egui_ctx.style_mut_of(theme, |s| {
-                    s.visuals.panel_fill = egui::Color32::from_gray(48);
-                });
-            }
 
             // The config UI runs elevated (inherited UAC token from the
             // double-clicked exe). Explorer typically runs as the normal
@@ -177,6 +171,7 @@ struct ConfigApp {
     cfg: Config,
     screen: Screen,
     watermark: Option<egui::TextureHandle>,
+    focus_requested: bool,
 }
 
 impl ConfigApp {
@@ -185,22 +180,36 @@ impl ConfigApp {
             cfg,
             screen: Screen::Passcode(PasscodeState::new()),
             watermark,
+            focus_requested: false,
         }
     }
 }
 
 impl eframe::App for ConfigApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // First-frame focus request : belt-and-braces alongside
+        // ViewportBuilder::with_active(true). Windows' anti-focus-stealing
+        // policy sometimes rejects with_active — the explicit Focus command
+        // succeeds when the install-flow's ASFW_ANY grant is still fresh.
+        if !self.focus_requested {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.focus_requested = true;
+        }
+        // The Tabs screen has its own CentralPanel inside tabs::ui.
+        // The Passcode + in-config Uninstall screens need one here so
+        // panel_fill paints their viewport uniformly with the Tabs bg.
         let action = match &mut self.screen {
             Screen::Passcode(state) => {
-                if let Some(tex) = self.watermark.as_ref() {
-                    paint_watermark(ui, tex);
-                }
-                let mut inner_action: Option<Action> = None;
-                egui::Frame::new().inner_margin(20).show(ui, |ui| {
-                    inner_action = passcode::ui(ui, state, &self.cfg);
-                });
-                inner_action
+                egui::CentralPanel::default().show(ui, |ui| {
+                    if let Some(tex) = self.watermark.as_ref() {
+                        paint_watermark(ui, tex);
+                    }
+                    let mut inner_action: Option<Action> = None;
+                    egui::Frame::new().inner_margin(20).show(ui, |ui| {
+                        inner_action = passcode::ui(ui, state, &self.cfg);
+                    });
+                    inner_action
+                }).inner
             }
             Screen::Tabs(state) => {
                 match tabs::ui(ui, state, &mut self.cfg, self.watermark.as_ref()) {
@@ -213,14 +222,16 @@ impl eframe::App for ConfigApp {
                 }
             }
             Screen::Uninstall(state) => {
-                if let Some(tex) = self.watermark.as_ref() {
-                    paint_watermark(ui, tex);
-                }
-                let mut inner_action: Option<Action> = None;
-                egui::Frame::new().inner_margin(20).show(ui, |ui| {
-                    inner_action = tabs::ui_uninstall(ui, state, &self.cfg);
-                });
-                inner_action
+                egui::CentralPanel::default().show(ui, |ui| {
+                    if let Some(tex) = self.watermark.as_ref() {
+                        paint_watermark(ui, tex);
+                    }
+                    let mut inner_action: Option<Action> = None;
+                    egui::Frame::new().inner_margin(20).show(ui, |ui| {
+                        inner_action = tabs::ui_uninstall(ui, state, &self.cfg);
+                    });
+                    inner_action
+                }).inner
             }
         };
 

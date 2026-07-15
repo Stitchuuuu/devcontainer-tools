@@ -274,19 +274,44 @@ fn write_preview_override(cfg: &Config) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Ceil-minutes from now to the next popup fire time, given the current
-/// slider value. Uses runtime.dat if present (usual case, mirrors the
-/// service's reload clamp) ; falls back to `now + interval` if absent.
+/// Thin I/O wrapper : reads current wall clock + runtime.dat and calls
+/// the pure kernel [`scheduler::preview_minutes`].
 fn next_popup_preview_minutes(interval_hours: f32) -> u64 {
     let now = SystemTime::now();
     let interval = Duration::from_secs((interval_hours * 3600.0).round() as u64);
-    let next = match runtime_dat::read() {
-        Some(lp) => scheduler::next_popup_after_reload(now, lp, interval),
-        None => now + interval,
+    scheduler::preview_minutes(now, runtime_dat::read(), interval)
+}
+
+/// Builds the parenthesised suffix shown after "dans X min", explaining
+/// the schedule anchor. `runtime.dat` present → "(basé sur dernier popup
+/// à HH:MM)" ; absent → "(depuis l'installation)".
+fn preview_anchor_suffix() -> String {
+    match runtime_dat::read() {
+        Some(lp) => match format_local_hhmm(lp) {
+            Some(s) => format!("(basé sur dernier popup à {})", s),
+            None => String::from("(basé sur dernier popup)"),
+        },
+        None => String::from("(depuis l'installation)"),
+    }
+}
+
+fn format_local_hhmm(t: SystemTime) -> Option<String> {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+
+    let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    // Windows FILETIME = 100-ns intervals since 1601-01-01. Offset from
+    // UNIX_EPOCH (1970-01-01) is 11644473600 seconds.
+    let ft_hundred_ns: u64 = (secs + 11_644_473_600) * 10_000_000;
+    let ft = FILETIME {
+        dwLowDateTime: (ft_hundred_ns & 0xFFFF_FFFF) as u32,
+        dwHighDateTime: (ft_hundred_ns >> 32) as u32,
     };
-    let delta = next.duration_since(now).unwrap_or(Duration::ZERO);
-    // Ceil so "dans 0 min" never appears when the clamp actually holds.
-    (delta.as_secs() + 59) / 60
+    let mut utc_st = SYSTEMTIME::default();
+    unsafe { FileTimeToSystemTime(&ft, &mut utc_st).ok()? };
+    let mut local_st = SYSTEMTIME::default();
+    unsafe { SystemTimeToTzSpecificLocalTime(None, &utc_st, &mut local_st).ok()? };
+    Some(format!("{:02}:{:02}", local_st.wHour, local_st.wMinute))
 }
 
 fn ui_general(ui: &mut egui::Ui, cfg: &mut Config, dirty: &mut bool) {
@@ -315,9 +340,15 @@ fn ui_general(ui: &mut egui::Ui, cfg: &mut Config, dirty: &mut bool) {
     // Live "prochain contrôle" preview — mirrors the service's reload
     // clamp so the user can see the effect of a slider change before
     // saving. Truthful when runtime.dat exists (usual case) ; falls
-    // back to a bare `now + interval` otherwise.
+    // back to a bare `now + interval` otherwise. The anchor suffix
+    // explains why the countdown can appear shorter than the interval
+    // itself (session 8 D-3 anti-cheat : `next = last_popup + interval`).
     let preview_min = next_popup_preview_minutes(cfg.interval_hours);
-    ui.label(format!("Prochain contrôle : dans {} min", preview_min));
+    let anchor_suffix = preview_anchor_suffix();
+    ui.label(format!(
+        "Prochain contrôle : dans {} min {}",
+        preview_min, anchor_suffix
+    ));
 
     ui.horizontal(|ui| {
         ui.label("Durée d'une pause :");
