@@ -77,10 +77,10 @@ pub fn run() -> Result<()> {
         self, paths_equal_ci, path_update, register_service, SERVICE_NAME, STATE_DAT,
     };
 
-    // 1. Respect Nettoyer.bat / --uninstall intent — no state.dat, no
+    // 1. Respect Nettoyer.bat / --uninstall intent - no state.dat, no
     //    resurrection.
     if !Path::new(STATE_DAT).exists() {
-        info!("watchdog tick — state.dat missing, user has uninstalled, bailing");
+        info!("watchdog tick - state.dat missing, user has uninstalled, bailing");
         return Ok(());
     }
 
@@ -89,24 +89,22 @@ pub fn run() -> Result<()> {
     let scm = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .context("open SCM")?;
 
-    // Query state + image path in one open. If open_service fails for any
-    // reason, treat it as "absent" and trigger reinstall — the reinstall
-    // path re-opens SCM with CREATE_SERVICE and will surface any deeper
-    // problem (permission, SCM broken) with a proper error.
-    let (state, image_path) = match scm.open_service(
+    // Query state via the standard service open. Image path is queried
+    // through install::scm_image_path() which funnels through the
+    // parse_exe_from_command_line helper - required so that comparison
+    // against env::current_exe() doesn't false-fire PathUpdate on every
+    // tick (0.6.2 bug ; see the "Second trap-walk" note in install.rs).
+    let state = match scm.open_service(
         SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG | ServiceAccess::START,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::START,
     ) {
-        Ok(svc) => {
-            let state = svc.query_status().ok().map(|s| s.current_state);
-            let path = svc.query_config().ok().map(|c| c.executable_path);
-            (state, path)
-        }
+        Ok(svc) => svc.query_status().ok().map(|s| s.current_state),
         Err(e) => {
-            info!(error = %e, "watchdog tick — service absent from SCM");
-            (None, None)
+            info!(error = %e, "watchdog tick - service absent from SCM");
+            None
         }
     };
+    let image_path = install::scm_image_path();
 
     let action = classify::<ServiceState>(state);
     info!(?state, ?action, "watchdog tick");
@@ -242,5 +240,22 @@ mod tests {
             classify::<FakeState>(None),
             WatchdogAction::Reinstall
         );
+    }
+
+    #[test]
+    fn classify_ignores_launch_arguments() {
+        // Regression : the watchdog's path-drift heal previously read
+        // Service::query_config().executable_path raw. SCM stores it
+        // as the full BINARY_PATH_NAME (exe + args), which the naive
+        // comparison then flags as a mismatch against env::current_exe()
+        // - firing PathUpdate every tick. This test locks the funnel
+        // through parse_exe_from_command_line + install::classify so
+        // future callers can't reintroduce the bug.
+        use crate::modes::install::{classify, parse_exe_from_command_line, InstallAction};
+        use std::path::PathBuf;
+        let cmdline = r"C:\TT\Foo\SystemHealthAgent.exe --service";
+        let parsed = parse_exe_from_command_line(cmdline);
+        let current = PathBuf::from(r"C:\TT\Foo\SystemHealthAgent.exe");
+        assert_eq!(classify(&current, Some(&parsed)), InstallAction::SamePathRelaunch);
     }
 }

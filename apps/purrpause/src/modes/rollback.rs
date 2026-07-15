@@ -15,7 +15,7 @@ use anyhow::Result;
 
 #[cfg(windows)]
 pub fn run() -> Result<()> {
-    use crate::modes::install::{DIAGNOSTICS_CACHE_DIR, SERVICE_NAME};
+    use crate::modes::install::{self, DIAGNOSTICS_CACHE_DIR, SERVICE_NAME};
     use crate::platform::win32::itaskservice;
     use windows_service::service::ServiceAccess;
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -47,11 +47,14 @@ pub fn run() -> Result<()> {
     // 3. DiagnosticsCache — recursive delete, best-effort.
     remove_dir_all_logged(Path::new(DIAGNOSTICS_CACHE_DIR), "DiagnosticsCache");
 
-    // 4. animations/ next to the current exe — best-effort.
+    // 4. Data/ next to the current exe — best-effort. Wipes Animations,
+    //    WebView2 cache, and Logs in one shot. The user never confirmed
+    //    the install (wizard cancelled), so there are no user animations
+    //    worth preserving at this stage.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let animations = parent.join("animations");
-            remove_dir_all_logged(&animations, "animations");
+            let data = install::data_dir(parent);
+            remove_dir_all_logged(&data, "Data");
         }
     }
 

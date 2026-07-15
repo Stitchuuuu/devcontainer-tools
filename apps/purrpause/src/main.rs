@@ -18,6 +18,11 @@ mod modes;
 mod password;
 mod platform;
 mod scheduler;
+#[cfg(test)]
+mod tracing_lint;
+#[cfg(test)]
+#[path = "../build_support/versioninfo.rs"]
+mod versioninfo_test;
 
 use std::process::ExitCode;
 
@@ -129,6 +134,10 @@ fn init_tracing(mode: &Mode) {
     // under windows_subsystem = "windows" — route to a file next to the
     // exe so tracing survives long enough to diagnose crashes. Falls
     // back to stderr on any error (dead pipe, but harmless).
+    //
+    // Landing dir is `<exe_dir>/Data/Logs/` so the exe folder stays
+    // clean ; create_dir_all runs BEFORE opening the appender because
+    // on first install Data/Logs/ doesn't exist yet.
     #[cfg(windows)]
     if matches!(
         mode,
@@ -139,7 +148,9 @@ fn init_tracing(mode: &Mode) {
     ) {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                let appender = tracing_appender::rolling::daily(dir, "widget.log");
+                let log_dir = modes::install::logs_dir(dir);
+                let _ = std::fs::create_dir_all(&log_dir);
+                let appender = tracing_appender::rolling::daily(&log_dir, "widget.log");
                 let _ = fmt()
                     .with_env_filter(filter)
                     .with_target(false)
@@ -153,8 +164,10 @@ fn init_tracing(mode: &Mode) {
 
     // Install-flow modes (InstallOrConfig, Rollback, Uninstall) also
     // run without a console under `windows_subsystem = "windows"`.
-    // Route them to `install.log.YYYY-MM-DD` next to the exe so any
-    // failure during the 10-step install is diagnosable after the fact.
+    // Route them to `<exe_dir>/Data/Logs/install.log.YYYY-MM-DD` so
+    // any failure during the 10-step install is diagnosable after the
+    // fact. First-run creates Data/Logs/ ahead of the appender open
+    // (chicken-and-egg : install mode logs its OWN creation of Data/).
     #[cfg(windows)]
     if matches!(
         mode,
@@ -162,7 +175,9 @@ fn init_tracing(mode: &Mode) {
     ) {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                let appender = tracing_appender::rolling::daily(dir, "install.log");
+                let log_dir = modes::install::logs_dir(dir);
+                let _ = std::fs::create_dir_all(&log_dir);
+                let appender = tracing_appender::rolling::daily(&log_dir, "install.log");
                 let _ = fmt()
                     .with_env_filter(filter)
                     .with_target(false)

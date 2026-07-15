@@ -168,15 +168,15 @@ pub fn spawn_local(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Copy `src` into `<exe_dir>/resources/animations/`, sanitize in-place,
-/// return `(relative_path_under_resources, display_name)`.
+/// Copy `src` into `<exe_dir>/Data/Animations/`, sanitize in-place,
+/// return `(relative_path_under_protocol_namespace, display_name)`. The
+/// returned relative path is `animations/<file>` — the protocol
+/// namespace path served by the custom protocol handler, not a disk
+/// path. Disk layout is `<exe_dir>/Data/Animations/<file>`.
 pub fn ingest_lottie(src: &Path) -> Result<(String, String)> {
     let exe = std::env::current_exe().map_err(|e| anyhow!("current_exe: {e}"))?;
-    let dest_dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("exe has no parent"))?
-        .join("resources")
-        .join("animations");
+    let exe_parent = exe.parent().ok_or_else(|| anyhow!("exe has no parent"))?;
+    let dest_dir = crate::modes::install::animations_dir(exe_parent);
     std::fs::create_dir_all(&dest_dir).map_err(|e| anyhow!("mkdir {dest_dir:?}: {e}"))?;
 
     let file_name = src

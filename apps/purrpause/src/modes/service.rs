@@ -57,7 +57,6 @@ mod win {
     const TICK_INTERVAL: Duration = Duration::from_secs(5);
     const DEBOUNCE: Duration = Duration::from_millis(300);
     const RUNTIME_DAT: &str = r"C:\ProgramData\DiagnosticsCache\runtime.dat";
-    const COLD_START_GRACE: Duration = Duration::from_secs(60);
     const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
     #[derive(Debug, Clone, Copy)]
@@ -79,7 +78,7 @@ mod win {
         match result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => tracing::error!(error = ?e, "service exited with error"),
-            Err(_) => tracing::error!("service main panicked — SCM watchdog will restart"),
+            Err(_) => tracing::error!("service main panicked - SCM watchdog will restart"),
         }
     }
 
@@ -103,7 +102,22 @@ mod win {
         let state_path = PathBuf::from(STATE_DAT);
         let mut config = config::load_or_default(&state_path);
         let now = SystemTime::now();
-        let mut last_popup = read_runtime_dat().unwrap_or_else(|| initial_last_popup(now, &config));
+        let runtime_last = read_runtime_dat();
+        let had_runtime = runtime_last.is_some();
+        let mut last_popup = scheduler::resolve_last_popup(
+            scheduler::ResolveInputs {
+                now,
+                last_popup: runtime_last,
+                first_install_at: config.first_install_at(),
+                is_reload: false,
+            },
+            &config,
+        );
+        // Persist the resolved timestamp so a mid-cycle restart doesn't
+        // re-enter the migration branch and re-derive from scratch.
+        if !had_runtime {
+            let _ = write_runtime_dat(last_popup);
+        }
         let mut fired = scheduler::derive_already_fired(now, &config, last_popup);
         tracing::info!(
             initial_paliers_fired = ?fired,
@@ -178,11 +192,31 @@ mod win {
                     tracing::info!("config reload triggered");
                     let state_path = PathBuf::from(STATE_DAT);
                     *config = config::load_or_default(&state_path);
-                    *fired = scheduler::derive_already_fired(
-                        SystemTime::now(),
+                    let now = SystemTime::now();
+                    // If the user reduced interval_hours enough that
+                    // `last_popup + new_interval` lands in the past
+                    // (or within RELOAD_MIN_GRACE), bump last_popup
+                    // forward so the next popup fires at now+5min
+                    // rather than instantly on Save.
+                    let clamped = scheduler::resolve_last_popup(
+                        scheduler::ResolveInputs {
+                            now,
+                            last_popup: Some(*last_popup),
+                            first_install_at: config.first_install_at(),
+                            is_reload: true,
+                        },
                         config,
-                        *last_popup,
                     );
+                    if clamped != *last_popup {
+                        tracing::info!(
+                            old_last = ?*last_popup,
+                            new_last = ?clamped,
+                            "reload: interval reduced, clamping last_popup forward",
+                        );
+                        *last_popup = clamped;
+                        let _ = write_runtime_dat(*last_popup);
+                    }
+                    *fired = scheduler::derive_already_fired(now, config, *last_popup);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Err(e) = maybe_fire(config, last_popup, fired, exe) {
@@ -236,7 +270,7 @@ mod win {
                 Ok(())
             }
             Err(e) => {
-                tracing::warn!(error = ?e, "popup spawn failed — will retry on next tick");
+                tracing::warn!(error = ?e, "popup spawn failed - will retry on next tick");
                 Err(e)
             }
         }
@@ -389,17 +423,6 @@ mod win {
         std::fs::rename(&tmp, path)
             .with_context(|| format!("rename to {}", path.display()))?;
         Ok(())
-    }
-
-    fn initial_last_popup(now: SystemTime, config: &Config) -> SystemTime {
-        // Cold-start grace : pretend the previous popup fired
-        // `interval - 60s` ago, so the first cycle after boot is a full
-        // interval minus one minute. Prevents an immediate popup on
-        // every service restart (which would let a child game the app
-        // by killing the service).
-        let interval = scheduler::interval(config);
-        let shifted = interval.saturating_sub(COLD_START_GRACE);
-        now.checked_sub(shifted).unwrap_or(now)
     }
 
     fn running() -> ServiceStatus {

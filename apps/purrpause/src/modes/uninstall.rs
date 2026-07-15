@@ -51,14 +51,35 @@ fn verify_passcode_against_hash(input: &str, hash: &str) -> Result<bool> {
     crate::password::verify(input, hash).map_err(Into::into)
 }
 
-/// Predicate : is `name` one of our tracing-appender rolling files ?
-/// `install.log.YYYY-MM-DD` (install / rollback / uninstall bucket) or
-/// `widget.log.YYYY-MM-DD` (popup / countdown / config bucket). Used
-/// by the teardown to schedule stale logs for delete-on-reboot without
-/// touching unrelated files the user may have dropped in the exe dir.
-fn is_our_rolling_log(name: &str) -> bool {
-    (name.starts_with("install.log.") || name.starts_with("widget.log."))
-        && name.len() > "install.log.".len()
+/// Post-order walk of a directory tree : yields every child before its
+/// containing directory, deepest first. The root itself is the last
+/// entry. Extracted as a pure fn so the ordering can be unit-tested on
+/// Linux ; the Windows `schedule_delete_tree` consumer relies on this
+/// order because `MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT)` refuses
+/// non-empty directories at boot cleanup time.
+///
+/// Missing / unreadable paths yield an empty vector rather than an
+/// error - callers are best-effort.
+fn collect_tree_post_order(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    return out;
+
+    fn walk(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        walk(&entry.path(), out);
+                    }
+                }
+            }
+        } else {
+            // Missing — nothing to schedule (root case).
+            return;
+        }
+        out.push(path.to_path_buf());
+    }
 }
 
 #[cfg(windows)]
@@ -78,7 +99,7 @@ mod win {
         // --uninstall run) already cleaned up. Show a friendly note and
         // exit instead of prompting for a passcode that doesn't exist.
         if !Path::new(STATE_DAT).exists() {
-            info!("state.dat missing — nothing to uninstall");
+            info!("state.dat missing - nothing to uninstall");
             show_info("Désinstallation", "Rien à désinstaller : la configuration a déjà été supprimée.");
             return Ok(());
         }
@@ -240,7 +261,7 @@ mod win {
         // Step 3 — delete the SCM entry with backoff.
         match delete_service_with_retry() {
             Ok(()) => info!("teardown[3]: SCM entry deleted"),
-            Err(e) => warn!(error = %e, "teardown[3]: SCM delete failed — service may reappear at boot"),
+            Err(e) => warn!(error = %e, "teardown[3]: SCM delete failed - service may reappear at boot"),
         }
 
         // Step 4 — delete the scheduled task (idempotent helper).
@@ -301,37 +322,23 @@ mod win {
     fn wipe_exe_dir_side_files(exe: &Path) {
         let Some(dir) = exe.parent() else { return };
 
-        let animations = dir.join("animations");
-        if animations.exists() {
-            match std::fs::remove_dir_all(&animations) {
-                Ok(()) => info!(path = %animations.display(), "teardown[5.5]: animations/ wiped"),
-                Err(e) => warn!(error = %e, path = %animations.display(), "teardown[5.5]: animations/ wipe failed"),
-            }
-        }
-
-        let webview_name = format!(
-            "{}.WebView2",
-            exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        );
-        let webview = dir.join(&webview_name);
-        if webview.exists() {
-            match std::fs::remove_dir_all(&webview) {
-                Ok(()) => info!(path = %webview.display(), "teardown[5.5]: WebView2 cache wiped"),
-                Err(e) => warn!(error = %e, path = %webview.display(), "teardown[5.5]: WebView2 wipe failed"),
-            }
-        }
-
-        // Rolling log files : install.log.YYYY-MM-DD (this mode's log,
-        // written to LIVE by tracing_appender) + widget.log.YYYY-MM-DD
-        // (from prior popup/countdown/config runs). Scheduled for
-        // delete-on-reboot to sidestep the open-handle problem.
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if super::is_our_rolling_log(&name.to_string_lossy()) {
-                    let path = entry.path();
-                    if let Err(e) = schedule_self_delete(&path) {
-                        warn!(error = %e, path = %path.display(), "teardown[5.5]: log delete schedule failed");
+        // Everything runtime-generated lives under Data/ (Animations,
+        // WebView2 cache, Logs). One recursive wipe replaces the old
+        // three-branch enumeration. If WebView2 workers still hold
+        // handles, remove_dir_all returns error 32 - schedule the tree
+        // for delete-on-reboot as fallback.
+        let data = install::data_dir(dir);
+        if data.exists() {
+            match std::fs::remove_dir_all(&data) {
+                Ok(()) => info!(path = %data.display(), "teardown[5.5]: Data/ wiped"),
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        path = %data.display(),
+                        "teardown[5.5]: Data/ live-wipe failed, scheduling reboot delete",
+                    );
+                    if let Err(e2) = schedule_delete_tree(&data) {
+                        warn!(error = %e2, "teardown[5.5]: Data/ tree schedule failed");
                     }
                 }
             }
@@ -443,6 +450,29 @@ mod win {
         Ok(())
     }
 
+    /// Recursively schedule every entry of `root` for delete-on-reboot,
+    /// then schedule `root` itself. Children before their parent because
+    /// Windows refuses to reboot-delete a non-empty directory. Used as
+    /// fallback when a live `remove_dir_all` fails (e.g. WebView2
+    /// workers still holding handles). Best-effort throughout - a
+    /// failed schedule on one entry doesn't abort the sweep.
+    pub(crate) fn schedule_delete_tree(root: &Path) -> Result<()> {
+        let entries = super::collect_tree_post_order(root);
+        let mut scheduled = 0usize;
+        for path in &entries {
+            if schedule_self_delete(path).is_ok() {
+                scheduled += 1;
+            }
+        }
+        info!(
+            root = %root.display(),
+            scheduled,
+            total = entries.len(),
+            "scheduled tree for delete-on-reboot",
+        );
+        Ok(())
+    }
+
     // Helper because Path::with_extension doesn't handle "add sidecar
     // extension" for exe paths like we want ; e.g. `foo.exe.manifest`
     // sits alongside `foo.exe` — not `foo.manifest`.
@@ -494,13 +524,6 @@ mod win {
         }
     }
 
-    // Keep the reference to install so unused-import warnings don't fire
-    // when only `SERVICE_NAME` / `STATE_DAT` / `DIAGNOSTICS_CACHE_DIR`
-    // are used (they are, via the top imports — this is a paranoia note).
-    #[allow(dead_code)]
-    fn _install_ref() {
-        let _ = install::SERVICE_NAME;
-    }
 }
 
 #[cfg(test)]
@@ -520,26 +543,41 @@ mod tests {
     }
 
     #[test]
-    fn is_rolling_log_matches_dated_install_log() {
-        assert!(is_our_rolling_log("install.log.2026-07-15"));
+    fn walk_order_files_first_then_dirs_bottom_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("a").join("b")).unwrap();
+        std::fs::write(root.join("a").join("b").join("leaf.txt"), b"x").unwrap();
+        std::fs::write(root.join("a").join("mid.txt"), b"y").unwrap();
+
+        let order = collect_tree_post_order(root);
+        let pos = |suffix: &str| -> usize {
+            order
+                .iter()
+                .position(|p| p.strip_prefix(root).unwrap() == std::path::Path::new(suffix))
+                .expect("entry not in walk")
+        };
+        // leaf before its dir, mid file before its dir, deep dir before shallow.
+        assert!(pos("a/b/leaf.txt") < pos("a/b"));
+        assert!(pos("a/mid.txt") < pos("a"));
+        assert!(pos("a/b") < pos("a"));
+        // Root itself is the very last entry.
+        assert_eq!(order.last().unwrap(), root);
     }
 
     #[test]
-    fn is_rolling_log_matches_dated_widget_log() {
-        assert!(is_our_rolling_log("widget.log.2026-07-15"));
+    fn walk_empty_tree_yields_only_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let order = collect_tree_post_order(tmp.path());
+        assert_eq!(order.len(), 1);
+        assert_eq!(order[0], tmp.path());
     }
 
     #[test]
-    fn is_rolling_log_rejects_undated_log() {
-        // tracing_appender::rolling::daily always writes with a date
-        // suffix — a bare "install.log" wasn't ours ; leave it alone.
-        assert!(!is_our_rolling_log("install.log"));
-    }
-
-    #[test]
-    fn is_rolling_log_rejects_unrelated_names() {
-        assert!(!is_our_rolling_log("something-else.log.2026-07-15"));
-        assert!(!is_our_rolling_log("Activer-Desactiver.bat"));
-        assert!(!is_our_rolling_log("SystemHealthAgent.exe"));
+    fn walk_missing_root_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ghost = tmp.path().join("does-not-exist");
+        let order = collect_tree_post_order(&ghost);
+        assert!(order.is_empty());
     }
 }

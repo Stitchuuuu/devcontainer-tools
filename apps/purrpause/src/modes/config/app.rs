@@ -113,7 +113,7 @@ pub fn run() -> Result<()> {
     );
     match run_result {
         Ok(()) => {
-            tracing::info!("config UI: eframe returned Ok — window closed");
+            tracing::info!("config UI: eframe returned Ok - window closed");
             Ok(())
         }
         Err(e) => {

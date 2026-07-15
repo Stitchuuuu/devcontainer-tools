@@ -83,6 +83,25 @@ pub struct Config {
 
     #[serde(default)]
     pub disabled: bool,
+
+    /// Unix-epoch seconds stamp of the moment `fresh_install` wrote the
+    /// initial state.dat. Sentinel `0` = unknown (migrated 0.6.x install
+    /// OR state.dat manually deleted). Used by the scheduler to detect
+    /// a *genuine* fresh install and grant the "full first interval"
+    /// grace instead of the anti-cheat cold-start shift. Kept as `u64`
+    /// rather than `SystemTime` because the `toml` crate has no native
+    /// serde bridge for it - epoch seconds round-trip trivially.
+    #[serde(default)]
+    pub first_install_at_epoch_secs: u64,
+}
+
+impl Config {
+    /// Interpret [`Self::first_install_at_epoch_secs`] as a `SystemTime`.
+    /// Returns [`std::time::UNIX_EPOCH`] on the sentinel value `0`.
+    pub fn first_install_at(&self) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(self.first_install_at_epoch_secs)
+    }
 }
 
 impl Default for Config {

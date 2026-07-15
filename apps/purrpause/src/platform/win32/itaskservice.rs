@@ -56,7 +56,7 @@ pub fn delete_watchdog() -> Result<()> {
         let folder = match get_folder(&service, FOLDER_PATH) {
             Ok(f) => f,
             Err(_) => {
-                tracing::debug!("watchdog folder not found — nothing to delete");
+                tracing::debug!("watchdog folder not found - nothing to delete");
                 return Ok(());
             }
         };
@@ -168,6 +168,14 @@ fn task_xml(exe_path: &Path) -> String {
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </LogonTrigger>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -232,5 +240,21 @@ mod tests {
         assert!(xml.contains("<Hidden>true</Hidden>"));
         assert!(xml.contains("S-1-5-18")); // SYSTEM SID
         assert!(xml.contains("<Interval>PT1M</Interval>"));
+    }
+
+    #[test]
+    fn task_xml_contains_both_triggers() {
+        // Bug #4 regression : LogonTrigger alone means the task never
+        // fires when the user is already logged in at install time,
+        // because LogonTrigger's initial fire event has already passed.
+        // TimeTrigger with a past StartBoundary + PT1M repetition
+        // catches the mid-session install case and makes the watchdog
+        // tick immediately.
+        let xml = task_xml(&PathBuf::from(r"C:\x\SystemHealthAgent.exe"));
+        assert!(xml.contains("<LogonTrigger>"));
+        assert!(xml.contains("<TimeTrigger>"));
+        assert!(xml.contains("<StartBoundary>2020-01-01T00:00:00</StartBoundary>"));
+        // Both triggers must have the PT1M repetition.
+        assert_eq!(xml.matches("<Interval>PT1M</Interval>").count(), 2);
     }
 }

@@ -1,8 +1,9 @@
 @echo off
+chcp 65001 >nul
 setlocal
 title Activer / Desactiver le service
 
-:: Auto-elevate to admin — sc.exe start/stop needs it.
+:: Auto-elevate to admin - sc.exe start/stop needs it.
 NET SESSION >nul 2>&1
 if %errorlevel% NEQ 0 (
   echo Elevation requise, ouverture UAC...

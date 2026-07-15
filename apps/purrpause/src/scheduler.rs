@@ -20,6 +20,116 @@ const MAX_INTERVAL_HOURS: f32 = 168.0;
 
 const DEFAULT_INTERVAL_HOURS: f32 = 2.0;
 
+/// Anti-cheat: on a cold start where `runtime.dat` is missing but the
+/// install is not brand-new (migrated 0.6.x install, or the user
+/// manually deleted runtime.dat), pretend the previous popup fired
+/// `interval - COLD_START_GRACE` ago. The next popup then fires in
+/// exactly `COLD_START_GRACE`, so a child can't reset the timer by
+/// killing the service.
+pub const COLD_START_GRACE: Duration = Duration::from_secs(60);
+
+/// Fresh-install grace window: `runtime.dat` missing AND
+/// `first_install_at` within this many seconds of now = "user just
+/// installed, respect the full interval, don't shorten to 60 s."
+pub const FRESH_INSTALL_GRACE: Duration = Duration::from_secs(300);
+
+/// Reload clamp: when the user reduces `interval_hours` mid-cycle, the
+/// scheduler bumps `last_popup` forward so the next popup fires at
+/// least this many seconds from now. Keeps a reduced interval from
+/// firing instantly on Save.
+pub const RELOAD_MIN_GRACE: Duration = Duration::from_secs(300);
+
+/// Inputs for [`resolve_last_popup`] - the decision that answers "what
+/// value should `last_popup` hold right now given cold-start context /
+/// reload / fresh-install detection".
+///
+/// - `now` : wall clock at the decision moment.
+/// - `last_popup` : `None` when `runtime.dat` is missing, `Some(t)`
+///   otherwise.
+/// - `first_install_at` : from `Config::first_install_at()`. Sentinel
+///   `UNIX_EPOCH` means "unknown / migrated 0.6.x install."
+/// - `is_reload` : `true` only on IPC `Reload`. Switches the branch
+///   from cold-start decisions to the reduce-interval clamp.
+pub struct ResolveInputs {
+    pub now: SystemTime,
+    pub last_popup: Option<SystemTime>,
+    pub first_install_at: SystemTime,
+    pub is_reload: bool,
+}
+
+/// Decide what `last_popup` should hold given cold-start / reload /
+/// fresh-install context. Pure : no I/O, no globals. See
+/// [`ResolveInputs`] for parameter semantics.
+///
+/// The three decision branches :
+/// 1. **Reload with reduced interval** : if the user shrank the
+///    interval and the naive `last_popup + new_interval` lands within
+///    the reload grace window, bump `last_popup` forward so the next
+///    popup fires at exactly `now + RELOAD_MIN_GRACE`.
+/// 2. **Cold start, no runtime.dat** : fresh install grace (returns
+///    `now` so the first popup fires in the full interval) or, when
+///    the sentinel indicates migrated install, the legacy anti-cheat
+///    shift.
+/// 3. **Cold start with runtime.dat** : if elapsed downtime exceeds
+///    `2 * interval` reset to `now` (long-downtime reset) ; else return
+///    `last_popup` unchanged.
+pub fn resolve_last_popup(inputs: ResolveInputs, config: &Config) -> SystemTime {
+    let ResolveInputs {
+        now,
+        last_popup,
+        first_install_at,
+        is_reload,
+    } = inputs;
+    let interval = interval(config);
+
+    // Branch 1 : Reload with (potentially) reduced interval.
+    if is_reload {
+        let lp = match last_popup {
+            Some(lp) => lp,
+            // Defensive : Reload before the service ever started
+            // shouldn't happen in practice ; treat as fresh install.
+            None => return now,
+        };
+        // Ensure `lp + interval >= now + RELOAD_MIN_GRACE`. If already
+        // satisfied, leave `lp` alone. Else clamp `lp` forward.
+        let next = lp + interval;
+        let floor = now + RELOAD_MIN_GRACE;
+        if next >= floor {
+            return lp;
+        }
+        // We want `lp' + interval == floor`, so `lp' = floor - interval`.
+        // saturating_sub via checked_sub for pre-epoch safety.
+        return floor.checked_sub(interval).unwrap_or(now);
+    }
+
+    // Branch 2 : Cold start with no runtime.dat.
+    let lp = match last_popup {
+        Some(lp) => lp,
+        None => {
+            // Fresh install detection : first_install_at is a real
+            // stamp AND recent enough.
+            if first_install_at != SystemTime::UNIX_EPOCH {
+                if let Ok(age) = now.duration_since(first_install_at) {
+                    if age < FRESH_INSTALL_GRACE {
+                        return now;
+                    }
+                }
+            }
+            // Migrated 0.6.x install OR runtime.dat manually deleted.
+            // Apply legacy anti-cheat shift.
+            let shift = interval.saturating_sub(COLD_START_GRACE);
+            return now.checked_sub(shift).unwrap_or(now);
+        }
+    };
+
+    // Branch 3 : Cold start with runtime.dat. Long-downtime reset.
+    let elapsed = now.duration_since(lp).unwrap_or(Duration::ZERO);
+    if elapsed >= interval.saturating_mul(2) {
+        return now;
+    }
+    lp
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SchedulerDecision {
     Nothing,
@@ -356,5 +466,249 @@ mod tests {
             next_event(now, &cfg, last, &fired),
             SchedulerDecision::Nothing
         );
+    }
+
+    // --- resolve_last_popup : 13 tests covering the full decision tree ---
+
+    #[test]
+    fn resolve_reload_no_reduction_leaves_last_popup_unchanged() {
+        // Interval 2h ; last popup 30min ago ; user reloads but didn't
+        // change interval. lp + 2h = now + 90min >> now + 5min ⇒ keep lp.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 30 * 60);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: true,
+            },
+            &cfg,
+        );
+        assert_eq!(got, lp);
+    }
+
+    #[test]
+    fn resolve_reload_reduced_interval_landing_in_past_clamps_to_now_plus_5min() {
+        // Interval reduced from 2h → 45min. Last popup 2h ago ⇒
+        // lp + 45min lands 75min in the past. Clamp to now + 5min.
+        let cfg = config_with(0.75, vec![], false); // 45 min
+        let now = epoch_plus(3 * 3600);
+        let lp = epoch_plus(3 * 3600 - 2 * 3600);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: true,
+            },
+            &cfg,
+        );
+        // got + 45min should equal now + 5min.
+        assert_eq!(got + Duration::from_secs(45 * 60), now + RELOAD_MIN_GRACE);
+    }
+
+    #[test]
+    fn resolve_reload_reduced_landing_within_5min_clamps_to_now_plus_5min() {
+        // Interval reduced to 45 min, lp was 42 min ago ⇒ next = now+3min.
+        // Under floor (5min) ⇒ clamp so next = now+5min.
+        let cfg = config_with(0.75, vec![], false);
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 42 * 60);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: true,
+            },
+            &cfg,
+        );
+        assert_eq!(got + Duration::from_secs(45 * 60), now + RELOAD_MIN_GRACE);
+    }
+
+    #[test]
+    fn resolve_reload_reduced_still_beyond_5min_no_clamp() {
+        // 45 min interval, lp 30 min ago ⇒ next = now+15min. Above floor ⇒ keep lp.
+        let cfg = config_with(0.75, vec![], false);
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 30 * 60);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: true,
+            },
+            &cfg,
+        );
+        assert_eq!(got, lp);
+    }
+
+    #[test]
+    fn resolve_fresh_install_within_grace_returns_now() {
+        // first_install_at 30s ago, no runtime.dat ⇒ genuine fresh install.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let now = epoch_plus(1_700_000_030);
+        let first = epoch_plus(1_700_000_000);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: None,
+                first_install_at: first,
+                is_reload: false,
+            },
+            &cfg,
+        );
+        assert_eq!(got, now);
+    }
+
+    #[test]
+    fn resolve_fresh_install_grace_expired_returns_cold_start_shift() {
+        // first_install_at 10 min ago (> FRESH_INSTALL_GRACE = 5min) ⇒
+        // migrated / stale ⇒ legacy shift.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let now = epoch_plus(1_700_000_000 + 10 * 60);
+        let first = epoch_plus(1_700_000_000);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: None,
+                first_install_at: first,
+                is_reload: false,
+            },
+            &cfg,
+        );
+        let expected = now - (interval(&cfg) - COLD_START_GRACE);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn resolve_zero_sentinel_no_runtime_returns_cold_start_shift() {
+        // UNIX_EPOCH sentinel = migrated 0.6.x install without stamp ⇒ legacy shift.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let now = epoch_plus(1_700_000_000);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: None,
+                first_install_at: SystemTime::UNIX_EPOCH,
+                is_reload: false,
+            },
+            &cfg,
+        );
+        let expected = now - (interval(&cfg) - COLD_START_GRACE);
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn resolve_normal_boot_recent_last_popup_continues_cycle() {
+        // Elapsed 30min, interval 2h ⇒ downtime is fine, keep lp.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 30 * 60);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: false,
+            },
+            &cfg,
+        );
+        assert_eq!(got, lp);
+    }
+
+    #[test]
+    fn resolve_boot_boundary_below_2x_continues() {
+        // Elapsed = 2 * interval - 1s ⇒ below reset threshold ⇒ keep lp.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let two_x = 2 * 2 * 3600;
+        let now = epoch_plus(two_x);
+        let lp = epoch_plus(1); // elapsed = two_x - 1
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: false,
+            },
+            &cfg,
+        );
+        assert_eq!(got, lp);
+    }
+
+    #[test]
+    fn resolve_boot_boundary_at_2x_resets_to_now() {
+        // Elapsed == 2 * interval exactly ⇒ reset.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let two_x = 2 * 2 * 3600;
+        let now = epoch_plus(two_x + 100);
+        let lp = epoch_plus(100);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: false,
+            },
+            &cfg,
+        );
+        assert_eq!(got, now);
+    }
+
+    #[test]
+    fn resolve_boot_after_long_downtime_resets_to_now() {
+        // Elapsed 10h, interval 2h ⇒ way past 2x ⇒ reset.
+        let cfg = config_with(2.0, vec![15, 10, 5], false);
+        let now = epoch_plus(10 * 3600 + 500);
+        let lp = epoch_plus(500);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: false,
+            },
+            &cfg,
+        );
+        assert_eq!(got, now);
+    }
+
+    #[test]
+    fn resolve_disabled_config_still_returns_last_popup() {
+        // Resolver is time-only ; the tick loop is responsible for the
+        // disabled bail.
+        let cfg = config_with(2.0, vec![15, 10, 5], true);
+        let now = epoch_plus(10_000);
+        let lp = epoch_plus(10_000 - 30 * 60);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: Some(lp),
+                first_install_at: epoch_plus(0),
+                is_reload: false,
+            },
+            &cfg,
+        );
+        assert_eq!(got, lp);
+    }
+
+    #[test]
+    fn resolve_reload_without_last_popup_treats_as_fresh() {
+        // Defensive : Reload before service ever wrote runtime.dat.
+        let cfg = config_with(2.0, vec![], false);
+        let now = epoch_plus(10_000);
+        let got = resolve_last_popup(
+            ResolveInputs {
+                now,
+                last_popup: None,
+                first_install_at: epoch_plus(0),
+                is_reload: true,
+            },
+            &cfg,
+        );
+        assert_eq!(got, now);
     }
 }

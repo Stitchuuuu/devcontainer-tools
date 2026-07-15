@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_STYLE, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
     WS_EX_LAYERED, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
 };
 
 /// Swap the window class's background brush to a solid black brush so
@@ -227,54 +227,6 @@ unsafe extern "system" fn lock_chromeless_proc(
         _ => {}
     }
     unsafe { DefSubclassProc(hwnd, umsg, wparam, lparam) }
-}
-
-/// Force `GWL_STYLE = WS_POPUP | WS_VISIBLE` — every other bit
-/// (WS_OVERLAPPED, WS_CAPTION, WS_THICKFRAME, WS_SYSMENU, WS_BORDER,
-/// WS_DLGFRAME, WS_MINIMIZEBOX, WS_MAXIMIZEBOX) is cleared. WS_POPUP
-/// is the "no chrome by design" style — Windows can't add a title bar
-/// on top of it without the app's cooperation. Idempotent, safe to
-/// call from focus events.
-///
-/// SWP_FRAMECHANGED triggers a re-evaluation of the DWM non-client
-/// rect so the change is immediately visible.
-#[allow(dead_code)] // ready-to-use knob during popup style smoke ; unused in final shape
-pub fn force_popup_style(hwnd: HWND) -> Result<()> {
-    use windows::Win32::Graphics::Gdi::{
-        RedrawWindow, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
-    };
-    unsafe {
-        let target: isize = (WS_POPUP.0 | WS_VISIBLE.0) as isize;
-        let cur = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        if cur != target {
-            SetWindowLongPtrW(hwnd, GWL_STYLE, target);
-            tracing::info!(
-                before = format!("0x{:x}", cur),
-                after = format!("0x{:x}", target),
-                "force_popup_style : GWL_STYLE reset to WS_POPUP|WS_VISIBLE"
-            );
-        }
-        SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        )
-        .context("SetWindowPos SWP_FRAMECHANGED (force_popup_style)")?;
-        // Force an immediate NC + client repaint. Without RDW_UPDATENOW,
-        // DWM may lag and still show the old (chromed) frame for a
-        // frame or two.
-        let _ = RedrawWindow(
-            Some(hwnd),
-            None,
-            None,
-            RDW_INVALIDATE | RDW_FRAME | RDW_ERASE | RDW_UPDATENOW,
-        );
-    }
-    Ok(())
 }
 
 /// Strip only the title-bar bits (WS_CAPTION + WS_SYSMENU + WS_MINIMIZEBOX

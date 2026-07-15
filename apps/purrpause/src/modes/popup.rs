@@ -381,8 +381,22 @@ mod windows_impl {
         let protocol_resources = resources_dir.clone();
         let protocol_rendered = rendered.clone();
 
+        // WebView2 user data folder under <exe_dir>/Data/WebView2/ so
+        // Edge WebView2 workers write their cache alongside the exe
+        // instead of at exe-dir root. Best-effort create ; wry falls
+        // back to a default location if we pass None.
+        let webview2_data = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| crate::modes::install::webview2_dir(p)));
+        if let Some(ref dir) = webview2_data {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // WebContext must outlive the builder (`'a` lifetime) — bind
+        // BEFORE the webview so drop order is correct.
+        let mut web_ctx = wry::WebContext::new(webview2_data);
+
         tracing::info!("popup: building wry webview");
-        let webview = wry::WebViewBuilder::new()
+        let webview = wry::WebViewBuilder::new_with_web_context(&mut web_ctx)
             .with_transparent(true)
             .with_custom_protocol(
                 "purrpause".to_string(),
@@ -407,6 +421,9 @@ mod windows_impl {
         // Silence the unused-var lint : the webview must live for the
         // event loop's duration ; dropping it destroys the child hwnd.
         let _webview = webview;
+        // web_ctx must outlive the event loop too (WebView2 keeps a
+        // handle to it) — hold on until the popup exits.
+        let _web_ctx = web_ctx;
 
         // Install the low-level keyboard hook AFTER wry finished
         // WebView2 init. Order matters : if we install before wry

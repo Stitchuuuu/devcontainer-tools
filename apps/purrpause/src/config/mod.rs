@@ -104,6 +104,16 @@ mod tests {
     }
 
     #[test]
+    fn first_install_at_defaults_to_zero_sentinel() {
+        // Migrated 0.6.x state.dat has no field ; must deserialize to
+        // the sentinel so the scheduler doesn't misfire the "fresh
+        // install grace" for a decades-old install.
+        let cfg = Config::default();
+        assert_eq!(cfg.first_install_at_epoch_secs, 0);
+        assert_eq!(cfg.first_install_at(), std::time::UNIX_EPOCH);
+    }
+
+    #[test]
     fn empty_toml_deserializes_to_default() {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg, Config::default());

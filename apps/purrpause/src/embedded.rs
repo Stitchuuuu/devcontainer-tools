@@ -2,8 +2,12 @@
 // binary is a standalone drop-in — no `resources/` folder to lose or
 // leak. Order of lookup at runtime :
 //
-//   1. `<exe_dir>/resources/<name>` — if present, wins. Lets a parent
-//      swap the cat asset without a rebuild.
+//   1. Disk override :
+//      - For `animations/*` names → `<exe_dir>/Data/Animations/<basename>`
+//        (user drag-drop store, populated by config UI's ingest_lottie).
+//      - For every other name → `<exe_dir>/resources/<name>` (dev
+//        override so a parent can hot-swap popup.html / icons without
+//        a rebuild).
 //   2. This static table (the shipped defaults).
 //
 // The custom protocol handler in `modes::popup` and the icon/watermark
@@ -63,7 +67,21 @@ pub const EMBEDDED_ASSETS: &[(&str, &[u8])] = &[
 
 fn disk_path(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("resources").join(name))
+    let parent = exe.parent()?;
+    disk_path_under(parent, name)
+}
+
+/// Testable variant. `animations/foo.lottie` → `<parent>/Data/Animations/foo.lottie`
+/// (drops the `animations/` prefix so the user drag-drop store is flat).
+/// Every other name resolves under `<parent>/resources/<name>` for dev
+/// hot-swap.
+fn disk_path_under(parent: &Path, name: &str) -> Option<PathBuf> {
+    if let Some(rest) = name.strip_prefix("animations/") {
+        return Some(
+            crate::modes::install::animations_dir(parent).join(rest),
+        );
+    }
+    Some(parent.join("resources").join(name))
 }
 
 /// Runtime lookup with disk override. Returns bytes owned or borrowed,
@@ -118,3 +136,43 @@ pub fn is_embedded(name: &str) -> bool {
 
 #[allow(dead_code)]
 fn _touch_path(_: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn disk_path_routes_animations_to_data_animations() {
+        let parent = PathBuf::from("Purr");
+        let got = disk_path_under(&parent, "animations/foo.lottie").unwrap();
+        assert_eq!(got, parent.join("Data").join("Animations").join("foo.lottie"));
+    }
+
+    #[test]
+    fn disk_path_routes_non_animations_to_resources() {
+        let parent = PathBuf::from("Purr");
+        assert_eq!(
+            disk_path_under(&parent, "popup.html").unwrap(),
+            parent.join("resources").join("popup.html"),
+        );
+        assert_eq!(
+            disk_path_under(&parent, "vendor/dotlottie-wc/index.js").unwrap(),
+            parent.join("resources").join("vendor/dotlottie-wc/index.js"),
+        );
+    }
+
+    #[test]
+    fn disk_only_animations_looks_in_data_animations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Simulate <exe_dir>/Data/Animations/foo.lottie
+        let anim_dir = crate::modes::install::animations_dir(dir);
+        std::fs::create_dir_all(&anim_dir).unwrap();
+        std::fs::write(anim_dir.join("foo.lottie"), b"payload").unwrap();
+        // Bypass current_exe by calling the testable helper directly.
+        let path = disk_path_under(dir, "animations/foo.lottie").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes, b"payload");
+    }
+}

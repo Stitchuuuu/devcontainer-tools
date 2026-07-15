@@ -1,6 +1,6 @@
 [package]
 name = "purrpause"
-version = "0.6.3"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "Break-reminder overlay for Windows — camouflaged Windows Session Health Service"
@@ -78,6 +78,12 @@ webview2-com = "0.39.1"                  # WebView2 runtime detection
 # skips Linux-only backends (xdg-portal, wayland) and keeps the Win32
 # IFileDialog path.
 rfd = { version = "0.17.2", default-features = false }
+
+[dev-dependencies]
+# Scratch temp dirs for migration + tree-walk tests (Linux-runnable).
+tempfile = "3"
+# Walk src/ at test time for the em-dash guard test in tracing_lint.rs.
+walkdir = "2"
 
 [profile.release]
 opt-level = "z"
