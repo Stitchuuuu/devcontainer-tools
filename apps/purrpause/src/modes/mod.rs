@@ -12,3 +12,9 @@ pub mod watchdog;
 
 #[cfg(windows)]
 pub mod config_first_run;
+
+// Multi-tab passcode-gated config UI. The whole module compiles on
+// Linux so the pure `config::lockout` state-machine tests exercise on
+// every `cargo test` ; the eframe / rfd / IPC bits are gated inside
+// under `#[cfg(windows)]`.
+pub mod config;

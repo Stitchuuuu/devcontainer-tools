@@ -106,10 +106,20 @@ fn fresh_install(current_exe: &Path) -> Result<()> {
     hidden_attrs::set_hidden_system(cache_dir).context("step 5: hidden+system attrs")?;
     tracing::info!(path = %cache_dir.display(), "step 5: DiagnosticsCache ready");
 
-    // Step 6 : default state.dat.
-    let default_cfg = crate::config::Config::default();
-    crate::config::save(&default_cfg, Path::new(STATE_DAT)).context("step 6: default state.dat")?;
-    tracing::info!("step 6: default state.dat written");
+    // Step 6 : default state.dat — but ONLY if none exists. A prior
+    // failed path_update (SCM in "marked for deletion" state) triggers
+    // a re-run of fresh_install ; overwriting the existing state.dat
+    // here would wipe the parent's passcode + all their tuning.
+    let state_path = Path::new(STATE_DAT);
+    let state_existed = state_path.exists();
+    if !state_existed {
+        let default_cfg = crate::config::Config::default();
+        crate::config::save(&default_cfg, state_path)
+            .context("step 6: default state.dat")?;
+        tracing::info!("step 6: default state.dat written (fresh)");
+    } else {
+        tracing::info!("step 6: state.dat already exists, preserving passcode + config");
+    }
 
     // Step 7 : Windows service.
     register_service(current_exe).context("step 7: register service")?;
@@ -119,24 +129,71 @@ fn fresh_install(current_exe: &Path) -> Result<()> {
     itaskservice::register_watchdog(current_exe).context("step 8: register watchdog")?;
     tracing::info!("step 8: watchdog task registered");
 
-    // Step 9 : block on first-run wizard. Non-zero exit → rollback + error.
-    let status = std::process::Command::new(current_exe)
-        .arg("--config")
-        .arg("--first-run")
-        .status()
-        .context("step 9: spawn wizard")?;
-    if !status.success() {
-        tracing::warn!(?status, "step 9: wizard cancelled — rolling back");
-        crate::modes::rollback::run().ok();
-        anyhow::bail!("first-run wizard cancelled");
+    // Step 9 : block on first-run wizard — SKIP if state.dat already
+    // has a passcode. This handles the "PathUpdate failed → FreshInstall
+    // fallback" recovery path : the parent already went through the
+    // wizard on a previous version, no need to ask again.
+    let wizard_needed = match crate::config::load(state_path) {
+        Ok(cfg) => cfg.passcode_hash.is_empty(),
+        Err(_) => true,
+    };
+    if wizard_needed {
+        let status = std::process::Command::new(current_exe)
+            .arg("--config")
+            .arg("--first-run")
+            .status()
+            .context("step 9: spawn wizard")?;
+        if !status.success() {
+            tracing::warn!(?status, "step 9: wizard cancelled — rolling back");
+            crate::modes::rollback::run().ok();
+            anyhow::bail!("first-run wizard cancelled");
+        }
+        tracing::info!("step 9: first-run wizard completed");
+    } else {
+        tracing::info!("step 9: skipping wizard, passcode already set (recovery path)");
     }
-    tracing::info!("step 9: first-run wizard completed");
 
     // Step 10 : start the service.
     start_service().context("step 10: start service")?;
     tracing::info!("step 10: service started");
 
+    // Bonus : open the config UI right after the wizard succeeded, so
+    // the parent gets a visible "you're set" moment instead of a
+    // silent exit — the user typically wants to customize intervals /
+    // add animations right after first install.
+    launch_config_ui(current_exe).context("open config UI after fresh install")?;
+
     Ok(())
+}
+
+/// Register the service, retrying a few times if SCM refuses because
+/// the name is still "marked for deletion" (all handles must close +
+/// short kernel window). Used only in the path-update flow.
+#[cfg(windows)]
+fn retry_register_service(current_exe: &Path) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 6;
+    const BACKOFF_MS: u64 = 500;
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match register_service(current_exe) {
+            Ok(()) => {
+                if attempt > 1 {
+                    tracing::info!(attempt, "re-register service succeeded after retry");
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    "re-register service failed (SCM likely still marked-for-deletion) — retrying"
+                );
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS * attempt as u64));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry_register_service: exhausted attempts")))
 }
 
 #[cfg(windows)]
@@ -190,11 +247,15 @@ fn start_service() -> Result<()> {
 
 #[cfg(windows)]
 fn launch_config_ui(current_exe: &Path) -> Result<()> {
-    tracing::info!("launching config UI (session 6 fleshes out full UI)");
+    tracing::info!(exe = %current_exe.display(), "launching config UI child (fire-and-forget)");
+    // Fire-and-forget : the child owns the window loop, the parent
+    // (this install-flow process) exits immediately. Using .status()
+    // here would block until the child dies and leave a phantom parent
+    // process in Task Manager.
     std::process::Command::new(current_exe)
         .arg("--config")
-        .status()
-        .context("spawn config UI")?;
+        .spawn()
+        .context("spawn config UI child")?;
     Ok(())
 }
 
@@ -214,12 +275,28 @@ fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
     let svc = scm
         .open_service(
             SERVICE_NAME,
-            ServiceAccess::CHANGE_CONFIG | ServiceAccess::STOP | ServiceAccess::START | ServiceAccess::QUERY_STATUS,
+            ServiceAccess::CHANGE_CONFIG
+                | ServiceAccess::STOP
+                | ServiceAccess::START
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::DELETE,
         )
         .context("open service for update")?;
 
-    // Best-effort stop before rewiring ImagePath.
+    // Best-effort stop before rewiring ImagePath. Poll a short window
+    // so a running service actually reaches Stopped before we delete
+    // it (SCM refuses delete on a running service on some hosts).
     let _ = svc.stop();
+    for _ in 0..20 {
+        match svc.query_status() {
+            Ok(status)
+                if status.current_state == windows_service::service::ServiceState::Stopped =>
+            {
+                break;
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(250)),
+        }
+    }
 
     // Update the service action to point at the new exe. The
     // windows-service crate re-exports ChangeServiceConfigW via
@@ -227,7 +304,13 @@ fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
     // fall back to delete + create (heavier but portable).
     // For MVP we delete + recreate — task update follows the same path.
     svc.delete().context("delete old service entry")?;
-    register_service(current_exe).context("re-register service at new path")?;
+    // SCM defers actual removal until every handle is closed AND every
+    // process using the name has exited. Drop ours and any transitively
+    // held SCM handle, then retry register with backoff — "marked for
+    // deletion" typically clears within a few seconds.
+    drop(svc);
+    retry_register_service(current_exe)
+        .context("re-register service at new path (SCM marked-for-deletion contention)")?;
 
     // Same treatment for the scheduled task.
     crate::platform::win32::itaskservice::update_watchdog_action(current_exe)
@@ -238,6 +321,11 @@ fn path_update(current_exe: &Path, old_path: &Path) -> Result<()> {
 
     // Restart the service.
     start_service().context("start service after path update")?;
+
+    // Open the config UI so the path-swap gives visual confirmation to
+    // the user instead of a silent parent exit. Same fire-and-forget
+    // shape as SamePathRelaunch.
+    launch_config_ui(current_exe).context("open config UI after path update")?;
     Ok(())
 }
 

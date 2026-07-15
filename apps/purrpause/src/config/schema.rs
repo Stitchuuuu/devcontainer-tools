@@ -29,7 +29,9 @@ pub struct Config {
     pub force_minimize_paliers: Vec<u32>,
 
     // --- Animations ---
-    #[serde(default)]
+    /// Populated from `d::animations()` with the two shipped assets
+    /// when state.dat is fresh — user adds/removes via the config UI.
+    #[serde(default = "d::animations")]
     pub animations: Vec<AnimationEntry>,
 
     #[serde(default = "d::rotation_mode")]
@@ -50,9 +52,15 @@ pub struct Config {
     #[serde(default = "d::dismiss_button_label")]
     pub dismiss_button_label: String,
 
-    /// Placeholders : `{mm}`, `{ss}`, `{total_min}`.
+    /// Compte à rebours affiché DANS le popup (temps avant que le bouton
+    /// dismiss ne soit activable). Placeholders : `{mm}`, `{ss}`, `{total_min}`.
     #[serde(default = "d::countdown_template")]
     pub countdown_template: String,
+
+    /// Compte à rebours affiché DANS le widget T-N top-right (temps
+    /// restant avant que la pause fire). Placeholders identiques.
+    #[serde(default = "d::widget_countdown_template")]
+    pub widget_countdown_template: String,
 
     /// Key = palier in minutes (15/10/5), value = user-visible string.
     #[serde(default = "d::pre_notif_messages")]
@@ -91,6 +99,15 @@ pub struct AnimationEntry {
     pub file: String,
     pub enabled: bool,
     pub display_name: String,
+    /// CSS `transform: scale(N)` applied to the Lottie stage.
+    /// `1.0` = native size. Range clamped in the config UI to `0.5..=3.0`.
+    #[serde(default = "d::animation_scale")]
+    pub scale: f32,
+    /// CSS `transform: translateY(N vh)` applied to the Lottie stage.
+    /// Negative = raise (cat moves toward the ceiling), positive = lower.
+    /// Range clamped in the config UI to `-50..=50`.
+    #[serde(default = "d::animation_offset_y_vh")]
+    pub offset_y_vh: i8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

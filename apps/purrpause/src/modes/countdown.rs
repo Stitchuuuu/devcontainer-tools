@@ -45,12 +45,22 @@ pub fn resolve_palier_message(cfg: &Config, palier: u32) -> String {
 }
 
 #[cfg(windows)]
-pub fn run(seconds: u64, palier: u32, debug: bool) -> anyhow::Result<()> {
-    windows_impl::run(seconds, palier, debug)
+pub fn run(
+    seconds: u64,
+    palier: u32,
+    debug: bool,
+    config_override: Option<String>,
+) -> anyhow::Result<()> {
+    windows_impl::run(seconds, palier, debug, config_override)
 }
 
 #[cfg(not(windows))]
-pub fn run(_seconds: u64, _palier: u32, _debug: bool) -> anyhow::Result<()> {
+pub fn run(
+    _seconds: u64,
+    _palier: u32,
+    _debug: bool,
+    _config_override: Option<String>,
+) -> anyhow::Result<()> {
     anyhow::bail!("countdown mode is Windows-only")
 }
 
@@ -78,8 +88,23 @@ mod windows_impl {
     const HEIGHT: f32 = 90.0;
     const MARGIN: i32 = 20;
 
-    pub fn run(seconds: u64, palier: u32, debug: bool) -> Result<()> {
-        let cfg = crate::config::load_or_default(Path::new(STATE_DAT));
+    pub fn run(
+        seconds: u64,
+        palier: u32,
+        debug: bool,
+        config_override: Option<String>,
+    ) -> Result<()> {
+        // Preview / test spawns from the config UI pass a per-PID
+        // temp state file so uncommitted edits show up. Regular
+        // service-spawned countdowns leave config_override None.
+        let cfg = match config_override.as_ref() {
+            Some(path) => {
+                let cfg = crate::config::load_or_default(Path::new(path));
+                let _ = std::fs::remove_file(path);
+                cfg
+            }
+            None => crate::config::load_or_default(Path::new(STATE_DAT)),
+        };
 
         // If this palier is opted-in for force-minimize, escalate over
         // any foreground fullscreen app BEFORE creating our own window
@@ -149,7 +174,7 @@ mod windows_impl {
 
         let deadline = Instant::now() + Duration::from_secs(seconds);
         let message = resolve_palier_message(&cfg, palier);
-        let template = cfg.countdown_template.clone();
+        let template = cfg.widget_countdown_template.clone();
         let title = cfg.popup_window_title.clone();
 
         tracing::info!(seconds, palier, monitor_mh = mh, "countdown widget starting");
@@ -167,6 +192,14 @@ mod windows_impl {
                         let hwnd = HWND(w.hwnd.get() as *mut _);
                         if let Err(e) = window_style::apply_topmost_toolwindow(hwnd) {
                             tracing::warn!(error = ?e, "apply_topmost_toolwindow failed");
+                        }
+                        // Kill the white flash on first paint by giving
+                        // the window class a solid black background
+                        // brush. Windows fills the client area black on
+                        // the first WM_ERASEBKGND, well before wgpu is
+                        // ready to render the widget's own dark panel.
+                        if let Err(e) = window_style::paint_class_black(hwnd) {
+                            tracing::warn!(error = ?e, "paint_class_black failed");
                         }
                     }
                 }

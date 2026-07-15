@@ -84,6 +84,8 @@ mod tests {
             file: "dance-cat.lottie".to_string(),
             enabled: true,
             display_name: "Chat qui danse".to_string(),
+            scale: 1.5,
+            offset_y_vh: -10,
         });
 
         let text = toml::to_string(&cfg).unwrap();
@@ -105,6 +107,23 @@ mod tests {
     fn empty_toml_deserializes_to_default() {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn animation_entry_partial_toml_uses_defaults() {
+        // An older state.dat with only the pre-session-6 fields must
+        // deserialize cleanly with scale/offset_y_vh falling back to
+        // 1.0 / 0 via #[serde(default)].
+        let partial = r#"
+            [[animations]]
+            file = "dance-cat.lottie"
+            enabled = true
+            display_name = "Cat"
+        "#;
+        let cfg: Config = toml::from_str(partial).unwrap();
+        assert_eq!(cfg.animations.len(), 1);
+        assert_eq!(cfg.animations[0].scale, 1.0);
+        assert_eq!(cfg.animations[0].offset_y_vh, 0);
     }
 
     #[test]

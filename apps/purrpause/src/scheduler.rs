@@ -11,7 +11,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::config::Config;
 
-const MIN_INTERVAL_HOURS: f32 = 0.1;
+// 1 minute minimum : aligned with the config UI's minutes-based slider
+// (range 1..=720 min). Was 0.1 h (= 6 min) which silently forced any
+// smaller user input back to the 2 h default — invisible to the user
+// and made 1-min service-cycle testing impossible.
+const MIN_INTERVAL_HOURS: f32 = 1.0 / 60.0;
 const MAX_INTERVAL_HOURS: f32 = 168.0;
 
 const DEFAULT_INTERVAL_HOURS: f32 = 2.0;

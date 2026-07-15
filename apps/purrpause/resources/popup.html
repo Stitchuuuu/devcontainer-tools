@@ -59,11 +59,13 @@
       --accent-hover: #ffca6b;
       --disabled: rgba(255, 255, 255, 0.35);
       --muted: rgba(255, 255, 255, 0.85);
-      /* Per-anim in prod (set by Rust from AnimationEntry.scale/offset_y — session 6).
-         In preview, defaults live in PREVIEW_ANIMS and can be tuned live via
-         ?scale=N&offsety=N URL knobs or +/- and Arrow Up/Down keys. */
-      --stage-scale: 1.5;
-      --stage-offset-y: 0vh;
+      /* Per-anim in prod : Rust substitutes {{ STAGE_SCALE }} +
+         {{ STAGE_OFFSET_Y_VH }} at render time from the matching
+         AnimationEntry (or 1.0 / 0 defaults when no entry exists).
+         In preview, defaults live in PREVIEW_ANIMS and can be tuned
+         live via ?scale=N&offsety=N URL knobs or +/- and Arrow Up/Down. */
+      --stage-scale: {{ STAGE_SCALE }};
+      --stage-offset-y: {{ STAGE_OFFSET_Y_VH }}vh;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {

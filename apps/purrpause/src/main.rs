@@ -11,7 +11,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
+mod embedded;
 mod ipc;
+mod lottie_sanitize;
 mod modes;
 mod password;
 mod platform;
@@ -38,12 +40,39 @@ fn main() -> ExitCode {
         }
     }
 
-    match dispatch(mode) {
+    match dispatch(mode.clone()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             tracing::error!(error = %err, "mode handler failed");
+            // Under windows_subsystem="windows" nothing is visible on
+            // failure — pop a MessageBox so the user sees WHAT went
+            // wrong, especially for the install-flow modes that route
+            // to install.log which not everyone thinks to check.
+            #[cfg(windows)]
+            fatal_error_dialog(&mode, &err);
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(windows)]
+fn fatal_error_dialog(mode: &Mode, err: &anyhow::Error) {
+    use std::iter::once;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let title = format!("SystemHealthAgent — {mode:?}");
+    let body = format!(
+        "Une erreur fatale est survenue :\n\n{err:#}\n\nLog complet : install.log ou widget.log à côté de l'exe."
+    );
+    let title_w: Vec<u16> = title.encode_utf16().chain(once(0)).collect();
+    let body_w: Vec<u16> = body.encode_utf16().chain(once(0)).collect();
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(body_w.as_ptr()),
+            PCWSTR(title_w.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 
@@ -62,6 +91,8 @@ fn mode_needs_webview2(mode: &Mode) -> bool {
             | Mode::Uninstall
             | Mode::Countdown { .. }
             | Mode::Sandbox { .. }
+            // Pure-egui config UI — no WebView2 needed.
+            | Mode::Config { first_run: false }
     )
 }
 
@@ -110,6 +141,29 @@ fn init_tracing(mode: &Mode) {
         }
     }
 
+    // Install-flow modes (InstallOrConfig, Rollback, Uninstall) also
+    // run without a console under `windows_subsystem = "windows"`.
+    // Route them to `install.log.YYYY-MM-DD` next to the exe so any
+    // failure during the 10-step install is diagnosable after the fact.
+    #[cfg(windows)]
+    if matches!(
+        mode,
+        Mode::InstallOrConfig | Mode::RollbackFromFailedInstall | Mode::Uninstall
+    ) {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let appender = tracing_appender::rolling::daily(dir, "install.log");
+                let _ = fmt()
+                    .with_env_filter(filter)
+                    .with_target(false)
+                    .with_ansi(false)
+                    .with_writer(appender)
+                    .try_init();
+                return;
+            }
+        }
+    }
+
     let _ = mode; // silence unused-var on non-Windows
     let _ = fmt()
         .with_env_filter(filter)
@@ -128,10 +182,21 @@ enum Mode {
     /// `debug` skips the keyboard hook (Alt+F4 / Alt+Tab work) so a
     /// developer can exit the popup during smoke without killing the
     /// process from Task Manager.
-    Popup { preview: bool, debug: bool },
+    Popup {
+        preview: bool,
+        debug: bool,
+        anim_override: Option<String>,
+        config_override: Option<String>,
+        test_countdown_secs: Option<u32>,
+    },
     /// Small corner countdown widget for T-15 / T-10 / T-5 / T-1.
     /// `debug` skips force-minimize so the current window isn't lost.
-    Countdown { seconds: u64, palier: u32, debug: bool },
+    Countdown {
+        seconds: u64,
+        palier: u32,
+        debug: bool,
+        config_override: Option<String>,
+    },
     /// Isolated diagnostic window with tunable options. Zero
     /// dependency on the rest of the app (no state.dat load, no
     /// wry, no keyboard hook). See `modes::sandbox::run` for the
@@ -165,6 +230,9 @@ fn classify_mode(args: &[String]) -> Mode {
             // TODO v1 release : flip the default to false and require
             // --debug opt-in explicitly. Track in session-6 or later.
             debug: !args.iter().any(|a| a == "--no-debug"),
+            anim_override: parse_anim_override(args),
+            config_override: parse_config_override(args),
+            test_countdown_secs: parse_u32_after(args, "--test-countdown-secs"),
         },
         Some("--countdown") => parse_countdown(args),
         Some("--config") => Mode::Config {
@@ -185,8 +253,42 @@ fn classify_mode(args: &[String]) -> Mode {
     }
 }
 
+/// Reads `--anim <relative_path>` from a `--popup` argv. Rejects paths
+/// containing `..` (path traversal guard) — a valid override is a plain
+/// filename or `subdir/name.lottie` under `<exe_dir>/resources/animations/`.
+/// Absent or invalid → `None`, and `modes::popup::run` falls back to the
+/// config's `animation_pick`.
+fn parse_anim_override(args: &[String]) -> Option<String> {
+    let idx = args.iter().position(|a| a == "--anim")?;
+    let raw = args.get(idx + 1)?;
+    if raw.contains("..") || raw.starts_with('/') || raw.starts_with('\\') {
+        tracing::warn!(path = %raw, "rejecting --anim path (traversal or absolute)");
+        return None;
+    }
+    Some(raw.clone())
+}
+
+/// Reads `--config-override <absolute_path>` for the popup / countdown
+/// preview flow. The config UI writes the in-memory (un-saved) config
+/// to a per-PID temp file and passes the path here so the spawned
+/// child sees the current values without state.dat autosave. Absent →
+/// `None` and the child uses the real state.dat.
+fn parse_config_override(args: &[String]) -> Option<String> {
+    let idx = args.iter().position(|a| a == "--config-override")?;
+    args.get(idx + 1).cloned()
+}
+
+/// Generic `--flag <u32>` extractor. Returns `None` when the flag is
+/// absent or the value isn't parseable. Used for `--test-countdown-secs`
+/// so a parent can spawn a full-prod popup (keyboard hook + force-
+/// minimize) with a short countdown for Alt-Tab / dismiss testing.
+fn parse_u32_after(args: &[String], flag: &str) -> Option<u32> {
+    let idx = args.iter().position(|a| a == flag)?;
+    args.get(idx + 1)?.parse::<u32>().ok()
+}
+
 fn parse_countdown(args: &[String]) -> Mode {
-    // Shape: --countdown <secs> --palier <15|10|5|1> [--no-debug]
+    // Shape: --countdown <secs> --palier <15|10|5|1> [--no-debug] [--config-override <path>]
     let seconds = args
         .get(1)
         .and_then(|s| s.parse::<u64>().ok())
@@ -201,7 +303,8 @@ fn parse_countdown(args: &[String]) -> Mode {
     // `--no-debug` to opt back into production behaviour
     // (force-minimize on paliers in force_minimize_paliers).
     let debug = !args.iter().any(|a| a == "--no-debug");
-    Mode::Countdown { seconds, palier, debug }
+    let config_override = parse_config_override(args);
+    Mode::Countdown { seconds, palier, debug, config_override }
 }
 
 /// User-facing stopgap for modes not yet implemented. Under
@@ -239,16 +342,16 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         Mode::Config { first_run: true } => modes::config_first_run::run()?,
         Mode::Service => modes::service::run()?,
         Mode::Watchdog => modes::watchdog::run()?,
-        Mode::Popup { preview, debug } => modes::popup::run(preview, debug)?,
-        Mode::Countdown { seconds, palier, debug } => {
-            modes::countdown::run(seconds, palier, debug)?
+        Mode::Popup { preview, debug, anim_override, config_override, test_countdown_secs } => {
+            modes::popup::run(preview, debug, anim_override, config_override, test_countdown_secs)?
         }
-        Mode::Config { first_run } => {
-            not_yet_available_dialog(
-                "Paramètres",
-                "L'écran de configuration arrive dans une prochaine version.\n\nEn attendant, tu peux modifier le passcode ou désinstaller en supprimant C:\\ProgramData\\DiagnosticsCache\\state.dat puis en relançant l'application.",
-            );
-            let _ = first_run;
+        Mode::Countdown { seconds, palier, debug, config_override } => {
+            modes::countdown::run(seconds, palier, debug, config_override)?
+        }
+        Mode::Config { first_run: false } => modes::config::run()?,
+        #[cfg(not(windows))]
+        Mode::Config { first_run: true } => {
+            anyhow::bail!("config wizard is Windows-only")
         }
         Mode::Sandbox { preset } => modes::sandbox::run(&preset)?,
         Mode::Uninstall => {
@@ -259,7 +362,7 @@ fn dispatch(mode: Mode) -> anyhow::Result<()> {
         }
         Mode::Unknown(argv) => {
             eprintln!("Unknown argv: {argv:?}");
-            eprintln!("Valid modes: --service | --popup [--preview] | --countdown <secs> --palier <15|10|5> | --config [--first-run] | --watchdog | --uninstall | --rollback-from-failed-install");
+            eprintln!("Valid modes: --service | --popup [--preview] [--anim <file>] | --countdown <secs> --palier <15|10|5> | --config [--first-run] | --watchdog | --uninstall | --rollback-from-failed-install | --sandbox --try <preset>");
             anyhow::bail!("unknown mode");
         }
     }
@@ -289,7 +392,7 @@ mod tests {
         // Debug is on by default during smoke — see popup_debug_is_default*.
         assert_eq!(
             classify_mode(&as_args(["--popup", "--preview"])),
-            Mode::Popup { preview: true, debug: true }
+            Mode::Popup { preview: true, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
@@ -297,7 +400,7 @@ mod tests {
     fn popup_without_preview() {
         assert_eq!(
             classify_mode(&as_args(["--popup"])),
-            Mode::Popup { preview: false, debug: true }
+            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
@@ -306,11 +409,62 @@ mod tests {
         // Temporary during smoke : debug=true by default.
         assert_eq!(
             classify_mode(&as_args(["--popup"])),
-            Mode::Popup { preview: false, debug: true }
+            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
         );
         assert_eq!(
             classify_mode(&as_args(["--popup", "--no-debug"])),
-            Mode::Popup { preview: false, debug: false }
+            Mode::Popup { preview: false, debug: false, anim_override: None, config_override: None, test_countdown_secs: None }
+        );
+    }
+
+    #[test]
+    fn popup_anim_override_accepted() {
+        assert_eq!(
+            classify_mode(&as_args([
+                "--popup", "--preview", "--anim", "dance-cat.lottie", "--no-debug"
+            ])),
+            Mode::Popup {
+                preview: true,
+                debug: false,
+                anim_override: Some("dance-cat.lottie".to_string()),
+                config_override: None,
+                test_countdown_secs: None,
+            }
+        );
+    }
+
+    #[test]
+    fn popup_anim_traversal_rejected() {
+        // A `..` in the anim path is dropped silently — the popup falls
+        // back to its normal animation picker.
+        assert_eq!(
+            classify_mode(&as_args(["--popup", "--anim", "../etc/passwd"])),
+            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
+        );
+    }
+
+    #[test]
+    fn popup_test_countdown_combined_with_no_debug() {
+        // Parent's "Test prod full" button — full prod behaviour
+        // (keyboard hook + force-minimize) with a 10s countdown for
+        // quick Alt-Tab / dismiss verification.
+        assert_eq!(
+            classify_mode(&as_args(["--popup", "--no-debug", "--test-countdown-secs", "10"])),
+            Mode::Popup {
+                preview: false,
+                debug: false,
+                anim_override: None,
+                config_override: None,
+                test_countdown_secs: Some(10),
+            }
+        );
+    }
+
+    #[test]
+    fn popup_anim_absolute_path_rejected() {
+        assert_eq!(
+            classify_mode(&as_args(["--popup", "--anim", "/etc/hosts"])),
+            Mode::Popup { preview: false, debug: true, anim_override: None, config_override: None, test_countdown_secs: None }
         );
     }
 
@@ -318,7 +472,7 @@ mod tests {
     fn countdown_parsed() {
         assert_eq!(
             classify_mode(&as_args(["--countdown", "900", "--palier", "15"])),
-            Mode::Countdown { seconds: 900, palier: 15, debug: true }
+            Mode::Countdown { seconds: 900, palier: 15, debug: true, config_override: None }
         );
     }
 
@@ -326,7 +480,7 @@ mod tests {
     fn countdown_no_debug_opts_out() {
         assert_eq!(
             classify_mode(&as_args(["--countdown", "60", "--palier", "1", "--no-debug"])),
-            Mode::Countdown { seconds: 60, palier: 1, debug: false }
+            Mode::Countdown { seconds: 60, palier: 1, debug: false, config_override: None }
         );
     }
 

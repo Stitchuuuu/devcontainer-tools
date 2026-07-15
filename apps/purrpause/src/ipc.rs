@@ -60,19 +60,21 @@ mod win {
     use anyhow::{anyhow, Context, Result};
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL,
-        LocalFree, WAIT_OBJECT_0,
+        CloseHandle, GetLastError, ERROR_IO_PENDING, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+        GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
     };
     use windows::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows::Win32::Storage::FileSystem::{
-        ReadFile, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_INBOUND,
+        CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OVERLAPPED,
+        FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
     };
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
-        PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
+        NMPWAIT_USE_DEFAULT_WAIT, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
     use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForMultipleObjects, INFINITE};
     use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -327,10 +329,88 @@ mod win {
         }
     }
 
+    /// User-mode client that writes a single-byte `Message` to the
+    /// service's IPC pipe. Called from the config UI's Général tab
+    /// (« Déclencher une pause maintenant ») and after any save
+    /// (`Message::Reload`). The pipe SDDL grants `GW+FR` to
+    /// `BUILTIN\Users` so no elevation is required.
+    ///
+    /// Retries a few times on `ERROR_PIPE_BUSY` — the pipe is
+    /// message-mode with `PIPE_UNLIMITED_INSTANCES` server-side so
+    /// contention is rare, but a service restart can transiently
+    /// close the pipe.
+    pub fn send(msg: Message) -> Result<()> {
+        let name_wide: HSTRING = PIPE_NAME.into();
+        const ATTEMPTS: u32 = 3;
+        const WAIT_MS: u32 = 500;
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for _ in 0..ATTEMPTS {
+            let handle = unsafe {
+                CreateFileW(
+                    PCWSTR::from_raw(name_wide.as_ptr()),
+                    GENERIC_WRITE.0,
+                    FILE_SHARE_MODE(0),
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    None,
+                )
+            };
+
+            match handle {
+                Ok(h) if !h.is_invalid() => {
+                    let write_result = write_one_byte(h, msg.to_byte());
+                    unsafe { let _ = CloseHandle(h); }
+                    return write_result;
+                }
+                _ => {
+                    let err = unsafe { GetLastError() };
+                    if err == ERROR_PIPE_BUSY {
+                        // Server is busy accepting another client ; wait
+                        // for its default timeout then retry.
+                        let waited = unsafe {
+                            WaitNamedPipeW(
+                                PCWSTR::from_raw(name_wide.as_ptr()),
+                                NMPWAIT_USE_DEFAULT_WAIT,
+                            )
+                        };
+                        // WaitNamedPipeW returns BOOL (nonzero = OK).
+                        // On failure fall back to a plain sleep.
+                        if !waited.as_bool() {
+                            std::thread::sleep(std::time::Duration::from_millis(WAIT_MS as u64));
+                        }
+                        last_err = Some(anyhow!("pipe busy (retrying)"));
+                        continue;
+                    }
+                    return Err(anyhow!("CreateFileW({PIPE_NAME}) failed: {err:?}"));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("send: exhausted retries")))
+    }
+
+    fn write_one_byte(handle: HANDLE, byte: u8) -> Result<()> {
+        let buf = [byte];
+        let mut written: u32 = 0;
+        let ok = unsafe {
+            WriteFile(handle, Some(&buf), Some(&mut written), None)
+        };
+        ok.context("WriteFile(pipe)")?;
+        if written != 1 {
+            anyhow::bail!("short write: {written} bytes");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
-pub use win::{create_cancel_event, run_server, SendableHandle};
+pub use win::{create_cancel_event, run_server, send, SendableHandle};
+
+#[cfg(not(windows))]
+pub fn send(_msg: Message) -> anyhow::Result<()> {
+    anyhow::bail!("ipc::send is Windows-only")
+}
 
 #[cfg(test)]
 mod tests {
@@ -373,5 +453,31 @@ mod tests {
         for m in [Message::TriggerPopupNow, Message::Reload, Message::Shutdown] {
             assert_eq!(Message::parse(&[m.to_byte()]), Some(m));
         }
+    }
+
+    // Wire-shape tests for the pipe client. The actual CreateFileW /
+    // WriteFile roundtrip requires a running server so it's part of
+    // the Windows host smoke — here we assert that the payload
+    // sent over the wire is exactly one byte per Message variant.
+    #[test]
+    fn client_wire_shape_trigger_is_0x01() {
+        assert_eq!(Message::TriggerPopupNow.to_byte(), 0x01);
+    }
+
+    #[test]
+    fn client_wire_shape_reload_is_0x02() {
+        assert_eq!(Message::Reload.to_byte(), 0x02);
+    }
+
+    #[test]
+    fn client_wire_shape_shutdown_is_0x03() {
+        assert_eq!(Message::Shutdown.to_byte(), 0x03);
+    }
+
+    #[test]
+    fn pipe_name_matches_server_contract() {
+        // The config UI's send() opens exactly the same pipe path the
+        // service exposes via run_server.
+        assert_eq!(PIPE_NAME, r"\\.\pipe\SystemHealthAgent-Signal");
     }
 }
