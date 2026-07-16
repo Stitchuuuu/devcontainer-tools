@@ -690,7 +690,10 @@ print_summary
 # === Notify daemon (host-side, portable Node — runs while container is up) ===
 # Spawned detached, survives initialize.sh exit. Self-exits when the container
 # is gone (polls `docker ps` every 60 s). Idempotent — pid lockfile prevents
-# double-spawn. Skipped silently if `node` is not on the host PATH.
+# double-spawn. When `node` is missing from the host PATH, falls back with a
+# wide host / shell / env / parent-chain diagnostic (see _notify_daemon_diag)
+# so the user can pin down VS-Code-stripped-PATH / missing-nvm-init issues
+# without a second round-trip.
 #
 # Diagnostic visibility : pre-flight prints the resolved node binary + paths,
 # a spawn-boundary marker is appended to daemon.log, and ~1 s after the spawn
@@ -698,6 +701,196 @@ print_summary
 # crashed silently). Catches the silent-crash failure mode where the previous
 # "spawn attempted" message gave no insight into whether anything actually
 # happened on disk.
+
+# Diagnostic dump for the "node not found" fallback in spawn_notify_daemon.
+# Prints identity / host / shell / parent-chain / PATH / node-manager env /
+# filtered env / known install locations / one actionable hint. Filter on
+# the env dump avoids leaking tokens (GITHUB_TOKEN, AWS_*, npm auth, etc.);
+# extend the keyword regex if a variable of interest goes missing. Wrapped
+# by the caller in a subshell with `set +e` so a diagnostic failure can
+# never abort initialize.sh.
+_notify_daemon_diag() {
+	local prefix='ℹ Notify daemon :'
+
+	echo "$prefix ── diagnostic ──────────────────────────────────"
+
+	# identity
+	echo "$prefix   date=$(date -u +%FT%TZ)  user=$(id -un 2>/dev/null)  uid=$(id -u 2>/dev/null)  home=$HOME"
+	echo "$prefix   cwd=$(pwd)"
+
+	# host / kernel
+	local host_extra=""
+	case "$HOST_KIND" in
+		mac)   host_extra="  macos=$(sw_vers -productVersion 2>/dev/null)" ;;
+		linux)
+			if [ -r /etc/os-release ]; then
+				host_extra="  os=$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}")"
+			fi
+			;;
+		wsl)   host_extra="  wsl-distro=${WSL_DISTRO_NAME:-?}" ;;
+	esac
+	echo "$prefix   host=$HOST_KIND  uname=$(uname -srmn 2>/dev/null)$host_extra"
+
+	# shell running the script + user's login shell + rc files present
+	local bash_path bash_real rc rc_present=""
+	bash_path=$(command -v bash 2>/dev/null)
+	bash_real=$(readlink -f "$bash_path" 2>/dev/null || readlink "$bash_path" 2>/dev/null || echo "$bash_path")
+	echo "$prefix   running=bash ${BASH_VERSION:-?}  bash-path=$bash_path  bash-real=$bash_real"
+	echo "$prefix   login-shell=${SHELL:-unset}"
+	for rc in ~/.zshenv ~/.zshrc ~/.zprofile ~/.bashrc ~/.bash_profile ~/.profile ~/.config/fish/config.fish; do
+		[ -f "$rc" ] && rc_present="$rc_present ${rc/#$HOME/\~}"
+	done
+	echo "$prefix   rc-files present:${rc_present:- (none)}"
+
+	# parent chain — walk up to 6 ancestors starting at this script's own PID
+	echo "$prefix   parent chain:"
+	local pid=$$ level=0 line ppid
+	while [ "$level" -lt 6 ] && [ -n "$pid" ] && [ "$pid" != "0" ]; do
+		line=$(ps -o pid=,comm=,args= -p "$pid" 2>/dev/null | sed 's/^ *//')
+		[ -z "$line" ] && break
+		echo "$prefix     $line"
+		[ "$pid" = "1" ] && break
+		ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+		pid=$ppid
+		level=$((level + 1))
+	done
+
+	# editor / terminal markers (only the ones actually set)
+	local markers=""
+	[ -n "${TERM_PROGRAM:-}" ]      && markers="$markers  TERM_PROGRAM=$TERM_PROGRAM"
+	[ -n "${TERMINAL_EMULATOR:-}" ] && markers="$markers  TERMINAL_EMULATOR=$TERMINAL_EMULATOR"
+	[ -n "${VSCODE_PID:-}" ]        && markers="$markers  VSCODE_PID=$VSCODE_PID"
+	[ -n "${VSCODE_IPC_HOOK:-}" ]   && markers="$markers  VSCODE_IPC_HOOK=$VSCODE_IPC_HOOK"
+	[ -n "${VSCODE_CWD:-}" ]        && markers="$markers  VSCODE_CWD=$VSCODE_CWD"
+	[ -n "${CURSOR_TRACE_ID:-}" ]   && markers="$markers  CURSOR_TRACE_ID=$CURSOR_TRACE_ID"
+	echo "$prefix   editor markers:${markers:- (none)}"
+
+	# PATH — verbatim then split for eyeballing
+	echo "$prefix   PATH=${PATH:-unset}"
+	echo "$prefix   PATH entries:"
+	printf '%s\n' "${PATH:-}" | tr ':' '\n' | awk -v p="$prefix" 'NF{printf "%s     %d. %s\n", p, NR, $0}'
+
+	# node-manager env — one per line, `unset` when empty
+	echo "$prefix   node-manager env:"
+	local v val
+	for v in NVM_DIR NVM_BIN NVM_INC VOLTA_HOME FNM_DIR FNM_MULTISHELL_PATH \
+	         NODE_PATH NODE_OPTIONS N_PREFIX COREPACK_HOME NPM_CONFIG_PREFIX \
+	         HOMEBREW_PREFIX HOMEBREW_CELLAR; do
+		val=$(printenv "$v" 2>/dev/null)
+		echo "$prefix     $v=${val:-unset}"
+	done
+
+	# locale / term
+	echo "$prefix   locale/term: LANG=${LANG:-unset}  LC_ALL=${LC_ALL:-unset}  TERM=${TERM:-unset}  EDITOR=${EDITOR:-unset}  VISUAL=${VISUAL:-unset}"
+
+	# filtered env dump — keyword filter, not a whitelist. Leaks are still
+	# possible if a secret var name matches (e.g. GITHUB_TOKEN doesn't, but
+	# HOMEBREW_GITHUB_API_TOKEN does via "homebrew"). Trade-off: max signal
+	# with best-effort secret hygiene.
+	echo "$prefix   filtered env:"
+	printenv 2>/dev/null | LC_ALL=C sort \
+		| grep -Ei '(node|nvm|volta|fnm|corepack|npm|yarn|pnpm|bun|deno|path|shell|term|editor|visual|home|user|lang|lc_|vscode|cursor|windsurf|codespaces|remote|ssh|display|xdg|brew|homebrew|conda|pyenv|rbenv|asdf|mise|proto|docker)' \
+		| sed "s|^|$prefix     |" \
+		|| echo "$prefix     (none matched)"
+
+	# known install locations scan
+	echo "$prefix   scan install locations:"
+	local found_nvm="" found_brew_arm="" found_brew_x86="" found_volta="" \
+	      found_fnm="" found_asdf="" found_mise="" found_proto="" found_win=""
+	local hits
+	hits=$(ls -1 "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | tr '\n' ' ')
+	if [ -n "$hits" ]; then
+		echo "$prefix     ~/.nvm/versions/node/*/bin/node               → found: $hits"
+		found_nvm="${hits%% *}"
+	else
+		echo "$prefix     ~/.nvm/versions/node/*/bin/node               → absent"
+	fi
+	local pat p var display
+	for pat in \
+		"/opt/homebrew/bin/node|found_brew_arm" \
+		"/usr/local/bin/node|found_brew_x86" \
+		"$HOME/.volta/bin/node|found_volta" \
+		"$HOME/.fnm/aliases/default/bin/node|found_fnm" \
+		"$HOME/.asdf/shims/node|found_asdf"; do
+		p="${pat%|*}"; var="${pat##*|}"; display="${p/#$HOME/\~}"
+		if [ -x "$p" ] || [ -f "$p" ]; then
+			printf "%s     %-45s → found: %s\n" "$prefix" "$display" "$p"
+			printf -v "$var" '%s' "$p"
+		else
+			printf "%s     %-45s → absent\n" "$prefix" "$display"
+		fi
+	done
+	hits=$(ls -1 "$HOME"/.local/share/mise/installs/node/*/bin/node 2>/dev/null | head -1)
+	if [ -n "$hits" ]; then
+		echo "$prefix     ~/.local/share/mise/installs/node/*/bin/node  → found: $hits"
+		found_mise=$hits
+	else
+		echo "$prefix     ~/.local/share/mise/installs/node/*/bin/node  → absent"
+	fi
+	hits=$(ls -1 "$HOME"/.proto/tools/node/*/node 2>/dev/null | head -1)
+	if [ -n "$hits" ]; then
+		echo "$prefix     ~/.proto/tools/node/*/node                    → found: $hits"
+		found_proto=$hits
+	else
+		echo "$prefix     ~/.proto/tools/node/*/node                    → absent"
+	fi
+	local wpath
+	for wpath in "/c/Program Files/nodejs/node.exe" "/mnt/c/Program Files/nodejs/node.exe"; do
+		if [ -f "$wpath" ]; then
+			echo "$prefix     $wpath  → found"
+			found_win=$wpath
+			break
+		fi
+	done
+	[ -z "$found_win" ] && echo "$prefix     /c/... or /mnt/c/... Program Files/nodejs/node.exe (gitbash/WSL) → absent"
+
+	# adjacent tooling on PATH
+	local t tp tools_line=""
+	for t in node npm npx corepack yarn pnpm bun deno; do
+		tp=$(command -v "$t" 2>/dev/null)
+		tools_line="$tools_line  $t=${tp:-∅}"
+	done
+	echo "$prefix   adjacent tooling:$tools_line"
+
+	echo "$prefix ────────────────────────────────────────────────"
+
+	# hint — most specific match wins
+	if [ -n "$found_nvm" ]; then
+		echo "$prefix   hint : nvm detected but not initialised — VS Code's initializeCommand"
+		echo "$prefix          doesn't source ~/.zshrc. Add \`source \$NVM_DIR/nvm.sh\` to"
+		echo "$prefix          ~/.zshenv (mac/zsh) or ~/.bashrc and reload the window."
+	elif [ -n "$found_brew_arm" ]; then
+		echo "$prefix   hint : Homebrew node at $found_brew_arm — /opt/homebrew/bin"
+		echo "$prefix          missing from PATH. Add \`eval \"\$(/opt/homebrew/bin/brew shellenv)\"\`"
+		echo "$prefix          to ~/.zshenv and reload the window."
+	elif [ -n "$found_brew_x86" ]; then
+		echo "$prefix   hint : Node at $found_brew_x86 — /usr/local/bin missing from PATH."
+		echo "$prefix          Check that your shell rc puts /usr/local/bin on PATH."
+	elif [ -n "$found_volta" ]; then
+		echo "$prefix   hint : Volta detected — ensure \`\$VOLTA_HOME/bin\` is on PATH from a"
+		echo "$prefix          shell rc VS Code reads (~/.zshenv on macOS)."
+	elif [ -n "$found_fnm" ]; then
+		echo "$prefix   hint : fnm detected — add \`eval \"\$(fnm env)\"\` to ~/.zshenv"
+		echo "$prefix          (mac/zsh) or ~/.bashrc so VS Code inherits the shim."
+	elif [ -n "$found_asdf" ]; then
+		echo "$prefix   hint : asdf detected — source \`~/.asdf/asdf.sh\` from ~/.zshenv so"
+		echo "$prefix          VS Code's non-login shell picks up the shims."
+	elif [ -n "$found_mise" ]; then
+		echo "$prefix   hint : mise detected — add \`eval \"\$(mise activate bash)\"\` (or zsh)"
+		echo "$prefix          to a shell rc VS Code reads."
+	elif [ -n "$found_proto" ]; then
+		echo "$prefix   hint : proto detected — add \`export PATH=\"\$HOME/.proto/shims:\$PATH\"\`"
+		echo "$prefix          to ~/.zshenv."
+	elif [ -n "$found_win" ]; then
+		echo "$prefix   hint : Node installed under Windows at $found_win — this bash"
+		echo "$prefix          environment can't reach it. Install a POSIX node or run"
+		echo "$prefix          initialize from a shell where PATH contains the Windows dir."
+	else
+		echo "$prefix   hint : no node install detected. Install via https://nodejs.org or"
+		echo "$prefix          a version manager (nvm / volta / fnm / asdf / mise)."
+	fi
+}
+
 spawn_notify_daemon() {
 	local daemon_dir="$DEVCONTAINER_DIR/notify"
 	local queue_dir="$DEVCONTAINER_DIR/notify/queue"
@@ -707,9 +900,28 @@ spawn_notify_daemon() {
 	[ -f "$daemon_dir/index.js" ] || return 0
 	mkdir -p "$queue_dir"
 
+	# Auto-source nvm.sh when node isn't already reachable — VS Code's
+	# initializeCommand runs a non-login shell, so ~/.zshrc / ~/.bashrc
+	# (where nvm is typically initialised) never gets sourced. Best-effort ;
+	# falls through to the full diagnostic below if this doesn't recover
+	# node. `|| true` because nvm.sh runs in the current shell and set -eE
+	# would trip on any internal non-zero.
+	if ! command -v node > /dev/null 2>&1; then
+		export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+		if [ -s "$NVM_DIR/nvm.sh" ]; then
+			# shellcheck source=/dev/null
+			\. "$NVM_DIR/nvm.sh" > /dev/null 2>&1 || true
+			if command -v node > /dev/null 2>&1; then
+				echo "ℹ Notify daemon : sourced $NVM_DIR/nvm.sh (VS Code initializeCommand skips shell rc)"
+			fi
+		fi
+	fi
+
 	local node_bin
 	node_bin=$(command -v node 2>/dev/null) || {
-		echo "ℹ Notify daemon : node not found on host PATH — skipping (install Node.js to enable desktop notifs)"
+		echo "ℹ Notify daemon : node not found on host PATH — skipping"
+		( set +e; _notify_daemon_diag ) || true
+		echo "ℹ Notify daemon : install Node.js (or fix the PATH shown above) to enable desktop notifs."
 		return 0
 	}
 
