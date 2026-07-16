@@ -13,9 +13,12 @@
 // listing `notify` in NOTIFY_CHANNELS (see index.js). If both are listed,
 // index.js drops basic-notif with a warning ; they'd otherwise double-fire.
 //
-// Session 8 scope :
-//   - macOS only. Windows/Linux fall through as `skipped` until sessions 9/10
-//     wire their `notif` backends.
+// Host support :
+//   - Any host with a `notif` binary reachable on PATH (or via the explicit
+//     `NOTIF_BIN` env / bundled fallback in getNotifPath). macOS ships a
+//     binary today ; Windows and Linux gain one when their apps/notifier
+//     backends land — no code change here to onboard them, the consumer
+//     just starts resolving a binary and stops reporting `skipped`.
 //   - Sender is always `default` (hook.js writes `line.sender = 'default'` on
 //     every queue line). Per-event routing (claude vs npm-script vs …) is a
 //     v0.3+ extension.
@@ -31,6 +34,7 @@ const os = require('os')
 const path = require('path')
 const log = require('../log')
 const { getHostKind } = require('../host')
+const focusDebounce = require('../focus-debounce')
 
 // Hardcoded Claude Code sender identity. Every banner dispatched through
 // this consumer appears in Notification Center under "Claude Code" with
@@ -41,6 +45,13 @@ const { getHostKind } = require('../host')
 const CLAUDE_CODE_SENDER = 'claude-code'
 const CLAUDE_CODE_NAME   = 'Claude Code'
 const CLAUDE_CODE_ICON   = path.join(__dirname, '..', '..', 'vendor', 'senders', 'claude-code.icns')
+// LaunchServices display name of VS Code, used as the `<APP>` slug in the
+// `focus:open-a://<APP>/<launchUrl>` DSL target we pass as `--on-click`.
+// Kept as a module const rather than inlined because this consumer only
+// targets VS Code today ; future callers (Slack, Terminal.app, custom
+// electron apps) build their own DSL string with their own slug — the DSL
+// itself in notif-core stays generic (see `focus:open` in callback.rs).
+const VSCODE_APP_SLUG = 'Visual Studio Code'
 // First-boot register requires the user to click Allow on the OS permission
 // dialog — 90 s window. Anything faster (e.g. the previous 5 s) killed the
 // dialog before the user could see it, which macOS then treated as a
@@ -65,6 +76,35 @@ const DISPATCHED_TTL_MS = 10 * 60 * 1000
 // upgrade lands mid-session and older lines are still being replayed.
 let notifIdFallbackLogged = false
 
+// One-shot flag — logs at most one warning per boot when a queue line has
+// no `launchUrl` (session-1 producer contract : hook.js omits the field when
+// history is empty, e.g. fresh container before VS Code writes anything).
+// Body-click on such notifs is a no-op, and one line per boot is enough to
+// diagnose silent no-ops without flooding daemon.log.
+let launchUrlMissingLogged = false
+
+// Path to the JSONL file where the `notif` binary appends action-click
+// records (see session 3 — allow-deny-actions). Set in `start()` from the
+// projectDir passed by index.js so the file colocates with the existing
+// claude-code-vscode-ext-{inbound,outbound}.jsonl channel in
+// `.devcontainer/logs/`.
+let actionsInboxPath = null
+// Path to the outbound JSONL file the VS Code extension's outbound-action-
+// injector polls for tool_permission_response commands. Same
+// `.devcontainer/logs/` dir. Written when we process an Allow click.
+let outboundPath = null
+// Byte offset into actionsInboxPath — advanced as we drain new lines. At
+// start() we seek to the current file size so we skip lines from prior
+// daemon incarnations that were already dispatched (or lost — clicks
+// during daemon downtime are silently dropped by design).
+let inboxOffset = 0
+// Map<notifId, { sid, toolUseId, toolInput, timeout }> — populated in
+// `send()` for permission_request / permission_prompt events that carry a
+// tool_use_id, so the inbox watcher can build the outbound command when the
+// user clicks Allow. Same TTL model as `dispatched` above.
+const permissionContext = new Map()
+const PERMISSION_TTL_MS = 10 * 60 * 1000
+
 // -----------------------------------------------------------------------------
 // PUBLIC ENTRY POINT
 // -----------------------------------------------------------------------------
@@ -73,19 +113,19 @@ let notifIdFallbackLogged = false
  * Wire the notify-app consumer onto the bus. Returns { status, diag } per
  * the index.js consumer contract.
  *
- * `skipped` cases :
- *   - host is not macOS (Windows/Linux backends land in sessions 9/10)
- *   - no `notif` binary found on any candidate path
+ * `skipped` case :
+ *   - no `notif` binary found on any candidate path (the sole gate — the
+ *     consumer serves any host once a binary is discoverable).
  *
  * @param {object} opts
  * @param {import('events').EventEmitter} opts.bus   listens for send + cancel events
+ * @param {string} [opts.projectDir]                 workspace root — used to resolve
+ *                                                    `.devcontainer/logs/` paths for the
+ *                                                    Allow action inbox + outbound.jsonl
  * @returns {{ status: 'ok'|'skipped', diag: object }}
  */
-function start({ bus }) {
+function start({ bus, projectDir }) {
 	const host = getHostKind()
-	if (host !== 'macos') {
-		return { status: 'skipped', diag: { host, reason: 'notify-app-macos-only-v0.2' } }
-	}
 	notifBinPath = getNotifPath()
 	if (!notifBinPath) {
 		return { status: 'skipped', diag: { host, reason: 'notif-binary-not-found' } }
@@ -100,10 +140,23 @@ function start({ bus }) {
 	// send anyway, just without the bundled icon.
 	const registerDiag = registerClaudeCodeSender()
 
+	// Session 3 — resolve the Allow action inbox + outbound.jsonl paths. Both
+	// live under the workspace's `.devcontainer/logs/`, alongside the existing
+	// claude-code-vscode-ext-{inbound,outbound}.jsonl channel that ext.js polls.
+	// projectDir is passed by index.js (post session 3) ; when it's absent
+	// (older index.js callers, standalone tests), Allow simply won't fire —
+	// the action arg is skipped and the notif shows Body-click only.
+	let inboxDiag = { actions_inbox: 'disabled-no-projectDir' }
+	if (projectDir) {
+		actionsInboxPath = path.join(projectDir, '.devcontainer', 'logs', 'notif-actions.jsonl')
+		outboundPath    = path.join(projectDir, '.devcontainer', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
+		inboxDiag       = startActionsInboxWatcher()
+	}
+
 	bus.on('send:notification', send)
 	bus.on('cancelled:notification', onCancelled)
 
-	const diag = { host, notif: notifBinPath, sender: CLAUDE_CODE_SENDER, ...registerDiag }
+	const diag = { host, notif: notifBinPath, sender: CLAUDE_CODE_SENDER, ...registerDiag, ...inboxDiag }
 	return { status: 'ok', diag }
 }
 
@@ -224,7 +277,11 @@ function runNotif(args, label, timeoutMs) {
  *   2. `$XDG_DATA_HOME/notif/notif` — XDG-conformant install location.
  *   3. `~/.local/bin/notif` — common user-local bin dir.
  *   4. `~/bin/notif` — the location suggested by apps/notifier/docs/install-macos.md.
- *   5. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
+ *   5. `/usr/local/bin/notif` — Homebrew Intel + manual system install.
+ *   6. `/opt/homebrew/bin/notif` — Homebrew Apple Silicon.
+ *   7. `PATH` scan — any directory on `$PATH` containing `notif` (catches
+ *      MacPorts /opt/local/bin, custom shim dirs, etc).
+ *   8. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
  *
  * Returns `null` if none exist. Callers report `skipped` and hand the bus
  * back to basic-notif.
@@ -232,18 +289,30 @@ function runNotif(args, label, timeoutMs) {
  * @returns {string|null} absolute path, or null
  */
 function getNotifPath() {
-	const candidates = [
+	const explicit = [
 		process.env.NOTIF_BIN,
 		process.env.XDG_DATA_HOME
 			? path.join(process.env.XDG_DATA_HOME, 'notif', 'notif')
 			: null,
 		path.join(os.homedir(), '.local', 'bin', 'notif'),
 		path.join(os.homedir(), 'bin', 'notif'),
-		path.join(__dirname, '..', '..', 'vendor', 'notif'),
+		'/usr/local/bin/notif',
+		'/opt/homebrew/bin/notif',
 	]
-	for (const p of candidates) {
+	for (const p of explicit) {
 		if (p && fs.existsSync(p)) return p
 	}
+	// PATH scan — no subprocess. `which`-style resolution for whichever
+	// bin dir the operator dropped `notif` in and exported on PATH.
+	const PATH = process.env.PATH || ''
+	for (const dir of PATH.split(path.delimiter)) {
+		if (!dir) continue
+		const candidate = path.join(dir, 'notif')
+		if (fs.existsSync(candidate)) return candidate
+	}
+	// Bundled fallback — daemon ships its own copy for zero-install cases.
+	const vendor = path.join(__dirname, '..', '..', 'vendor', 'notif')
+	if (fs.existsSync(vendor)) return vendor
 	return null
 }
 
@@ -296,7 +365,72 @@ function send(payload) {
 	if (rendered.subtitle) args.push('--subtitle', rendered.subtitle)
 	if (priority)          args.push('--priority', priority)
 
-	log.info(`[notify-app] DISPATCH ${payload.eventType} ${sid8} — id=${notifId} sender=${sender}`)
+	// Body-click routing : bind `focus:open-a://Visual Studio Code/<launchUrl>`
+	// so clicking the notif switches to (and cross-Space focuses) the emitting
+	// devcontainer window. See notif-core::callback::CallbackKind::FocusOpen
+	// for the DSL. When `launchUrl` is missing (session-1 producer contract),
+	// no `--on-click` is passed and click is a silent no-op.
+	const focusTarget = buildFocusTarget(line.launchUrl)
+	if (focusTarget) {
+		args.push('--on-click', focusTarget)
+	} else if (!launchUrlMissingLogged) {
+		log.warn('[notify-app] event has no valid launchUrl — body-click is a no-op (session-1 producer contract ; further occurrences squelched)')
+		launchUrlMissingLogged = true
+	}
+
+	// Session 3 — Allow action button for permission_request / permission_prompt
+	// events. Emits a `--on-action Allow:file:<inbox>` that lets the `notif`
+	// binary append a JSONL record to the inbox when the user taps Allow ; the
+	// tail watcher (startActionsInboxWatcher) then writes a
+	// tool_permission_response into outbound.jsonl for the ext.js injector.
+	// Deliberately no Deny button — body-click focuses VS Code where the user
+	// can deny with feedback in the Claude Code UI.
+	if (
+		actionsInboxPath &&
+		(payload.eventType === 'permission_request' || payload.eventType === 'permission_prompt') &&
+		typeof line.tool_use_id === 'string' && line.tool_use_id
+	) {
+		args.push('--on-action', `Allow:file:${actionsInboxPath}`)
+		rememberPermissionContext(notifId, sid, line.tool_use_id, line.tool_input)
+	}
+
+	// Session 4 focus-aware gate. `line.focused` is written by hook.js's
+	// readLatestFocus() from the extension patch's `vscode.window.state`
+	// snapshot in pending-perms.jsonl. When the host VS Code window is
+	// focused at emission time, delay the banner by NOTIFY_FOCUS_DEBOUNCE_MS
+	// (default 5 s) — gives the user a grace window to act in-app before the
+	// macOS banner interrupts. A `cancelled:notification` on the bus (user
+	// replied, tool finished, Allow click via inbound-watch) clears the
+	// pending debounce before it fires ; no banner in that case. Missing /
+	// false `line.focused` short-circuits to the immediate dispatch path.
+	const debounceMs = focusDebounce.getDebounceMs(process.env)
+	if (line.focused === true && debounceMs > 0) {
+		log.info(`[notify-app] focus-debounce ARM ${sid8} ${payload.eventType} — ${debounceMs}ms (id=${notifId})`)
+		focusDebounce.armDebounce(sid, debounceMs, () => {
+			log.info(`[notify-app] focus-debounce FIRE ${sid8} ${payload.eventType} — timeout expired (id=${notifId})`)
+			dispatchNow(sid, sid8, sender, notifId, args, payload.eventType)
+		})
+		return
+	}
+	dispatchNow(sid, sid8, sender, notifId, args, payload.eventType)
+}
+
+/**
+ * Spawn `notif send` with the pre-built argv and record the dispatched banner
+ * so cancel signals can later dismiss it. Extracted from `send()` so the
+ * focus-aware gate can either invoke it directly (not focused) or defer it
+ * behind a debounce timer (focused).
+ *
+ * @param {string}   sid
+ * @param {string}   sid8       first 8 chars for log lines
+ * @param {string}   sender     'claude-code' in v0.2
+ * @param {string}   notifId
+ * @param {string[]} args       fully-built `notif send` argv
+ * @param {string}   eventType  logged for diagnostics
+ * @returns {void}              fire-and-forget
+ */
+function dispatchNow(sid, sid8, sender, notifId, args, eventType) {
+	log.info(`[notify-app] DISPATCH ${eventType} ${sid8} — id=${notifId} sender=${sender}`)
 	// Enforce the "1 delivered banner per sid" invariant : dismiss any prior
 	// banner for this sid BEFORE dispatching the new one, so Notification
 	// Center never accumulates duplicates when a session emits multiple
@@ -343,6 +477,14 @@ function dismissPrevious(sid, reason) {
  */
 function onCancelled({ sid, eventType, reason } = {}) {
 	if (!sid) return
+	// Session 4 — if a focus-debounce timer is pending for this sid, cancel
+	// it BEFORE the dismiss path : a debounced-and-cancelled event never
+	// dispatched, so `dismissPrevious` will short-circuit at its empty-map
+	// check (no banner to remove). Doing cancel-debounce first keeps the
+	// happy-path (dispatched banner + cancel) unchanged.
+	if (focusDebounce.cancelDebounce(sid)) {
+		log.info(`[notify-app] focus-debounce CANCEL ${sid.slice(0, 8)} — ${eventType || 'unknown'}/${reason}`)
+	}
 	dismissPrevious(sid, `${eventType || 'unknown'}/${reason}`)
 }
 
@@ -393,4 +535,196 @@ function spawnFireAndForget(cmd, args) {
 	}
 }
 
-module.exports = { start, getNotifPath }
+// -----------------------------------------------------------------------------
+// FOCUS DSL HELPER
+// -----------------------------------------------------------------------------
+
+/**
+ * Build the `focus:open-a://<APP>/<URL>` DSL target for a given launchUrl,
+ * or null when the URL is missing / malformed. Shared between the body-click
+ * `--on-click` (session 2) and any future action target that wants to focus
+ * VS Code — extracted so both paths stay in sync on the sanitisation.
+ *
+ * Rejection cases : non-string, empty, or containing whitespace / NUL. All
+ * three would fail the inner `parse_target` boundary in `notif`, aborting
+ * the whole `notif send` — worse UX than a silent no-op click.
+ *
+ * @param {string|undefined} url    launchUrl candidate from the queue line
+ * @returns {string|null}           DSL target, or null when the URL is unusable
+ */
+function buildFocusTarget(url) {
+	if (typeof url !== 'string' || !url || /[\s\0]/.test(url)) return null
+	return `focus:open-a://${VSCODE_APP_SLUG}/${url}`
+}
+
+// -----------------------------------------------------------------------------
+// PERMISSION CONTEXT + ACTIONS INBOX (session 3)
+// -----------------------------------------------------------------------------
+
+/**
+ * Store the send-time (sid, tool_use_id, tool_input) triple for a
+ * permission notification so the inbox watcher can build the outbound
+ * command when the user later clicks Allow. Auto-evicts after
+ * PERMISSION_TTL_MS ; a duplicate insert clears the previous timer so it
+ * never leaks.
+ *
+ * @param {string} notifId
+ * @param {string} sid
+ * @param {string} toolUseId
+ * @param {*}      toolInput   pass-through from the queue line ; may be
+ *                              undefined / any JSON shape
+ * @returns {void}
+ */
+function rememberPermissionContext(notifId, sid, toolUseId, toolInput) {
+	if (!notifId || !sid || !toolUseId) return
+	const prev = permissionContext.get(notifId)
+	if (prev?.timeout) clearTimeout(prev.timeout)
+	const timeout = setTimeout(() => permissionContext.delete(notifId), PERMISSION_TTL_MS)
+	timeout.unref?.()
+	permissionContext.set(notifId, { sid, toolUseId, toolInput, timeout })
+}
+
+/**
+ * Wire the actions inbox tail watcher. Ensures the logs dir + inbox file
+ * exist, seeks to the current file end (so we skip records from prior
+ * daemon incarnations — Allow clicks during daemon downtime are silently
+ * lost by design), and installs a polling watcher that drains new lines
+ * as they land.
+ *
+ * Returns a small diag object folded into the consumer's start() report.
+ *
+ * @returns {object}
+ */
+function startActionsInboxWatcher() {
+	try {
+		fs.mkdirSync(path.dirname(actionsInboxPath), { recursive: true })
+		if (!fs.existsSync(actionsInboxPath)) {
+			fs.writeFileSync(actionsInboxPath, '')
+		}
+		inboxOffset = fs.statSync(actionsInboxPath).size
+	} catch (e) {
+		log.warn(`[notify-app] cannot prepare actions inbox at ${actionsInboxPath}: ${e.message}`)
+		return { actions_inbox: `failed-${e.code || 'io'}` }
+	}
+	try {
+		// 500 ms poll — matches the ext.js outbound poll cadence (200 ms) plus
+		// some slack. `fs.watchFile` uses stat polling, which is bullet-proof
+		// against the inode-swap gotchas of `fs.watch` on network / bind mounts.
+		// `persistent: false` so the watcher doesn't ref the event loop — the
+		// bus subscription is what keeps the daemon alive, and tests can exit
+		// cleanly without an explicit unwatch call.
+		fs.watchFile(actionsInboxPath, { interval: 500, persistent: false }, drainActionsInbox)
+	} catch (e) {
+		log.warn(`[notify-app] cannot watch ${actionsInboxPath}: ${e.message}`)
+		return { actions_inbox: `watch-failed-${e.code || 'io'}` }
+	}
+	log.info(`[notify-app] actions inbox attached to ${actionsInboxPath} (offset=${inboxOffset})`)
+	return { actions_inbox: actionsInboxPath }
+}
+
+/**
+ * `fs.watchFile` callback — reads the new bytes since `inboxOffset`, splits
+ * on newlines, and dispatches each parsed JSONL record via
+ * `processInboxLine`. Truncation (size < offset) resets the offset to 0.
+ *
+ * @param {fs.Stats} curr
+ * @returns {void}
+ */
+function drainActionsInbox(curr) {
+	if (curr.size < inboxOffset) {
+		// File was truncated / rotated externally — reset and drain from the top.
+		log.info('[notify-app] actions inbox truncated — offset reset')
+		inboxOffset = 0
+	}
+	if (curr.size === inboxOffset) return
+	let buf
+	try {
+		const fd = fs.openSync(actionsInboxPath, 'r')
+		buf = Buffer.alloc(curr.size - inboxOffset)
+		fs.readSync(fd, buf, 0, buf.length, inboxOffset)
+		fs.closeSync(fd)
+	} catch (e) {
+		log.warn(`[notify-app] read ${actionsInboxPath} failed: ${e.message}`)
+		return
+	}
+	inboxOffset = curr.size
+	const text = buf.toString('utf8')
+	for (const raw of text.split('\n')) {
+		if (!raw) continue
+		let record
+		try { record = JSON.parse(raw) }
+		catch (e) {
+			log.warn(`[notify-app] bad JSONL in actions inbox: ${e.message}`)
+			continue
+		}
+		processInboxLine(record)
+	}
+}
+
+/**
+ * Dispatch one parsed actions-inbox record. Only records with
+ * `event === "action:Allow"` produce an outbound line ; anything else is
+ * logged and ignored (future action labels can extend the switch).
+ *
+ * @param {object} record   CallbackPayload written by `notif`'s file: DSL
+ * @param {string} [record.notif_id]
+ * @param {string} [record.event]     e.g. "action:Allow"
+ * @returns {void}
+ */
+function processInboxLine(record) {
+	const notifId = record?.notif_id
+	const event   = record?.event
+	if (!notifId || event !== 'action:Allow') return
+	const ctx = permissionContext.get(notifId)
+	if (!ctx) {
+		log.warn(`[notify-app] action:Allow received for unknown notif_id=${notifId} — dropped`)
+		return
+	}
+	permissionContext.delete(notifId)
+	if (ctx.timeout) clearTimeout(ctx.timeout)
+	writeAllowOutbound(ctx.sid, ctx.toolUseId, ctx.toolInput)
+}
+
+/**
+ * Append a `tool_permission_response` allow command to the outbound.jsonl
+ * file the VS Code extension's outbound-action-injector polls. Schema
+ * mirrors outbound-tester.js exactly so the ext.js watcher parses both
+ * sources identically.
+ *
+ * Naming note — the parameter is called `toolUseId` for historical continuity
+ * with the queue-line field `line.tool_use_id`, but its actual value is the
+ * ext-side channel `requestId` (hex 32 chars) sourced from pending-perms.jsonl
+ * by hook.js. NOT the model-side `toolu_XXX` from Claude — those are a
+ * disjoint ID namespace and would fail the injector's pending-request match.
+ *
+ * @param {string} sid
+ * @param {string} toolUseId   ext channel requestId — see naming note above
+ * @param {*}      toolInput   passthrough of the original tool_input ;
+ *                              becomes `updatedInput` on the wire
+ * @returns {void}
+ */
+function writeAllowOutbound(sid, toolUseId, toolInput) {
+	if (!outboundPath) return
+	const cmd = {
+		cmd:                'tool_permission_response',
+		sessionId:          sid,
+		requestId:          toolUseId,
+		behavior:           'allow',
+		updatedInput:       toolInput ?? {},
+		updatedPermissions: [],
+	}
+	try {
+		fs.mkdirSync(path.dirname(outboundPath), { recursive: true })
+		fs.appendFileSync(outboundPath, JSON.stringify(cmd) + '\n')
+		log.info(`[notify-app] allow ack written for sid=${sid.slice(0, 8)} rid=${toolUseId.slice(0, 8)}`)
+	} catch (e) {
+		log.warn(`[notify-app] outbound append failed at ${outboundPath}: ${e.message}`)
+	}
+}
+
+module.exports = {
+	start,
+	getNotifPath,
+	// Exposed for tests only ; do not consume from production code.
+	_test: { buildFocusTarget, processInboxLine, rememberPermissionContext, permissionContext },
+}

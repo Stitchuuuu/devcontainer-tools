@@ -191,14 +191,22 @@ wizard_display_name() {
 
 wizard_project_type() {
     header "Project type"
-    echo "  [1] Node.js   (default — generic project layer, FROM base)"
-    echo "  [2] PHP       (PHP 8.2 + Composer, FROM base)"
-    echo "  [3] Custom    (base only, edit Dockerfile post-install)"
-    read -r -p "  Choose [1/2/3] (default: 1): " _t
+    echo "  [1] Node.js               (default — generic project layer, FROM base)"
+    echo "  [2] PHP                   (PHP 8.2 + Composer, FROM base)"
+    echo "  [3] Custom                (base only, edit Dockerfile post-install)"
+    echo "  [4] AndroidMin            (Android compile-check, Debian OpenJDK 17)"
+    echo "  [5] AndroidStd            (Android compile-check, Azul Zulu 17)"
+    echo "  [6] CapacitorAndroidMin   (Capacitor Android plugin, Debian OpenJDK 17)"
+    echo "  [7] CapacitorAndroidStd   (Capacitor Android plugin, Azul Zulu 17)"
+    read -r -p "  Choose [1-7] (default: 1): " _t
     case "${_t:-1}" in
         1) PROJECT_TYPE="node" ;;
         2) PROJECT_TYPE="php"  ;;
         3) PROJECT_TYPE="custom" ;;
+        4) PROJECT_TYPE="android-min" ;;
+        5) PROJECT_TYPE="android-std" ;;
+        6) PROJECT_TYPE="capacitor-android-min" ;;
+        7) PROJECT_TYPE="capacitor-android-std" ;;
         *) error "Invalid choice"; exit 1 ;;
     esac
 }
@@ -261,8 +269,12 @@ install_files() {
     # ── Build ──────────────────────────────────────────────────
     copy_verbatim Dockerfile.base
     case "$PROJECT_TYPE" in
-        node|custom) copy_templated_as Dockerfile     Dockerfile ;;
-        php)         copy_templated_as Dockerfile.php Dockerfile ;;
+        node|custom)           copy_templated_as Dockerfile                       Dockerfile ;;
+        php)                   copy_templated_as Dockerfile.php                   Dockerfile ;;
+        android-min)           copy_templated_as Dockerfile.AndroidMin            Dockerfile ;;
+        android-std)           copy_templated_as Dockerfile.AndroidStd            Dockerfile ;;
+        capacitor-android-min) copy_templated_as Dockerfile.CapacitorAndroidMin   Dockerfile ;;
+        capacitor-android-std) copy_templated_as Dockerfile.CapacitorAndroidStd   Dockerfile ;;
     esac
     copy_templated docker-compose.yml
     copy_verbatim vscode-settings.jsonc
@@ -284,7 +296,8 @@ install_files() {
     for f in dnsmasq.conf compile-policy.py mitm-init.sh domains.txt \
              domains.local.txt.example firewall-blocks \
              default-mode direct-tcp-allow.txt \
-             firewall-docker-setup.sh; do
+             firewall-docker-setup.sh \
+             domains.android.txt domains.capacitor-android.txt; do
         copy_verbatim "firewall/$f"
     done
     # ── Firewall trees (5 dirs) ────────────────────────────────
@@ -307,11 +320,14 @@ install_files() {
     # ── Knowledge (full dir) ───────────────────────────────────
     copy_dir knowledge
 
-    # ── Docs (4 files) ─────────────────────────────────────────
+    # ── Docs (5 files) ─────────────────────────────────────────
     copy_templated RESEARCH.md
-    for f in README RUNBOOK SECURITY; do
+    for f in README RUNBOOK SECURITY HOW-TO-CAPACITOR-PLUGIN; do
         copy_verbatim "${f}.md"
     done
+
+    # ── Scripts (per-variant helper shell scripts) ─────────────
+    copy_dir scripts
 
     # ── Local-backend sidecar ──────────────────────────────────
     copy_dir claude-bridge
@@ -460,6 +476,9 @@ set_exec_perms() {
 
     # host-helpers (all 12 are extensionless executables)
     chmod_exec "$DEST"/host-helpers/*
+
+    # Scripts (per-variant helpers)
+    [ -d "$DEST/scripts" ] && chmod_exec "$DEST"/scripts/*.sh
 
     # Skills
     chmod_exec "$DEST"/skills/sync-skills.sh

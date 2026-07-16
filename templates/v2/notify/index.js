@@ -299,7 +299,7 @@ for (const name of requested) {
 		log.warn(`[boot] unknown channel "${name}" — ignored`)
 		continue
 	}
-	const result = mod.start({ bus, projectName })
+	const result = mod.start({ bus, projectName, projectDir })
 	statusLines.push(formatStatus(name, result))
 	if (result.status === 'ok') activated.push(name)
 }

@@ -267,14 +267,18 @@ function truncate(s, n) {
 
 /**
  * Render the second line of a permission_request body : a short, readable
- * description of the tool's input. Three branches :
- *   1. string  → legacy hook format, pre-truncated ; clamp again to 120
- *   2. AskUserQuestion → first question text (+ "+N more" if multiple)
- *   3. fallback → JSON.stringify, clamp to 120
+ * description of the tool's input. Branches, in order :
+ *   1. string           → legacy hook format, pre-truncated ; clamp again to 150
+ *   2. AskUserQuestion  → first question text (+ "+N more" if multiple)
+ *   3. Bash             → the actual shell `command` verbatim
+ *   4. Edit             → `<file_path>: <first-line-of-old_string>`
+ *   5. Write            → `<file_path>`
+ *   6. fallback         → JSON.stringify, clamp to 150
  *
- * Adding a per-tool branch (e.g. Bash command shortening, Edit file path)
- * is the right extension point — match on `line.tool_name` like
- * AskUserQuestion does.
+ * Cap is 150 chars — the practical UN Center limit for a single body line
+ * before Notification Center starts truncating on its own. Session 3 bumped
+ * this from 120 so Bash / Edit / Write commands make it through intact when
+ * the user needs to decide Allow / Deny from the notif alone.
  *
  * @param {object} line   JSONL event line
  * @param {string|object} line.tool_input   raw or structured tool input
@@ -284,14 +288,27 @@ function truncate(s, n) {
 function renderPermissionInput(line) {
 	const input = line.tool_input
 	if (input === undefined || input === null) return '(no input)'
-	if (typeof input === 'string') return truncate(input, 120) || '(no input)'
+	if (typeof input === 'string') return truncate(input, 150) || '(no input)'
 	if (line.tool_name === 'AskUserQuestion') {
 		const summary = summarizeAskUserQuestion(input)
-		if (summary) return truncate(summary, 120)
+		if (summary) return truncate(summary, 150)
+	}
+	if (line.tool_name === 'Bash' && typeof input.command === 'string') {
+		return truncate(input.command, 150) || '(no input)'
+	}
+	if (line.tool_name === 'Edit' && typeof input.file_path === 'string') {
+		const firstLine = typeof input.old_string === 'string'
+			? input.old_string.split('\n', 1)[0]
+			: ''
+		const rendered = firstLine ? `${input.file_path}: ${firstLine}` : input.file_path
+		return truncate(rendered, 150)
+	}
+	if (line.tool_name === 'Write' && typeof input.file_path === 'string') {
+		return truncate(input.file_path, 150)
 	}
 	let s = ''
 	try { s = JSON.stringify(input) } catch { s = String(input) }
-	return truncate(s, 120) || '(no input)'
+	return truncate(s, 150) || '(no input)'
 }
 
 /**
