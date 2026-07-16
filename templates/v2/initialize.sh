@@ -143,6 +143,20 @@ if [ -f "$CB_CONFIG_DIR/config.example.json" ] && [ ! -f "$CB_CONFIG_DIR/config.
 	echo "✓ Bootstrapped claude-bridge/config.json from config.example.json"
 fi
 
+# Docker Desktop Mac (virtiofs) refuses to bind a file onto a path that does
+# not exist on the host — the pre-check runs outside the container namespace,
+# and `./vscode-settings.jsonc:/workspace/.vscode/settings.json:bind` translates
+# to a host path under the workspace bind. Linux Docker (overlayfs) tolerates
+# on-the-fly mountpoint creation, so the stub is a no-op there.
+# `-e` (not `-f`) preserves any pre-existing user content ; the bind-mount
+# still overlays it inside the container.
+VSCODE_STUB="$PROJECT_DIR/.vscode/settings.json"
+if [ ! -e "$VSCODE_STUB" ]; then
+	mkdir -p "$PROJECT_DIR/.vscode"
+	: > "$VSCODE_STUB"
+	echo "✓ Bootstrapped .vscode/settings.json stub (host-side bind-mount prep)"
+fi
+
 # Create volume (always needed)
 docker volume create "$CREDS_VOLUME" > /dev/null 2>&1 || true
 
