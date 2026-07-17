@@ -1,0 +1,90 @@
+diff --git a/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py b/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
+index 448a04c..f14af18 100755
+--- a/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
++++ b/.devcontainer/claude/vscode-ext-patchs/icon-fix-open-in-current-panel.py
+@@ -17,9 +17,10 @@ Patches applied (6 steps)
+ [4/6] extension.js primaryEditor.open — resolve the active column from
+       `tabGroups.activeTabGroup.viewColumn` (an integer) instead of the
+       symbolic `ViewColumn.Active`, so re-clicking doesn't split.
+-[5/6] extension.js "+" button handler — add the 4th `viewColumn` arg to
+-      the `new_conversation_tab` → `editor.open` call, so the webview
+-      header button opens in the active column instead of splitting.
++[5/6] extension.js "+" button handler — branch on preferredLocation:
++      route the `new_conversation_tab` message to `primaryEditor.open`
++      when "primary" (active column, full chrome), else fall back to
++      the unmodified `editor.open(sid, prompt)`.
+ [6/6] extension.js editor.openLast — after `primaryEditor.open`, invoke
+       `workbench.action.moveEditorToEnd` so the new tab lands at the end
+       of the active tab group (right of all other tabs). Requires VS
+@@ -170,7 +171,7 @@ def patch_primaryEditor_use_active_column(content):
+     `createPanel`, instead of the symbolic `ViewColumn.Active`. Without this,
+     VS Code splits into a new editor column on every click when a webview of
+     the same viewType already exists in the active column."""
+-    anchor = '"claude-vscode.primaryEditor.open"'
++    anchor = 'registerCommand("claude-vscode.primaryEditor.open"'
+     idx = content.find(anchor)
+     new_marker = 'tabGroups.activeTabGroup'
+     if idx != -1 and new_marker in content[idx:idx + 400]:
+@@ -200,22 +201,26 @@ def patch_primaryEditor_use_active_column(content):
+ 
+ def patch_plus_button_active_column(content):
+     """Fix the `+` button in the Claude webview header. The handler for the
+-    `new_conversation_tab` message calls `editor.open(sessionId, prompt)`
+-    without the 4th `viewColumn` arg, so it falls back to `ViewColumn.Beside`
+-    and splits the column. Append `vscode.ViewColumn.Active` as the 4th arg
+-    to match the `open_in_editor` handler's behavior."""
++    `new_conversation_tab` message originally calls `editor.open(sessionId,
++    prompt)`. Branch on `preferredLocation`: when "primary", route to
++    `primaryEditor.open` (which resolves the active column via
++    `tabGroups.activeTabGroup.viewColumn` and renders full chrome) ; else
++    fall back to the unmodified two-arg `editor.open(sid, prompt)`
++    (Anthropic's original split-column behavior). Mirrors step [3/6]'s
++    branching pattern for `editor.openLast`."""
+     anchor = '"new_conversation_tab"'
+     idx = content.find(anchor)
+     if idx != -1:
+         end = content.find('"new_conversation_tab_response"', idx)
+-        window = content[idx:end] if end != -1 else content[idx:idx + 300]
+-        if "ViewColumn.Active" in window:
+-            print(f"{YELLOW}[5/6]{RESET} extension.js '+' button viewColumn — already patched")
++        window = content[idx:end] if end != -1 else content[idx:idx + 600]
++        if '"claude-vscode.primaryEditor.open"' in window:
++            print(f"{YELLOW}[5/6]{RESET} extension.js '+' button — already patched")
+             return content
+     pat = re.compile(
+         r'(\w+)\.request\.type==="new_conversation_tab"\)return await '
+         r'(\w+)\.commands\.executeCommand\("claude-vscode\.editor\.open",'
+-        r'\1\.request\.sessionId,\1\.request\.initialPrompt\)'
++        r'\1\.request\.sessionId,\1\.request\.initialPrompt'
++        r'(?:,\2\.ViewColumn\.Active)?\)'
+     )
+     m = pat.search(content)
+     if not m:
+@@ -226,12 +231,14 @@ def patch_plus_button_active_column(content):
+     msg, vs = m.groups()
+     replacement = (
+         f'{msg}.request.type==="new_conversation_tab")return await '
+-        f'{vs}.commands.executeCommand("claude-vscode.editor.open",'
+-        f'{msg}.request.sessionId,{msg}.request.initialPrompt,'
+-        f'{vs}.ViewColumn.Active)'
++        f'({vs}.workspace.getConfiguration("claudeCode").get("preferredLocation")==="primary"'
++        f'?{vs}.commands.executeCommand("claude-vscode.primaryEditor.open",'
++        f'{msg}.request.sessionId,{msg}.request.initialPrompt)'
++        f':{vs}.commands.executeCommand("claude-vscode.editor.open",'
++        f'{msg}.request.sessionId,{msg}.request.initialPrompt))'
+     )
+     new_content = pat.sub(replacement, content, count=1)
+-    print(f"{GREEN}[5/6]{RESET} extension.js '+' button viewColumn — applied (msg={msg}, vscode={vs})")
++    print(f"{GREEN}[5/6]{RESET} extension.js '+' button — applied (msg={msg}, vscode={vs})")
+     return new_content
+ 
+ 
+@@ -248,7 +255,7 @@ def patch_openlast_move_to_end(content):
+     and gated on text-editor focus ; `workbench.action.moveEditorToEnd`
+     (VS Code ≥ 1.109) is the only extension-callable path that works on
+     webview tabs."""
+-    anchor = 'getConfiguration("claudeCode").get("preferredLocation")==="primary"'
++    anchor = '"claude-vscode.primaryEditor.open");'
+     idx = content.find(anchor)
+     if idx != -1:
+         marker = 'try{await '

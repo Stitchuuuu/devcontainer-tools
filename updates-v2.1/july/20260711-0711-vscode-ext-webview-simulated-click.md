@@ -1,8 +1,7 @@
 # 20260711-0711 — Rewrite `webview-simulated-click` with reqId back-ref (v2.1.205+ support)
 
-**Affects** : v2.1 devcontainers running
-`updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.patch`
-(the v1 sim-click). Downstream extension version 2.1.145 → 2.1.207.
+**Affects** : v2.1 devcontainers with the v1 `webview-simulated-click.py`
+patcher already installed. Downstream extension version 2.1.145 → 2.1.207.
 
 **Symptom** : outbound tool-permission responses (from Claude Code CLI
 back to the webview) resolve the extension-side promise but never
@@ -40,11 +39,6 @@ Validated on v2.1.145, v2.1.205, v2.1.207 : 1 match per site, both
 `node --check` pass, all three markers land as expected.
 
 **Upstream commit** : `a410057` — `feat(vscode-ext-patch): rewrite sim-click with reqId back-ref, support v2.1.205+`
-
-## Prerequisites
-
-Apply `updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector`
-first — this patch is the delta on top of the v1 sim-click.
 
 ## Apply
 

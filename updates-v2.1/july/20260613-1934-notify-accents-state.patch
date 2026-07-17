@@ -1,0 +1,413 @@
+diff --git a/.devcontainer/claude/CLAUDE-dev.md b/.devcontainer/claude/CLAUDE-dev.md
+index c364b78..11a8a8c 100644
+--- a/.devcontainer/claude/CLAUDE-dev.md
++++ b/.devcontainer/claude/CLAUDE-dev.md
+@@ -265,8 +265,10 @@ a recap you crafted on purpose.
+ Guidelines for the summary :
+ 
+ - **≤ 80 characters.** Beyond that, it gets truncated.
+-- **Plain text after the dash.** No nested bold, no emoji, no
+-  backticks — the host notification renders as system text.
++- **Raw UTF-8 after the dash.** Type accents and em-dashes
++  directly (`é`, `—`), not as `\uXXXX` escapes or HTML entities.
++  No nested bold, no emoji, no backticks — the host notification
++  renders as system text.
+ - **Action-oriented, past tense.** "Tests passing, PR ready",
+   "Build failed — see logs", "Refactor done, 3 files touched".
+   Not "I have completed the task".
+diff --git a/.devcontainer/skills/notify-queue/hook.js b/.devcontainer/skills/notify-queue/hook.js
+index cd0b989..bc9bce6 100755
+--- a/.devcontainer/skills/notify-queue/hook.js
++++ b/.devcontainer/skills/notify-queue/hook.js
+@@ -36,6 +36,18 @@ function truncate(str, max) {
+ 	return str.slice(0, max - 1) + '…'
+ }
+ 
++// Decode literal `\uXXXX` JSON-style escapes that a model may emit
++// instead of raw UTF-8. Conservative: only `\u` followed by exactly
++// 4 hex digits, and not preceded by another `\` (so `\\u00e9` — an
++// escaped backslash before a `u00e9` literal — is left alone).
++// Surrogate pairs decode correctly because each half is replaced
++// independently and JS re-joins them in the result string.
++function decodeUnicodeEscapes(s) {
++	if (typeof s !== 'string') return s
++	return s.replace(/(?<!\\)\\u([0-9a-fA-F]{4})/g,
++		(_, hex) => String.fromCharCode(parseInt(hex, 16)))
++}
++
+ // V2 : look for an explicit `**Recap** — <summary>` line near the end
+ // of the reply. Convention documented in CLAUDE-dev.md §14. Accepts
+ // em-dash (—), en-dash (–), or hyphen (-) as the separator. If the
+@@ -44,7 +56,7 @@ function truncate(str, max) {
+ function excerptV2(msg) {
+ 	if (typeof msg !== 'string' || !msg) return ''
+ 	const m = msg.match(/\*\*Recap\*\*\s*[—–-]\s*(.+?)\s*$/im)
+-	if (m && m[1]) return truncate(m[1].trim(), MAX_EXCERPT)
++	if (m && m[1]) return truncate(decodeUnicodeEscapes(m[1].trim()), MAX_EXCERPT)
+ 	return excerptV1(msg)
+ }
+ 
+@@ -70,7 +82,7 @@ function excerptV1(msg) {
+ 			.replace(/\*([^*]+)\*/g, '$1')
+ 			.replace(/`([^`]+)`/g, '$1')
+ 			.trim()
+-		if (clean) return truncate(clean, MAX_EXCERPT)
++		if (clean) return truncate(decodeUnicodeEscapes(clean), MAX_EXCERPT)
+ 	}
+ 	return ''
+ }
+@@ -225,4 +237,6 @@ function main() {
+ 	}
+ }
+ 
+-main()
++if (require.main === module) main()
++
++module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes }
+diff --git a/.devcontainer/skills/notify-queue/test-excerpt.js b/.devcontainer/skills/notify-queue/test-excerpt.js
+new file mode 100644
+index 0000000..6bacc51
+--- /dev/null
++++ b/.devcontainer/skills/notify-queue/test-excerpt.js
+@@ -0,0 +1,39 @@
++#!/usr/bin/env node
++// test-excerpt.js — assertions for hook.js excerpt + decode helpers.
++//
++// Run: `node .devcontainer/skills/notify-queue/test-excerpt.js`
++// Exits 0 on success, throws + non-zero on failure.
++
++const assert = require('assert')
++const { excerptV1, excerptV2, decodeUnicodeEscapes } = require('./hook')
++
++// 1. The reported mojibake : `\uXXXX` literals in a Recap line.
++const reported =
++	'Some prior text.\n\n**Recap** — Sources cit\\u00e9es, ' +
++	'niveau de confiance d\\u00e9clar\\u00e9'
++const out = excerptV2(reported)
++assert.ok(out.includes('citées'),  `expected "citées" — got: ${out}`)
++assert.ok(out.includes('déclaré'), `expected "déclaré" — got: ${out}`)
++assert.ok(!out.includes('\\u'),    `unexpected "\\u" — got: ${out}`)
++
++// 2. Raw UTF-8 must pass through untouched.
++const ok = '**Recap** — Tests passants, é and — preserved'
++assert.strictEqual(excerptV2(ok), 'Tests passants, é and — preserved')
++
++// 3. V1 fallback also decodes.
++const v1in = 'First usable line with caf\\u00e9 inside'
++assert.ok(excerptV1(v1in).includes('café'),
++	`V1 expected "café" — got: ${excerptV1(v1in)}`)
++
++// 4. Conservative : escaped backslash before `u00e9` is left alone.
++//    JS literal `'\\\\u00e9'` is the 6-char string `\\u00e9`.
++assert.strictEqual(decodeUnicodeEscapes('\\\\u00e9'), '\\\\u00e9')
++
++// 5. Other backslash sequences are not touched.
++assert.strictEqual(decodeUnicodeEscapes('line1\\nline2'), 'line1\\nline2')
++assert.strictEqual(decodeUnicodeEscapes('a\\\\b'),        'a\\\\b')
++
++// 6. Surrogate pair (emoji) decodes to the right codepoint.
++assert.strictEqual(decodeUnicodeEscapes('\\uD83D\\uDE00'), '😀')
++
++console.log('test-excerpt.js — all assertions passed')
+diff --git a/.devcontainer/notify/README.md b/.devcontainer/notify/README.md
+index af7a781..738c3a8 100644
+--- a/.devcontainer/notify/README.md
++++ b/.devcontainer/notify/README.md
+@@ -430,7 +430,14 @@ Both `state/` files are documented at the top of
+ 			"eventType": "stop",
+ 			"armed_at":  "2026-06-06T14:59:30.000Z",
+ 			"fire_at":   "2026-06-06T15:00:00.000Z",
+-			"delay_ms":  30000
++			"delay_ms":  30000,
++			"payload": {
++				"ts":                    "2026-06-06T14:59:30.000Z",
++				"sid":                   "abc12345-…",
++				"event":                 "stop",
++				"session_name":          "Build host notification daemon",
++				"last_message_excerpt":  "Tests passing, PR ready"
++			}
+ 		}
+ 	]
+ }
+@@ -438,8 +445,8 @@ Both `state/` files are documented at the top of
+ 
+ ```jsonc
+ // state/actions.jsonl — one JSON object per line
+-{"ts":"…","action":"armed","sid":"abc…","eventType":"stop","delayMs":30000,"fireAt":"…"}
+-{"ts":"…","action":"replaced","sid":"abc…","prevEventType":"stop","newEventType":"stop","delayMs":30000,"fireAt":"…"}
++{"ts":"…","action":"armed","sid":"abc…","eventType":"stop","delayMs":30000,"fireAt":"…","payload":{"ts":"…","sid":"abc…","event":"stop","session_name":"…","last_message_excerpt":"…"}}
++{"ts":"…","action":"replaced","sid":"abc…","prevEventType":"stop","newEventType":"stop","delayMs":30000,"fireAt":"…","payload":{"ts":"…","sid":"abc…","event":"stop","session_name":"…","last_message_excerpt":"…"}}
+ {"ts":"…","action":"cancelled","sid":"abc…","eventType":"stop","cause":"user_replied"}
+ {"ts":"…","action":"fired","sid":"abc…","eventType":"stop"}
+ {"ts":"…","action":"unmapped","sid":"abc…","eventType":"unknown_event"}
+@@ -448,6 +455,18 @@ Both `state/` files are documented at the top of
+ The `action` enum maps directly to the 5 branches in
+ [watcher.handleLine](lib/watcher.js) below.
+ 
++The `payload` field on `armed` / `replaced` entries (both
++`pending.json` and `actions.jsonl`) is the raw parsed JSONL `line`
++from [notify-queue/hook.js `buildLine`](../skills/notify-queue/hook.js) —
++verbatim, no truncation. Per-event it carries `last_message_excerpt`
++(stop), `tool_name`/`tool_input`/`tool_use_id?` (permission_request),
++or `notification_type`/`message` (notification), plus the optional
++`session_name`. This lets external consumers (status bars,
++dashboards, alternative renderers) render or route from `pending.json`
++alone, without re-reading the source queue file. `cancelled` /
++`fired` / `unmapped` lines omit `payload` — the matching `armed` is
++searchable in `actions.jsonl` by `sid + ts`.
++
+ ### `watcher.handleLine` — 5-branch decision
+ 
+ [lib/watcher.js](lib/watcher.js) tails each `<sid>.jsonl` and decides
+diff --git a/.devcontainer/notify/lib/state.js b/.devcontainer/notify/lib/state.js
+index 33cc5a4..fb359fc 100644
+--- a/.devcontainer/notify/lib/state.js
++++ b/.devcontainer/notify/lib/state.js
+@@ -27,9 +27,16 @@
+ //
+ // SCHEMAS (see notify/README.md for the human-readable doc)
+ //   pending.json :
+-//     { updated_at, pid, pending: [{ sid, eventType, armed_at, fire_at, delay_ms }, …] }
++//     { updated_at, pid, pending: [{ sid, eventType, armed_at, fire_at, delay_ms, payload }, …] }
+ //   actions.jsonl line :
+ //     { ts, action, sid, eventType, …action-specific keys }
++//
++//   `payload` is the raw parsed JSONL `line` from notify-queue/hook.js
++//   buildLine — carries tool_name / tool_input / session_name /
++//   last_message_excerpt / message / notification_type … per eventType.
++//   Present on `armed` and `replaced` (pending.json + audit line) ; omitted
++//   on `cancelled` / `fired` / `unmapped` (the matching `armed` is
++//   searchable by sid + ts).
+ // =============================================================================
+ 
+ const fs = require('fs')
+@@ -39,7 +46,7 @@ const { writeAtomic } = require('./atomic-write')
+ let pendingPath = ''
+ let actionsPath = ''
+ let ownPid      = 0
+-const pendingMap = new Map()  // sid → { sid, eventType, armed_at, fire_at, delay_ms }
++const pendingMap = new Map()  // sid → { sid, eventType, armed_at, fire_at, delay_ms, payload? }
+ 
+ /**
+  * Boot the state module. Resolves the on-disk paths under queue/state/,
+@@ -113,14 +120,17 @@ function appendAction(entry) {
+  * @param {string} evt.sid         session ID (Claude Code session UUID or short form)
+  * @param {string} evt.eventType   event class label (e.g. 'permission_request')
+  * @param {number} evt.delayMs     debounce delay in ms; fire_at = now + delayMs
++ * @param {object} [evt.payload]   raw parsed JSONL `line` (notify-queue/hook.js buildLine).
++ *                                 Mirrored into pending.json and the audit line so an external
++ *                                 consumer can render / route from state alone.
+  * @returns {void}                 mutates pendingMap, flushes pending.json, appends to actions.jsonl
+  */
+-function armed({ sid, eventType, delayMs }) {
++function armed({ sid, eventType, delayMs, payload }) {
+ 	const armed_at = nowIso()
+ 	const fire_at  = new Date(Date.now() + delayMs).toISOString()
+-	pendingMap.set(sid, { sid, eventType, armed_at, fire_at, delay_ms: delayMs })
++	pendingMap.set(sid, { sid, eventType, armed_at, fire_at, delay_ms: delayMs, payload })
+ 	flushPending()
+-	appendAction({ action: 'armed', sid, eventType, delayMs, fireAt: fire_at })
++	appendAction({ action: 'armed', sid, eventType, delayMs, fireAt: fire_at, payload })
+ }
+ 
+ /**
+@@ -133,14 +143,16 @@ function armed({ sid, eventType, delayMs }) {
+  * @param {string} evt.prevEventType    event class previously armed for this sid
+  * @param {string} evt.newEventType     event class taking over
+  * @param {number} evt.delayMs          debounce delay in ms for the new timer
++ * @param {object} [evt.payload]        raw parsed JSONL `line` for the NEW event ; mirrored into
++ *                                      pending.json and the audit line (overrides the prior payload).
+  * @returns {void}                      mutates pendingMap, flushes pending.json, appends to actions.jsonl
+  */
+-function replaced({ sid, prevEventType, newEventType, delayMs }) {
++function replaced({ sid, prevEventType, newEventType, delayMs, payload }) {
+ 	const armed_at = nowIso()
+ 	const fire_at  = new Date(Date.now() + delayMs).toISOString()
+-	pendingMap.set(sid, { sid, eventType: newEventType, armed_at, fire_at, delay_ms: delayMs })
++	pendingMap.set(sid, { sid, eventType: newEventType, armed_at, fire_at, delay_ms: delayMs, payload })
+ 	flushPending()
+-	appendAction({ action: 'replaced', sid, prevEventType, newEventType, delayMs, fireAt: fire_at })
++	appendAction({ action: 'replaced', sid, prevEventType, newEventType, delayMs, fireAt: fire_at, payload })
+ }
+ 
+ /**
+diff --git a/.devcontainer/notify/lib/watcher.js b/.devcontainer/notify/lib/watcher.js
+index 4e8bdb5..009bdae 100644
+--- a/.devcontainer/notify/lib/watcher.js
++++ b/.devcontainer/notify/lib/watcher.js
+@@ -247,6 +247,11 @@ function readNewLines(file, offsets) {
+  *      and arm a fresh one based on the new event ("latest wins").
+  *   5. ARM — no previous timer ; setTimeout(delays[type]) and store.
+  *
++ * The raw parsed `line` is passed as `payload` into `state.armed` and
++ * `state.replaced` so pending.json + actions.jsonl expose the full
++ * notification payload to external consumers, not just the timer
++ * bookkeeping.
++ *
+  * The `notification` super-event is flattened to its `notification_type`
+  * sub-string (idle_prompt / permission_prompt / elicitation_dialog) so
+  * the rest of the pipeline only sees flat event types.
+@@ -342,10 +347,10 @@ function handleLine(line, { timers, bus, delays, state }) {
+ 	if (existing) {
+ 		clearTimeout(existing.timeout)
+ 		log.info(`[watcher] ${eventType.padEnd(14)} ${sid8} — REPLACED previous ${existing.eventType} timer`)
+-		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs })
++		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs, payload: line })
+ 		bus.emit('cancelled:notification', { id: existing.id, eventType: existing.eventType, reason: `replaced-by-${eventType}` })
+ 	} else {
+-		state?.armed({ sid, eventType, delayMs })
++		state?.armed({ sid, eventType, delayMs, payload: line })
+ 	}
+ 
+ 	const timeout = setTimeout(() => {
+diff --git a/.devcontainer/notify/tests/state-test.js b/.devcontainer/notify/tests/state-test.js
+new file mode 100644
+index 0000000..bba6c6a
+--- /dev/null
++++ b/.devcontainer/notify/tests/state-test.js
+@@ -0,0 +1,145 @@
++#!/usr/bin/env node
++// state-test.js — assertions for lib/state.js payload pass-through.
++//
++// Run: `node .devcontainer/notify/tests/state-test.js`
++// Exits 0 on success, throws + non-zero on failure.
++
++const assert = require('assert')
++const fs     = require('fs')
++const os     = require('os')
++const path   = require('path')
++
++const state = require('../lib/state')
++
++// Spin up an isolated queue dir under tmpdir/ so this test never touches the
++// real .devcontainer/notify/queue/state/ files.
++const queueDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-state-test-'))
++const stateDir = path.join(queueDir, 'state')
++const pendingPath = path.join(stateDir, 'pending.json')
++const actionsPath = path.join(stateDir, 'actions.jsonl')
++
++state.init({ queueDir, pid: 99999 })
++
++// Helpers -----------------------------------------------------------------
++
++const readPending = () => JSON.parse(fs.readFileSync(pendingPath, 'utf8'))
++const readActions = () => fs.readFileSync(actionsPath, 'utf8')
++	.split('\n').filter(Boolean).map((s) => JSON.parse(s))
++
++// 1. armed({ payload }) mirrors the payload into pending.json + audit line.
++const sid = 'abc12345-test-0001'
++const permLine = {
++	ts:             '2026-06-13T10:00:00.000Z',
++	sid,
++	event:          'permission_request',
++	session_name:   'state-payload session',
++	tool_use_id:    'toolu_abc123',
++	tool_name:      'Bash',
++	tool_input:     { command: 'ls -la' }
++}
++state.armed({ sid, eventType: 'permission_request', delayMs: 30000, payload: permLine })
++
++const afterArm = readPending()
++assert.strictEqual(afterArm.pending.length, 1, 'one pending entry after armed')
++const armedEntry = afterArm.pending[0]
++assert.strictEqual(armedEntry.sid, sid)
++assert.strictEqual(armedEntry.eventType, 'permission_request')
++assert.strictEqual(armedEntry.delay_ms, 30000)
++assert.deepStrictEqual(armedEntry.payload, permLine,
++	'pending.json carries the full payload verbatim')
++
++const armedActions = readActions()
++assert.strictEqual(armedActions.length, 1, 'one audit line after armed')
++assert.strictEqual(armedActions[0].action, 'armed')
++assert.deepStrictEqual(armedActions[0].payload, permLine,
++	'armed audit line carries the payload')
++
++// 2. replaced({ payload }) overwrites pending.json + emits a replaced line.
++const stopLine = {
++	ts:                    '2026-06-13T10:00:05.000Z',
++	sid,
++	event:                 'stop',
++	session_name:          'state-payload session',
++	last_message_excerpt:  'Tests passing, PR ready'
++}
++state.replaced({
++	sid,
++	prevEventType: 'permission_request',
++	newEventType: 'stop',
++	delayMs:      30000,
++	payload:      stopLine
++})
++
++const afterReplace = readPending()
++assert.strictEqual(afterReplace.pending.length, 1, 'still one pending entry after replaced')
++const replacedEntry = afterReplace.pending[0]
++assert.strictEqual(replacedEntry.eventType, 'stop')
++assert.deepStrictEqual(replacedEntry.payload, stopLine,
++	'pending.json now carries the NEW payload')
++
++const replacedActions = readActions()
++assert.strictEqual(replacedActions.length, 2, 'two audit lines after replaced')
++assert.strictEqual(replacedActions[1].action, 'replaced')
++assert.strictEqual(replacedActions[1].prevEventType, 'permission_request')
++assert.strictEqual(replacedActions[1].newEventType, 'stop')
++assert.deepStrictEqual(replacedActions[1].payload, stopLine,
++	'replaced audit line carries the new payload')
++
++// 3. cancelled({ ... }) removes pending entry, no payload field on the audit line.
++state.cancelled({ sid, eventType: 'stop', cause: 'user_replied' })
++
++const afterCancel = readPending()
++assert.strictEqual(afterCancel.pending.length, 0, 'pending entry removed after cancelled')
++
++const cancelActions = readActions()
++assert.strictEqual(cancelActions.length, 3)
++assert.strictEqual(cancelActions[2].action, 'cancelled')
++assert.ok(!('payload' in cancelActions[2]),
++	'cancelled audit line carries no payload (by design)')
++
++// 4. fired({ ... }) removes pending entry, no payload field on the audit line.
++const sid2 = 'def67890-test-0002'
++state.armed({
++	sid:       sid2,
++	eventType: 'stop',
++	delayMs:   30000,
++	payload:   { ts: '2026-06-13T10:01:00.000Z', sid: sid2, event: 'stop', last_message_excerpt: 'short stop' }
++})
++state.fired({ sid: sid2, eventType: 'stop' })
++
++const afterFire = readPending()
++assert.strictEqual(afterFire.pending.length, 0, 'pending entry removed after fired')
++
++const fireActions = readActions()
++assert.strictEqual(fireActions[fireActions.length - 1].action, 'fired')
++assert.ok(!('payload' in fireActions[fireActions.length - 1]),
++	'fired audit line carries no payload (by design)')
++
++// 5. End-to-end : a realistic permission_request line round-trips faithfully
++//    (including nested tool_input fields).
++state.init({ queueDir, pid: 99999 })  // reset state for a clean assertion
++const sid3 = 'cafe1234-test-0003'
++const realistic = {
++	ts:           '2026-06-13T10:02:00.000Z',
++	sid:          sid3,
++	event:        'permission_request',
++	session_name: 'My DevContainer session',
++	tool_use_id:  'toolu_xyz',
++	tool_name:    'Bash',
++	tool_input:   {
++		command:     'echo "hello, world — café"',
++		description: 'Print a greeting'
++	}
++}
++state.armed({ sid: sid3, eventType: 'permission_request', delayMs: 5000, payload: realistic })
++const roundTrip = readPending().pending[0].payload
++assert.deepStrictEqual(roundTrip, realistic,
++	'realistic permission_request line round-trips verbatim through pending.json')
++assert.strictEqual(roundTrip.tool_input.command, 'echo "hello, world — café"',
++	'nested tool_input.command preserves UTF-8 verbatim')
++
++// Cleanup -----------------------------------------------------------------
++
++fs.rmSync(queueDir, { recursive: true, force: true })
++
++console.log('state-test.js — all assertions passed')

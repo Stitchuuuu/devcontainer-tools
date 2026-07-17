@@ -1,5 +1,13 @@
 # 20260612-1857 — Navigator `PendingMigration` activation fix
 
+> **Idempotency note** — if
+> `.devcontainer/claude/vscode-ext-patchs/navigator-pending-migration-fix.py`
+> already exists in your downstream with identical content (some forks
+> picked it up out-of-band before the July batch shipped), `git apply`
+> will fail with *"already exists in working directory"*. Skip this
+> patch — the target state is already reached. Verify with
+> `git apply --reverse --check <patch>` (exit 0 → already applied).
+
 **Affects** : v2.1 devcontainers where the Claude Code VS Code
 extension crashes on activation with
 `PendingMigrationError` / `TypeError: Cannot read properties of undefined (reading 'PendingMigration')`.

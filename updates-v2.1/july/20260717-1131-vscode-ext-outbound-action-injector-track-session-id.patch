@@ -1,0 +1,276 @@
+diff --git a/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py b/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
+index 859289c..79e010f 100755
+--- a/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
++++ b/.devcontainer/claude/vscode-ext-patchs/outbound-action-injector.py
+@@ -64,8 +64,64 @@ from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_f
+ 
+ 
+ MARKER_WATCHER = 'notify-queue-outbound-inject-v1'
+-MARKER_PENDING = 'notify-queue-outbound-perm-log-v1'
+-MARKER_SETTLE = 'notify-queue-outbound-perm-settle-v1'
++MARKER_PENDING = 'notify-queue-outbound-perm-log-v2'
++MARKER_SETTLE = 'notify-queue-outbound-perm-settle-v2'
++MARKER_TRACK_SID = 'notify-queue-outbound-session-track-v1'
++
++# v1 → v2 record-shape change (v1 misnamed channelId as sessionId, breaking
++# the reciprocal PanelManager.sessionPanels.get() lookup). Strip pre-existing
++# v1 injections before applying v2 so the script is self-healing on rerun
++# against a v1-patched extension.js.
++MARKER_PENDING_V1 = 'notify-queue-outbound-perm-log-v1'
++MARKER_SETTLE_V1 = 'notify-queue-outbound-perm-settle-v1'
++
++
++def strip_v1_injection(content, marker_v1):
++    """Remove an injection block introduced by v1 with shape:
++       /*marker*/try{if(<req>?.type==="tool_permission_request"){...}}catch(_){};
++
++    Locates the marker, then advances a brace counter from the `try{` opening
++    to find the matching close, then consumes the trailing `catch(_){};`.
++    Returns (new_content, stripped_count).
++    """
++    tag = f'/*{marker_v1}*/'
++    tag_end_expected = len(tag)
++    n = 0
++    while True:
++        i = content.find(tag)
++        if i == -1:
++            break
++        # Anchor: `try{` immediately after the tag comment. Small tolerance
++        # for stray whitespace introduced by an editor between tag and try.
++        try_start = content.find('try{', i + tag_end_expected)
++        if try_start == -1 or try_start - (i + tag_end_expected) > 4:
++            # Unknown shape — bail rather than corrupt further
++            break
++        # Walk from try_start to find matching `}` closing the try block
++        depth = 0
++        j = try_start
++        while j < len(content):
++            ch = content[j]
++            if ch == '{':
++                depth += 1
++            elif ch == '}':
++                depth -= 1
++                if depth == 0:
++                    break
++            j += 1
++        if depth != 0:
++            break
++        # After the try block: `catch(_){};` — consume it too.
++        # Shape is fixed: `}catch(_){};`
++        catch_start = j + 1
++        catch_pat = 'catch(_){};'
++        if content[catch_start:catch_start + len(catch_pat)] != catch_pat:
++            # Unexpected shape — bail
++            break
++        end = catch_start + len(catch_pat)
++        content = content[:i] + content[end:]
++        n += 1
++    return content, n
+ 
+ IMPACT_LINES = [
+     "→ The outbound control channel will NOT be wired up.",
+@@ -91,15 +147,26 @@ WATCHER_BLOCK = (
+           'const path=require("path"),fs=require("fs");'
+           'const dir=path.join(wf,".devcontainer","logs");'
+           'const file=path.join(dir,"claude-code-vscode-ext-outbound.jsonl");'
++          'const dbgFile=path.join(dir,"claude-code-vscode-ext-watcher-debug.jsonl");'
++          # Tailable debug log gated by DEBUG=1 (or CLAUDE_OUTBOUND_DEBUG) —
++          # keeps the JSONL clean in normal runtime. When off, dbg() is a
++          # true no-op function (no fs syscalls per poll cycle).
++          'const _dbgOn=(process.env.DEBUG==="1"||!!process.env.CLAUDE_OUTBOUND_DEBUG);'
++          'const dbg=_dbgOn?(ev,extra)=>{try{fs.appendFileSync(dbgFile,JSON.stringify({ts:new Date().toISOString(),ev,...extra})+"\\n");}catch(_){}}:()=>{};'
+           'try{fs.mkdirSync(dir,{recursive:true});fs.closeSync(fs.openSync(file,"a"));}catch(_){}'
+-          'let pos=0;try{pos=fs.statSync(file).size;}catch(_){}'
++          # Start reading from position 0 — reprocess any pre-existing lines.
++          # Avoids the race where outbound-tester writes BEFORE setupPanel
++          # runs its watcher init; without this, the pre-existing line is
++          # never read (pos anchored at file end).
++          'let pos=0;'
+           'let carry="";'
+           'this._outboundTimer=setInterval(()=>{'
+             'let sz;try{sz=fs.statSync(file).size;}catch(_){return;}'
+-            'if(sz<pos){pos=0;carry="";}'
++            'if(sz<pos){pos=0;carry="";dbg("truncated",{sz});}'
+             'if(sz<=pos)return;'
++            'dbg("change",{pos,sz});'
+             'const buf=Buffer.alloc(sz-pos);let fd;'
+-            'try{fd=fs.openSync(file,"r");fs.readSync(fd,buf,0,buf.length,pos);}catch(_){return;}'
++            'try{fd=fs.openSync(file,"r");fs.readSync(fd,buf,0,buf.length,pos);}catch(e){dbg("read_fail",{err:String(e)});return;}'
+             'finally{if(fd!==undefined){try{fs.closeSync(fd);}catch(_){}}}'
+             'pos=sz;'
+             'const chunk=carry+buf.toString("utf8");'
+@@ -109,20 +176,45 @@ WATCHER_BLOCK = (
+               'const t=line.trim();if(!t)continue;'
+               'try{'
+                 'const cmd=JSON.parse(t);'
++                'dbg("parsed",{cmd});'
+                 'if(cmd.cmd==="tool_permission_response"){'
++                  'const knownSids=this.sessionPanels?[...this.sessionPanels.keys()]:[];'
+                   'const p=this.sessionPanels?.get(cmd.sessionId);'
+-                  'if(!p){this.output.warn(`[outbound-inject] no panel for sid=${cmd.sessionId}`);continue;}'
++                  'if(!p){'
++                    'dbg("lookup_miss",{sid:cmd.sessionId,knownSids});'
++                    'this.output.warn(`[outbound-inject] no panel for sid=${cmd.sessionId} (known: ${knownSids.join(",")||"<empty>"})`);'
++                    'continue;'
++                  '}'
++                  'dbg("lookup_hit",{sid:cmd.sessionId,rid:cmd.requestId});'
+                   'const result={behavior:cmd.behavior,updatedInput:cmd.updatedInput??{},updatedPermissions:cmd.updatedPermissions??[]};'
+                   'if(cmd.behavior==="deny")result.message=cmd.message??"denied";'
+-                  'p.webview.postMessage({type:"from-extension",message:{type:"simulated_click",requestId:cmd.requestId,result}});'
+-                  'this.output.info(`[outbound-inject] posted simulated_click sid=${cmd.sessionId} rid=${cmd.requestId} behavior=${cmd.behavior}`);'
++                  'try{'
++                    'const posted=p.webview.postMessage({type:"from-extension",message:{type:"simulated_click",requestId:cmd.requestId,result}});'
++                    'dbg("post",{sid:cmd.sessionId,rid:cmd.requestId,behavior:cmd.behavior,posted:!!posted});'
++                    'this.output.info(`[outbound-inject] posted simulated_click sid=${cmd.sessionId} rid=${cmd.requestId} behavior=${cmd.behavior} posted=${!!posted}`);'
++                  '}catch(e){'
++                    'dbg("post_fail",{sid:cmd.sessionId,rid:cmd.requestId,err:String(e)});'
++                    'this.output.warn(`[outbound-inject] postMessage failed: ${e?.message??e}`);'
++                  '}'
+                 '}else{'
++                  'dbg("unknown_cmd",{cmd});'
+                   'this.output.warn(`[outbound-inject] unknown cmd: ${cmd.cmd}`);'
+                 '}'
+-              '}catch(e){this.output.warn(`[outbound-inject] parse failed: ${e?.message??e}`);}'
++              '}catch(e){dbg("parse_fail",{line:t,err:String(e)});this.output.warn(`[outbound-inject] parse failed: ${e?.message??e}`);}'
+             '}'
+           '},200);'
+-          'this.output.info(`[outbound-inject] watcher started on ${file}`);'
++          'dbg("watcher_started",{file,dbgFile});'
++          # Session boundary marker in pending-perms.jsonl. Reload wipes the
++          # extension host; pending Gn instances get aborted (SDK reject),
++          # but our settle-log injection only hooks the `resolve:` callback
++          # — abort/reject never lands as `settled:true`. So old pending
++          # records survive as ghosts. This marker gives outbound-tester a
++          # cutoff: anything before the latest `session_boot` is stale.
++          'try{'
++            'const pendingFile=path.join(dir,"claude-code-vscode-ext-pending-perms.jsonl");'
++            'fs.appendFileSync(pendingFile,JSON.stringify({ts:new Date().toISOString(),ev:"session_boot"})+"\\n");'
++          '}catch(_){}'
++          'this.output.info(`[outbound-inject] watcher started on ${file}, debug log at ${dbgFile}`);'
+         '}'
+       '}catch(e){this.output?.warn?.(`[outbound-inject] init failed: ${e?.message??e}`);}'
+     '}'
+@@ -169,6 +261,13 @@ def patch_sendrequest(content):
+       A. Right after `let N=Y3();` → append pending record.
+       B. Inside `{resolve:(Z)=>{...x(Z)...}` → append settled record.
+     """
++    # Self-healing: strip v1 injections before applying v2 shape. v1 misnamed
++    # channelId as sessionId in the JSONL records; v2 fixes it.
++    content, stripped_pending = strip_v1_injection(content, MARKER_PENDING_V1)
++    content, stripped_settle = strip_v1_injection(content, MARKER_SETTLE_V1)
++    if stripped_pending or stripped_settle:
++        print(f"{YELLOW}[outbound-perm-log]{RESET} extension.js — stripped v1 injections (pending={stripped_pending}, settle={stripped_settle})")
++
+     if MARKER_PENDING in content and MARKER_SETTLE in content:
+         print(f"{YELLOW}[outbound-perm-log]{RESET} extension.js — already patched")
+         return content
+@@ -193,6 +292,11 @@ def patch_sendrequest(content):
+     req_var = m_pending.group(3)
+     rid_var = m_pending.group(5)
+ 
++    # sessionId = SDK UUID tracked by patch_track_session_id (stable, matches
++    # PanelManager.sessionPanels key). channelId = sendRequest's 1st arg (the
++    # short per-launch id, unstable across /debug relaunches). Both logged
++    # under their accurate names — earlier v1 misnamed channelId as sessionId,
++    # breaking the watcher's sessionPanels.get(sessionId) lookup.
+     pending_inject = (
+         '/*' + MARKER_PENDING + '*/'
+         'try{'
+@@ -202,7 +306,12 @@ def patch_sendrequest(content):
+             'if(wf){'
+               'const path=require("path"),fs=require("fs");'
+               'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
+-              f'const rec={{ts:new Date().toISOString(),sessionId:{sid_var},requestId:{rid_var},toolName:{req_var}.toolName,inputs:{req_var}.inputs,settled:false}};'
++              # `focused` / `active` snapshot at request time — lets consumers
++              # know whether the user was even looking at VS Code when the
++              # prompt fired (useful to auto-answer when the window has been
++              # backgrounded for a while, or to prioritize a real click).
++              'const ws=vs.window?.state;'
++              f'const rec={{ts:new Date().toISOString(),sessionId:this._currentSessionId??null,channelId:{sid_var},requestId:{rid_var},toolName:{req_var}.toolName,inputs:{req_var}.inputs,focused:ws?.focused??null,active:ws?.active??null,settled:false}};'
+               'try{fs.mkdirSync(path.dirname(file),{recursive:true});}catch(_){}'
+               'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'
+             '}'
+@@ -236,7 +345,8 @@ def patch_sendrequest(content):
+             'if(wf){'
+               'const path=require("path"),fs=require("fs");'
+               'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
+-              f'const rec={{ts:new Date().toISOString(),sessionId:{sid_var},requestId:{rid_var},settled:true,outcome:{resolve_arg}?.result?.behavior??"unknown"}};'
++              'const ws=vs.window?.state;'
++              f'const rec={{ts:new Date().toISOString(),sessionId:this._currentSessionId??null,channelId:{sid_var},requestId:{rid_var},focused:ws?.focused??null,active:ws?.active??null,settled:true,outcome:{resolve_arg}?.result?.behavior??"unknown"}};'
+               'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'
+             '}'
+           '}'
+@@ -252,6 +362,65 @@ def patch_sendrequest(content):
+     return content
+ 
+ 
++def patch_track_session_id(content):
++    """Store the SDK session UUID on the Comms instance whenever
++    `update_session_state` arrives. This is the same UUID PanelManager
++    keys `sessionPanels` by — so pending-perms.jsonl records logged with
++    `this._currentSessionId` will match the watcher's sessionPanels.get()
++    lookup on the reciprocal side.
++
++    Anchor: `else if(<msg>.request.type==="update_session_state")return
++             this.onSessionStateChanged?.(<msg>.request.sessionId,...)`.
++    We inject `this._currentSessionId=<msg>.request.sessionId,` before
++    the `onSessionStateChanged` call, using JS comma-operator semantics
++    so the surrounding return expression is unchanged.
++
++    The tracked value is unset (undefined) until the first
++    update_session_state arrives — which happens as soon as Claude
++    receives its first API response. Perm requests only fire after the
++    SDK has established a session, so in practice the tracked value is
++    populated by the time we need it.
++    """
++    if MARKER_TRACK_SID in content:
++        n = content.count(MARKER_TRACK_SID)
++        print(f"{YELLOW}[outbound-session-track]{RESET} extension.js — already patched ({n} site(s))")
++        return content
++
++    pat = re.compile(
++        r'(else if\((\w+)\.request\.type==="update_session_state"\)return )'
++        r'(this\.onSessionStateChanged)'
++    )
++    matches = list(pat.finditer(content))
++    if not matches:
++        banner("OUTBOUND SESSION-TRACK PATCH FAILED",
++               'extension.js: else if(<msg>.request.type==="update_session_state")return this.onSessionStateChanged... not found',
++               IMPACT_LINES)
++        sys.exit(1)
++    if len(matches) > 1:
++        banner("OUTBOUND SESSION-TRACK PATCH AMBIGUOUS",
++               f"extension.js: update_session_state anchor matched {len(matches)} times (expected 1)",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    m = matches[0]
++    msg_var = m.group(2)
++    # `... || this._currentSessionId` guard: update_session_state can fire
++    # with an empty/undefined sessionId during transitions (e.g., pre-SDK-
++    # response state, or the "goodbye" fire when switching sessions —
++    # webview-index.js: `if(J&&J!==X)Q.updateSessionState(J,"idle")`).
++    # We only want to advance _currentSessionId to a NEW truthy value, never
++    # overwrite a valid UUID with an empty string.
++    inject = (
++        f'/*{MARKER_TRACK_SID}*/'
++        f'this._currentSessionId={msg_var}.request.sessionId||this._currentSessionId,'
++    )
++    # Splice at start of group 3 (`this.onSessionStateChanged`).
++    inject_at = m.start(3)
++    new_content = content[:inject_at] + inject + content[inject_at:]
++    print(f"{GREEN}[outbound-session-track]{RESET} extension.js — tracking this._currentSessionId at update_session_state (msg={msg_var})")
++    return new_content
++
++
+ def main():
+     ext_dir = resolve_ext_dir(sys.argv)
+     check_files(ext_dir, ["extension.js"])
+@@ -262,6 +431,7 @@ def main():
+     content = js.read_text()
+     original = content
+     content = patch_watcher(content)
++    content = patch_track_session_id(content)
+     content = patch_sendrequest(content)
+ 
+     if content != original:

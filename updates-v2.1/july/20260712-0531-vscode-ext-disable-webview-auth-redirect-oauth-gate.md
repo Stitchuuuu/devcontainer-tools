@@ -1,8 +1,7 @@
 # 20260712-0531 — Gate `isAuthenticated` getter (cover OAuth-expired redirect)
 
-**Affects** : v2.1 devcontainers running
-`updates-v2.1/20260707-0739-vscode-ext-disable-login-prompt` (the v1
-`disable-webview-auth-redirect.py`).
+**Affects** : v2.1 devcontainers with the v1 `disable-webview-auth-redirect.py`
+patcher already installed.
 
 **Symptom** : despite `claudeCode.disableLoginPrompt = true`, the
 login screen still surfaces when `claude auth status --json` reports
@@ -31,11 +30,6 @@ names drift `l2` → `kn` → `On`, structure intact). Idempotent marker
 so `run-all.sh` re-runs stay clean.
 
 **Upstream commit** : `d8d2c37` — `feat(vscode-ext-patchs): gate isAuthenticated getter — cover OAuth expired redirect`
-
-## Prerequisites
-
-Apply `updates-v2.1/20260707-0739-vscode-ext-disable-login-prompt` first
-— this patch is the delta on top of the v1 auth-redirect fix.
 
 ## Apply
 

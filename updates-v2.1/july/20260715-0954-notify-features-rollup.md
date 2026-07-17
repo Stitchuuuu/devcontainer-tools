@@ -1,7 +1,8 @@
 # 20260715-0954 — Notify features rollup (`notif` daemon integration + focus-aware + Allow inbox + session-title + sibling logs)
 
-**Affects** : v2.1 devcontainers running
-`updates/20260613-1934-notify-accents-state` (or earlier notify state).
+**Affects** : v2.1 devcontainers with the notify pipeline in the
+"payload-persisted" state (`state.js` documents `payload`, `watcher.js`
+propagates it, `README.md` describes it).
 
 **Symptom / features being added** :
 
@@ -70,10 +71,7 @@
 - `f0ec42e` — `docs(notify): teach README-vm-smoke about replay-session.js full-session replay`
 - `f879f12` — `docs(notify): document sibling logs + outbound control channel`
 
-## Prerequisites
-
-Apply `updates/20260613-1934-notify-accents-state` first — this rollup
-is the delta on top of the notify accent decode + state payload.
+## Runtime dependency
 
 The `notif` daemon dispatch requires the standalone `notif` binary
 (new macOS UN backend, ships from its own repo). Without `notif`

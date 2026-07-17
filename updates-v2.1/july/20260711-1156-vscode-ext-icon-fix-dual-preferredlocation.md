@@ -1,8 +1,7 @@
 # 20260711-1156 — `icon-fix` dual-value `preferredLocation` with ownership detection
 
-**Affects** : v2.1 devcontainers running
-`updates/20260613-0929-plus-button-chrome` (or earlier
-`icon-fix-open-in-current-panel.py` state). Downstream extension
+**Affects** : v2.1 devcontainers with an existing
+`icon-fix-open-in-current-panel.py` patcher. Downstream extension
 version 2.1.145 → 2.1.207.
 
 **Symptom** : the previous `resolve_enum_name` helper picked a single
@@ -32,11 +31,6 @@ single-string compare, so existing configs on `"primary"`,
 migration required.
 
 **Upstream commit** : `42a92ea` — `refactor(vscode-ext-patchs): dual-value preferredLocation with ownership detection`
-
-## Prerequisites
-
-Apply `updates/20260613-0929-plus-button-chrome` first — this patch
-is the delta on top of the `+` button chrome fix.
 
 ## Apply
 

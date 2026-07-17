@@ -1,0 +1,94 @@
+diff --git a/.devcontainer/notify/lib/consumers/notifier.js b/.devcontainer/notify/lib/consumers/notifier.js
+index 94bb056..dad6ce0 100644
+--- a/.devcontainer/notify/lib/consumers/notifier.js
++++ b/.devcontainer/notify/lib/consumers/notifier.js
+@@ -270,10 +270,12 @@ function truncate(s, n) {
+  * description of the tool's input. Branches, in order :
+  *   1. string           → legacy hook format, pre-truncated ; clamp again to 150
+  *   2. AskUserQuestion  → first question text (+ "+N more" if multiple)
+- *   3. Bash             → the actual shell `command` verbatim
+- *   4. Edit             → `<file_path>: <first-line-of-old_string>`
+- *   5. Write            → `<file_path>`
+- *   6. fallback         → JSON.stringify, clamp to 150
++ *   3. ExitPlanMode     → first `# <title>` line of the plan markdown
++ *                         (fallback : first non-empty line)
++ *   4. Bash             → the actual shell `command` verbatim
++ *   5. Edit             → `<file_path>: <first-line-of-old_string>`
++ *   6. Write            → `<file_path>`
++ *   7. fallback         → JSON.stringify, clamp to 150
+  *
+  * Cap is 150 chars — the practical UN Center limit for a single body line
+  * before Notification Center starts truncating on its own. Session 3 bumped
+@@ -293,6 +295,11 @@ function renderPermissionInput(line) {
+ 		const summary = summarizeAskUserQuestion(input)
+ 		if (summary) return truncate(summary, 150)
+ 	}
++	if (line.tool_name === 'ExitPlanMode' && typeof input.plan === 'string') {
++		const h1 = input.plan.match(/^#\s+(.+)$/m)
++		const summary = h1 ? h1[1].trim() : input.plan.split('\n', 1)[0].trim()
++		if (summary) return truncate(summary, 150)
++	}
+ 	if (line.tool_name === 'Bash' && typeof input.command === 'string') {
+ 		return truncate(input.command, 150) || '(no input)'
+ 	}
+@@ -555,6 +562,19 @@ function spawnDetached(cmd, args) {
+ 	}
+ }
+ 
++/**
++ * Inject the project label used by brandTitle() without going through start().
++ * Needed by sibling consumers (notify-app) that reuse this file's TEMPLATES /
++ * render() but are mutually exclusive with start() on the channel mux — so
++ * without this hook, projectName stays '' and brandTitle() collapses to the
++ * bare BRAND_NAME, losing the ` · <project>` suffix.
++ *
++ * @param {string} pn   project name, falsy → cleared
++ */
++function setProjectName(pn) {
++	projectName = pn || ''
++}
++
+ // TEMPLATES + render are exposed so tests can preview the final output
+ // without spawning the OS notifier process.
+-module.exports = { start, TEMPLATES, render }
++module.exports = { start, TEMPLATES, render, setProjectName }
+diff --git a/.devcontainer/notify/lib/consumers/notify-app.js b/.devcontainer/notify/lib/consumers/notify-app.js
+index d988bfa..13251c3 100644
+--- a/.devcontainer/notify/lib/consumers/notify-app.js
++++ b/.devcontainer/notify/lib/consumers/notify-app.js
+@@ -124,7 +124,7 @@ const PERMISSION_TTL_MS = 10 * 60 * 1000
+  *                                                    Allow action inbox + outbound.jsonl
+  * @returns {{ status: 'ok'|'skipped', diag: object }}
+  */
+-function start({ bus, projectDir }) {
++function start({ bus, projectDir, projectName = '' }) {
+ 	const host = getHostKind()
+ 	notifBinPath = getNotifPath()
+ 	if (!notifBinPath) {
+@@ -132,6 +132,12 @@ function start({ bus, projectDir }) {
+ 	}
+ 	log.info(`[notify-app] notif binary resolved at ${notifBinPath}`)
+ 
++	// TEMPLATES live in notifier.js and read `projectName` from that module's
++	// scope via brandTitle(). notifier.start() is skipped when we're active
++	// (mutex in index.js), so seed it here — otherwise every --title collapses
++	// to bare "Claude Code" and duplicates the bundle header.
++	require('./notifier').setProjectName(projectName)
++
+ 	// Ensure the "Claude Code" sender bundle exists with the bundled icon
+ 	// BEFORE the first send fires. `notif register` is idempotent — no-op
+ 	// when the bundle is already materialized with the same identifier +
+@@ -385,9 +391,13 @@ function send(payload) {
+ 	// tool_permission_response into outbound.jsonl for the ext.js injector.
+ 	// Deliberately no Deny button — body-click focuses VS Code where the user
+ 	// can deny with feedback in the Claude Code UI.
++	// AskUserQuestion is excluded : it needs the user to pick a specific
++	// answer among N options, not a blanket "allow" — surfacing the button
++	// there would trigger an ambiguous ack (which option got allowed ?).
+ 	if (
+ 		actionsInboxPath &&
+ 		(payload.eventType === 'permission_request' || payload.eventType === 'permission_prompt') &&
++		line.tool_name !== 'AskUserQuestion' &&
+ 		typeof line.tool_use_id === 'string' && line.tool_use_id
+ 	) {
+ 		args.push('--on-action', `Allow:file:${actionsInboxPath}`)
