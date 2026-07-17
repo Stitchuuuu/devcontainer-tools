@@ -1,0 +1,4220 @@
+diff --git a/.devcontainer/notify/README.md b/.devcontainer/notify/README.md
+index af7a781..95bcaee 100644
+--- a/.devcontainer/notify/README.md
++++ b/.devcontainer/notify/README.md
+@@ -24,6 +24,7 @@ auto-discovers from cwd).
+ - [Run](#run)
+ - [Add a consumer](#add-a-consumer)
+ - [Architecture](#architecture)
++- [Outbound control channel](#outbound-control-channel) — external auto-answer for permission prompts
+ - [OS setup](#os-setup)
+ - [Channels](#channels)
+ - [Troubleshooting](#troubleshooting)
+@@ -430,7 +431,14 @@ Both `state/` files are documented at the top of
+ 			"eventType": "stop",
+ 			"armed_at":  "2026-06-06T14:59:30.000Z",
+ 			"fire_at":   "2026-06-06T15:00:00.000Z",
+-			"delay_ms":  30000
++			"delay_ms":  30000,
++			"payload": {
++				"ts":                    "2026-06-06T14:59:30.000Z",
++				"sid":                   "abc12345-…",
++				"event":                 "stop",
++				"session_name":          "Build host notification daemon",
++				"last_message_excerpt":  "Tests passing, PR ready"
++			}
+ 		}
+ 	]
+ }
+@@ -438,8 +446,8 @@ Both `state/` files are documented at the top of
+ 
+ ```jsonc
+ // state/actions.jsonl — one JSON object per line
+-{"ts":"…","action":"armed","sid":"abc…","eventType":"stop","delayMs":30000,"fireAt":"…"}
+-{"ts":"…","action":"replaced","sid":"abc…","prevEventType":"stop","newEventType":"stop","delayMs":30000,"fireAt":"…"}
++{"ts":"…","action":"armed","sid":"abc…","eventType":"stop","delayMs":30000,"fireAt":"…","payload":{"ts":"…","sid":"abc…","event":"stop","session_name":"…","last_message_excerpt":"…"}}
++{"ts":"…","action":"replaced","sid":"abc…","prevEventType":"stop","newEventType":"stop","delayMs":30000,"fireAt":"…","payload":{"ts":"…","sid":"abc…","event":"stop","session_name":"…","last_message_excerpt":"…"}}
+ {"ts":"…","action":"cancelled","sid":"abc…","eventType":"stop","cause":"user_replied"}
+ {"ts":"…","action":"fired","sid":"abc…","eventType":"stop"}
+ {"ts":"…","action":"unmapped","sid":"abc…","eventType":"unknown_event"}
+@@ -448,6 +456,18 @@ Both `state/` files are documented at the top of
+ The `action` enum maps directly to the 5 branches in
+ [watcher.handleLine](lib/watcher.js) below.
+ 
++The `payload` field on `armed` / `replaced` entries (both
++`pending.json` and `actions.jsonl`) is the raw parsed JSONL `line`
++from [notify-queue/hook.js `buildLine`](../skills/notify-queue/hook.js) —
++verbatim, no truncation. Per-event it carries `last_message_excerpt`
++(stop), `tool_name`/`tool_input`/`tool_use_id?` (permission_request),
++or `notification_type`/`message` (notification), plus the optional
++`session_name`. This lets external consumers (status bars,
++dashboards, alternative renderers) render or route from `pending.json`
++alone, without re-reading the source queue file. `cancelled` /
++`fired` / `unmapped` lines omit `payload` — the matching `armed` is
++searchable in `actions.jsonl` by `sid + ts`.
++
+ ### `watcher.handleLine` — 5-branch decision
+ 
+ [lib/watcher.js](lib/watcher.js) tails each `<sid>.jsonl` and decides
+@@ -493,6 +513,45 @@ If the file is absent at startup, `inbound-watch` logs a clear fallback
+ message and stays in standby ; the container-side hooks alone keep the
+ daemon working.
+ 
++### Sibling logs — outbound control channel
++
++The extension patches co-write three other JSONL files under
++[../logs/](../logs/), not consumed by notify but useful to know about
++when debugging permission flow :
++
++| File | Producer | Consumer | Purpose |
++|---|---|---|---|
++| `claude-code-vscode-ext-inbound.jsonl` | `user-action-observer.py` patch (webview→ext chokepoint) | `notify` inbound-watch, `outbound-tester` | Every webview→ext message with `{ts, source:"user-action", sessionId, channelId, pid, type, payload}`. Records user clicks (allow/deny), typed messages, session state transitions. |
++| `claude-code-vscode-ext-pending-perms.jsonl` | `outbound-action-injector.py` patch (Comms.sendRequest instrumentation) | `outbound-tester list`, external controllers | Perm requests tracker : `{ts, sessionId, channelId, requestId, toolName, inputs, focused, active, settled:false}` on request ; `{ts, sessionId, channelId, requestId, focused, active, settled:true, outcome}` on resolve. `focused` / `active` are `vscode.window.state` snapshots at record time — proxied from the client GUI so they reflect actual host-side window focus (external controller can use them to decide whether to auto-answer or wait for a human). Also `{ts, ev:"session_boot"}` at each extension host init — the tester uses that as cutoff for stale entries from crashed/reloaded sessions. |
++| `claude-code-vscode-ext-outbound.jsonl` | External controller (usually [../claude/outbound-tester.js](../claude/outbound-tester.js)) | Extension host file-watcher (200 ms poll) | Command line per JSONL entry, e.g. `{cmd:"tool_permission_response", sessionId, requestId, behavior:"allow", updatedInput, updatedPermissions}`. Watcher looks up the target panel via `sessionPanels.get(sessionId)` and postMessages a `simulated_click` to the webview, which resolves the pending Gn via `Q.accept()`/`Q.reject()` (see [../claude/vscode-ext-patchs/webview-simulated-click.py](../claude/vscode-ext-patchs/webview-simulated-click.py) for the webview side). |
++| `claude-code-vscode-ext-watcher-debug.jsonl` | Same watcher, gated by `DEBUG=1` (or `CLAUDE_OUTBOUND_DEBUG`) | Manual `tail -f` during troubleshooting | Granular flow tracing : `watcher_started`, `change`, `parsed`, `lookup_hit`, `lookup_miss` (with `knownSids`), `post`, `parse_fail`, etc. No-op when the env flag is off. |
++
++The extension is patched by `run-all.sh` at container build. Detailed
++workflow + failure modes for these patches live in
++[../../vendor/anthropic.claude-code/CLAUDE.md](../../vendor/anthropic.claude-code/CLAUDE.md).
++
++**Managing the logs.** All four files are append-only, no rotation :
++
++- **Boot wipe** — `post-start.sh` truncates the four `.jsonl` at each
++  container start. Fresh sessions start empty.
++- **Reset mid-session** — `> .devcontainer/logs/<file>.jsonl` from
++  terminal. Safe : the extension holds no fd on the debug/outbound
++  files (opens per-write) ; inbound + pending-perms handle truncation
++  gracefully (the watcher resets `pos` when `sz < pos`).
++- **`session_boot` cutoff** — `pending-perms.jsonl` gets a
++  `{ev:"session_boot", ts}` line at each extension host init.
++  `outbound-tester list` filters records before the latest boot ; you
++  don't have to wipe manually just because you reloaded. Fallback : if
++  no boot marker present, records older than 30 min are treated as
++  fossilized.
++- **`watcher-debug.jsonl` opt-in** — writer is a no-op unless
++  `DEBUG=1` (or `CLAUDE_OUTBOUND_DEBUG`) is set in the extension
++  host's env. Set it in [../devcontainer.json](../devcontainer.json)'s
++  `remoteEnv` or [../.env](../.env) if the file exists.
++- **Growth watch** — `inbound.jsonl` is the noisy one (~1 line per
++  webview interaction). Typical session : a few MB. If it starts
++  eating disk, wipe it — nothing downstream depends on old history.
++
+ ### Lifecycle + healthcheck
+ 
+ [lib/lockfile.js](lib/lockfile.js) owns `queue/.daemon.pid`. One file,
+@@ -554,6 +613,259 @@ Anything else throws with an actionable message — no silent guessing.
+ 
+ ---
+ 
++## Outbound control channel
++
++Reciprocal to the inbound observation stream : a way for an **external
++controller** (host script, agent, MCP tool) to inject responses into
++Claude Code permission prompts as if the user had clicked — bypassing
++the modal UI when auto-answering is safe. Runs entirely inside the same
++`.devcontainer/logs/` directory as the notify inbound / desktop-toast
++pipeline ; not consumed by the notify daemon itself, but sits in the
++same infrastructure and shares the extension-patch machinery.
++
++The channel handles `tool_permission_response` today. Extending it to
++other webview widgets (AskUserQuestion single-select / multi-select,
++ExitPlanMode, etc.) follows the same pattern — see
++[Adding a new outbound cmd](#adding-a-new-outbound-cmd) below.
++
++### Data flow
++
++```
++                        writes                       polls, 200 ms
++  external controller ────────► outbound.jsonl ──────────────► extension host
++    (outbound-tester.js                                        (setupPanel
++     or any tool)                                               file-watcher)
++                                                                     │
++                                                                     │ this.sessionPanels.get(sessionId)
++                                                                     ▼
++                                                                  target panel
++                                                                     │
++                                                                     │ panel.webview.postMessage(
++                                                                     │   {type:"from-extension",
++                                                                     │    message:{type:"simulated_click",
++                                                                     │             requestId, result}})
++                                                                     ▼
++                                                                webview intercept
++                                                                     │
++                                                                     │ this.permissionRequests.value
++                                                                     │   .find(q => q._reqId === requestId)
++                                                                     │ Q.accept(input, perms)  or  Q.reject(msg, false)
++                                                                     ▼
++                                                              Q.onResolved fires
++                                                                     │
++                                                                     │ send({type:"tool_permission_response", result})
++                                                                     │ + drop Q from permissionRequests signal
++                                                                     ▼
++                                                          extension receives response
++                                                          via the standard chokepoint
++                                                          → inbound.jsonl gets a
++                                                            `source:"user-action"`
++                                                            line indistinguishable
++                                                            from a real click
++```
++
++The extension-side promise for the perm request resolves, the tool runs,
++the UI prompt dismisses atomically. Zero orphan states.
++
++### Cmd protocol
++
++Every outbound line is a single JSON object with a `cmd` discriminator.
++Extra fields per cmd type.
++
++**`tool_permission_response`** — currently the only cmd type.
++
++```json
++{
++  "cmd": "tool_permission_response",
++  "sessionId": "effef380-59b1-4018-af95-8d8beb88e7f2",
++  "requestId": "826f7870b1c2542f308c08f21d35ff8e",
++  "behavior": "allow",
++  "updatedInput":  { … },
++  "updatedPermissions": []
++}
++```
++
++- `sessionId` — the **SDK session UUID** (stable, matches
++  `PanelManager.sessionPanels` key). Do NOT put the channelId here —
++  the extension watcher's `sessionPanels.get(sessionId)` would miss.
++- `requestId` — the wire perm request id (32 hex chars). Matched inside
++  the webview against `Gn._reqId` (stashed by the injection patches on
++  each new Gn). `channelId` on Gn is a different id space and cannot
++  be used for lookup.
++- `behavior` — `"allow"` | `"deny"`.
++- `updatedInput` — for `allow`, the actual input the tool will run with
++  (echo the pending record's `inputs` unless you're rewriting).
++- `updatedPermissions` — for `allow`, typically `[]` (grants that would
++  update the workspace allowlist ; leave empty for one-off answers).
++- For `deny`, add `"message": "…"` and optionally `"interrupt": true`
++  (rejects with an abort signal). Default message is `"denied"`.
++
++Unknown `cmd` values are logged as `unknown_cmd` and dropped ; adding a
++new cmd type is a code change (see below).
++
++### Extension-side implementation
++
++Three injection functions in
++[../claude/vscode-ext-patchs/outbound-action-injector.py](../claude/vscode-ext-patchs/outbound-action-injector.py) :
++
++- **`patch_watcher`** — anchors at the top of `PanelManager.setupPanel(z,K,V,N){`.
++  Singleton-guarded by `this._outboundStarted` (one interval per PanelManager
++  instance, per window session). 200 ms poll on `outbound.jsonl` starting
++  at `pos = 0` (reads any lines the writer put down before the watcher
++  came up ; on truncate resets to 0). Each parsed cmd walks
++  `this.sessionPanels.get(cmd.sessionId)` to find the target
++  panel, then `panel.webview.postMessage({type:"from-extension",
++  message:{type:"simulated_click", requestId, result}})`.
++- **`patch_sendrequest`** — anchors inside `Comms.sendRequest(z,K,V)`.
++  Two spots : right after `let N=fn()` (writes the pending record) and
++  inside the `outstandingRequests.set(N,{resolve:(Z)=>{x(Z)})` callback
++  (writes the settle record). Records include `focused` + `active`
++  from `vscode.window.state` — proxied from the client GUI, so consumers
++  see actual host-side window focus.
++- **`patch_track_session_id`** — anchors at
++  `else if(z.request.type==="update_session_state")return this.onSessionStateChanged?.(…)`
++  in `Comms.fromClient`. Stores `this._currentSessionId = <msg>.request.sessionId || this._currentSessionId`
++  via comma-operator (no control flow change). Ensures the SDK UUID is
++  available to the pending / settle log injections — the sendRequest's
++  first arg is the chat channelId, NOT the sessionId, so we can't get
++  the UUID from there.
++
++Debug tracing via `DEBUG=1` or `CLAUDE_OUTBOUND_DEBUG` env var — writes
++per-event lines to `watcher-debug.jsonl` (see [Sibling logs](#cancel-paths)
++above). No-op when unset ; safe to leave the flag on for extended debug
++sessions.
++
++### Webview-side implementation
++
++Three injection functions in
++[../claude/vscode-ext-patchs/webview-simulated-click.py](../claude/vscode-ext-patchs/webview-simulated-click.py).
++The core mechanic : tag each Gn permission-request instance with its
++wire requestId at creation time, then have the message intercept look up
++by that requestId.
++
++- **`patch_perm_request_id_callsite`** — inside
++  `processRequestInner`, the `case "tool_permission_request"` arm calls
++  `handleToolPermissionRequest($.channelId, $.request, Z)`. We inject a
++  4th arg `$.requestId`.
++- **`patch_perm_request_id_tag`** — inside `handleToolPermissionRequest`,
++  right after `let Q=new Gn($,eV(Z.toolName),…)`, we splice
++  `Q._reqId=arguments[3];`. Uses `arguments[3]` rather than a formal
++  param so nothing else calling this method with 3 args breaks.
++- **`patch_message_intercept`** — inside the top-level
++  `window.addEventListener("message",(G)=>{…})` in class `Xz1 extends zn`.
++  Handles `_m?.type==="simulated_click"` : walks
++  `this.permissionRequests.value.find(q => q?._reqId === _rid)`, calls
++  `Q.accept(updatedInput, updatedPermissions)` or `Q.reject(message, false)`.
++  `console.log` traces are always on (webview devtools only, opt-in
++  via `Cmd+Shift+P → Developer: Open Webview Developer Tools`).
++
++Why not match by `Q.channelId` : Gn's `channelId` is the chat channel
++id (per-panel), NOT the wire request id. Multiple simultaneous prompts
++would collide.
++
++### CLI
++
++[../claude/outbound-tester.js](../claude/outbound-tester.js) — pure
++Node, zero deps. Subcommands :
++
++- **`list [--json]`** — reads pending-perms.jsonl, filters records
++  before the latest `session_boot` marker (or older than 30 min if no
++  marker), groups by requestId (last-write-wins), returns those still
++  `settled:false`. Tabular : `sid8 | chan | rid8 | foc | tool | inputs | age`.
++  `foc` = `F` (focused), `A` (active but not focused), `-` (neither),
++  `?` (pre-focus-patch record).
++- **`send <token> allow|deny [--input '<json>'] [--message '<text>'] [--sid <sid>]`** —
++  writes a `tool_permission_response` line to outbound.jsonl. `token`
++  can be a full 32-hex requestId (bypasses lookup) or any prefix of
++  requestId / sessionId / channelId. Unique-match required — ambiguity
++  fails loud with the candidate list. `--input` overrides `updatedInput`
++  (JSON), `--message` overrides the deny message.
++
++Examples :
++
++```
++node .devcontainer/claude/outbound-tester.js list
++node .devcontainer/claude/outbound-tester.js send effef380 allow
++node .devcontainer/claude/outbound-tester.js send 826f allow --input '{"command":"ls"}'
++node .devcontainer/claude/outbound-tester.js send effef380 deny --message "not now"
++```
++
++### Adding a new outbound cmd
++
++Say you want to auto-answer `AskUserQuestion` prompts (single-select
++radio, multi-select checkbox). Full checklist :
++
++1. **Recon.** Grep
++   `vendor/anthropic.claude-code/v<VER>/pretty/webview-index.js` +
++   `.../extension.js` for the class that owns the pending prompt.
++   Identify :
++   - The instance class (analog of `Gn`).
++   - The wire request id (which arg gets passed to the constructor).
++   - The terminal method (`.accept()` / `.reject()` analog).
++   - The array signal holding pending instances (analog of
++     `this.permissionRequests`).
++2. **Extension-side.** No new injection needed — the existing watcher
++   dispatches on `cmd.cmd` and forwards `simulated_click` messages with
++   any `cmd.data`. Just extend the JSON shape :
++   ```
++   {cmd: "ask_user_response", sessionId, requestId, answer: {…}}
++   ```
++   Encode single-select as `{pick: "label"}`, multi-select as
++   `{pick: ["a","b"]}`, text as `{text: "…"}`. Keep it simple ; the
++   webview intercept validates.
++3. **Webview-side, three patches (mirror of perm-request) :**
++   a. **Tag** — after the pending instance is created, splice
++   `instance._reqId = arguments[<N>];`.
++   b. **Callsite** — pass `$.requestId` as the extra arg into the
++   handler that creates the instance.
++   c. **Intercept branch** — inside the existing
++   `if(_m?.type==="simulated_click")` block, add another
++   `else if(_m?.type==="ask_user_response")` branch that walks the
++   right array signal by `_reqId` and calls the terminal method.
++4. **Marker discipline.** Bump to a new
++   `notify-queue-webview-<name>-v1` marker for each patch. Never
++   overload existing markers (idempotence check would misfire).
++5. **CLI.** Add a subcommand or flag to
++   [../claude/outbound-tester.js](../claude/outbound-tester.js) :
++   ```
++   node outbound-tester.js answer <token> --pick "option-label"
++   ```
++   Reuse `resolvePending()` for the token → record match ;
++   compose the new cmd JSON ; append.
++6. **Test.** Reload window, trigger the new prompt type, use the CLI,
++   watch `watcher-debug.jsonl` (`DEBUG=1`) for `parsed` / `lookup_hit`
++   / `post` events, watch webview devtools for
++   `[webview-…] received / matched / fired` traces.
++7. **Docs.** Update the Cmd protocol section above with the new shape.
++   Update the Extension / Webview implementation subsections with the
++   new injection anchors. Update this checklist if you find a new
++   pattern worth codifying.
++
++### Adding a new consumer
++
++Not related to the outbound channel — the outbound channel is
++**push-only** (outside → extension). If you want to react in-container
++to inbound events (user clicks, session state changes), write a notify
++consumer that subscribes to the shared bus (see
++[Add a consumer](#add-a-consumer)) and reads
++`.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl` via
++[lib/inbound-watch.js](lib/inbound-watch.js).
++
++### Troubleshooting
++
++Symptom → probe → likely cause. Runs on the state visible via
++`.devcontainer/logs/` alone ; no live extension inspection needed.
++
++| Symptom | Probe | Likely cause |
++|---|---|---|
++| `outbound-tester send` succeeds but click doesn't fire | Enable `DEBUG=1`, reload window, retry, `tail watcher-debug.jsonl`. Look for `lookup_miss` with `knownSids`. | If miss : `sessionId` in outbound.jsonl doesn't match a `sessionPanels` key. Usually means the tester read a stale `pending-perms.jsonl` (pre-boot marker) or the `_currentSessionId` tracker missed an `update_session_state`. Trigger a new perm request, retry with the fresh rid. |
++| Debug shows `lookup_hit` + `post posted:true` but click still absent | Open webview devtools on target panel. Look for `[webview-sim-click] received` / `no pending Gn for requestId=…` | If `received` but `no pending Gn` : webview intercept ran but the Gn tag injection is missing (marker not present in installed `webview/index.js`). Re-run `run-all.sh`. If neither log appears : intercept regex didn't match after a version bump ; check the `patch_message_intercept` anchor in [../claude/vscode-ext-patchs/webview-simulated-click.py](../claude/vscode-ext-patchs/webview-simulated-click.py). |
++| `list` shows stale entries with `age > 30m` | `grep session_boot pending-perms.jsonl` | If no marker : the extension host didn't restart since the last patch bump, OR the `pending-perms.jsonl` was manually appended to and the marker was stripped. Reload window, the watcher writes a fresh marker on init. |
++| Records missing `focused` / `active` | Check the file's marker : `grep notify-queue-outbound-perm-log pending-perms.jsonl`'s producer (`.js`, not `.jsonl`) | If the record is pre-focus-patch (before this section landed), it just doesn't have those fields — `list` shows `?`. New records after reload get them. |
++| `node --check` fails on the installed `extension.js` after a patch bump | Check for LF-inside-string : `python3 -c "import re; c=open('/home/node/.vscode-server/…/extension.js').read(); print(len(list(re.finditer(r'\n\"', c))))"` | Almost always the `\n` → LF corruption trap documented in [../../vendor/anthropic.claude-code/CLAUDE.md](../../vendor/anthropic.claude-code/CLAUDE.md) piège #1. Re-deploy from `v<VER>-pristine` and re-run patches. |
++
++---
++
+ ## OS setup
+ 
+ ### macOS — enable osascript notifications (one-time)
+diff --git a/.devcontainer/notify/index.js b/.devcontainer/notify/index.js
+index b129ccf..26b152d 100644
+--- a/.devcontainer/notify/index.js
++++ b/.devcontainer/notify/index.js
+@@ -44,7 +44,8 @@
+ // CLI
+ //   node index.js              # auto-locate via cwd (see lib/locate.js)
+ //   node index.js <queueDir>   # explicit queue dir override
+-//   env: NOTIFY_CHANNELS=all|csv-of(toast,sound,discord,flash)  (default=all)
++//   env: NOTIFY_CHANNELS=all|csv-of(basic-notif,notify,sound,discord,flash)
++//        (default=all — expands to every channel EXCEPT the opt-in `notify`)
+ //        NOTIFY_SOUND=default|<abs path>|off                    (default=default)
+ //        NOTIFY_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+ //        NOTIFY_CLEANUP_MAX_AGE_HOURS=24                        (queue file TTL)
+@@ -81,6 +82,7 @@ const watcher        = require('./lib/watcher')
+ const state          = require('./lib/state')
+ const { writeAtomic } = require('./lib/atomic-write')
+ const notifier       = require('./lib/consumers/notifier')
++const notifyApp      = require('./lib/consumers/notify-app')
+ const discordWebhook = require('./lib/consumers/discord-webhook')
+ const sound          = require('./lib/consumers/sound')
+ const flashWin       = require('./lib/consumers/flash-win')
+@@ -97,21 +99,48 @@ const { EVENT_DELAYS_MS } = require('./lib/constants')
+ // CHANNEL REGISTRY — maps NOTIFY_CHANNELS names to consumer modules.
+ // Object insertion order = expansion order for `NOTIFY_CHANNELS=all`, so the
+ // status file lines come out in this same order.
++//
++// Two macOS-native dispatchers live here and are mutually exclusive :
++//   - `basic-notif`  osascript / WinRT toast / linux-stub — the historical
++//                    fallback, zero external dependency. Always in `all`.
++//   - `notify`       standalone `notif` binary (apps/notifier/) — session 8+
++//                    unlocks sender identity + dismiss API + callbacks.
++//                    OPT-IN : excluded from `all`, activate by naming it
++//                    explicitly (e.g. NOTIFY_CHANNELS=notify,sound,discord).
++// When both appear in NOTIFY_CHANNELS, `notify` wins with a warning — they'd
++// otherwise fire twice per event on macOS.
+ // -----------------------------------------------------------------------------
+ const CHANNEL_REGISTRY = {
+-	toast:   notifier,
+-	sound:   sound,
+-	discord: discordWebhook,
+-	flash:   flashWin
++	'basic-notif': notifier,
++	notify:        notifyApp,
++	sound:         sound,
++	discord:       discordWebhook,
++	flash:         flashWin
+ }
+ 
+-// NOTIFY_CHANNELS parser. `all` (or empty) expands to every registered name.
+-// CSV is trimmed + deduped — pathological `toast,toast,sound` won't double-
+-// subscribe (every consumer's bus.on() would fire twice per event otherwise).
++// Channels NOT included when the user asks for `all`. Opt-in only.
++const ALL_EXCLUDES = new Set(['notify'])
++
++// NOTIFY_CHANNELS parser. `all` (or empty) expands to every registered name
++// EXCEPT the opt-in ones (see ALL_EXCLUDES). Explicit CSV opts them in.
++// CSV is trimmed + deduped — pathological `basic-notif,basic-notif,sound`
++// won't double-subscribe (every consumer's bus.on() would fire twice per
++// event otherwise).
++//
++// Mutual exclusion : when `basic-notif` AND `notify` both appear, drop
++// `basic-notif` with a warning — they'd otherwise both dispatch on macOS.
+ const parseChannels = (raw) => {
+-	if (!raw || raw === 'all') return Object.keys(CHANNEL_REGISTRY)
+-	const list = raw.split(',').map(s => s.trim()).filter(Boolean)
+-	return [...new Set(list)]
++	let list
++	if (!raw || raw === 'all') {
++		list = Object.keys(CHANNEL_REGISTRY).filter(k => !ALL_EXCLUDES.has(k))
++	} else {
++		list = [...new Set(raw.split(',').map(s => s.trim()).filter(Boolean))]
++	}
++	if (list.includes('basic-notif') && list.includes('notify')) {
++		log.warn('[boot] NOTIFY_CHANNELS lists both "basic-notif" and "notify" — dropping "basic-notif" to avoid double-dispatch')
++		list = list.filter(k => k !== 'basic-notif')
++	}
++	return list
+ }
+ 
+ // Format a STATUS line from a consumer's { status, diag } return value.
+@@ -270,7 +299,7 @@ for (const name of requested) {
+ 		log.warn(`[boot] unknown channel "${name}" — ignored`)
+ 		continue
+ 	}
+-	const result = mod.start({ bus, projectName })
++	const result = mod.start({ bus, projectName, projectDir })
+ 	statusLines.push(formatStatus(name, result))
+ 	if (result.status === 'ok') activated.push(name)
+ }
+diff --git a/.devcontainer/notify/lib/consumers/notifier.js b/.devcontainer/notify/lib/consumers/notifier.js
+index de01921..94bb056 100644
+--- a/.devcontainer/notify/lib/consumers/notifier.js
++++ b/.devcontainer/notify/lib/consumers/notifier.js
+@@ -267,14 +267,18 @@ function truncate(s, n) {
+ 
+ /**
+  * Render the second line of a permission_request body : a short, readable
+- * description of the tool's input. Three branches :
+- *   1. string  → legacy hook format, pre-truncated ; clamp again to 120
+- *   2. AskUserQuestion → first question text (+ "+N more" if multiple)
+- *   3. fallback → JSON.stringify, clamp to 120
++ * description of the tool's input. Branches, in order :
++ *   1. string           → legacy hook format, pre-truncated ; clamp again to 150
++ *   2. AskUserQuestion  → first question text (+ "+N more" if multiple)
++ *   3. Bash             → the actual shell `command` verbatim
++ *   4. Edit             → `<file_path>: <first-line-of-old_string>`
++ *   5. Write            → `<file_path>`
++ *   6. fallback         → JSON.stringify, clamp to 150
+  *
+- * Adding a per-tool branch (e.g. Bash command shortening, Edit file path)
+- * is the right extension point — match on `line.tool_name` like
+- * AskUserQuestion does.
++ * Cap is 150 chars — the practical UN Center limit for a single body line
++ * before Notification Center starts truncating on its own. Session 3 bumped
++ * this from 120 so Bash / Edit / Write commands make it through intact when
++ * the user needs to decide Allow / Deny from the notif alone.
+  *
+  * @param {object} line   JSONL event line
+  * @param {string|object} line.tool_input   raw or structured tool input
+@@ -284,14 +288,27 @@ function truncate(s, n) {
+ function renderPermissionInput(line) {
+ 	const input = line.tool_input
+ 	if (input === undefined || input === null) return '(no input)'
+-	if (typeof input === 'string') return truncate(input, 120) || '(no input)'
++	if (typeof input === 'string') return truncate(input, 150) || '(no input)'
+ 	if (line.tool_name === 'AskUserQuestion') {
+ 		const summary = summarizeAskUserQuestion(input)
+-		if (summary) return truncate(summary, 120)
++		if (summary) return truncate(summary, 150)
++	}
++	if (line.tool_name === 'Bash' && typeof input.command === 'string') {
++		return truncate(input.command, 150) || '(no input)'
++	}
++	if (line.tool_name === 'Edit' && typeof input.file_path === 'string') {
++		const firstLine = typeof input.old_string === 'string'
++			? input.old_string.split('\n', 1)[0]
++			: ''
++		const rendered = firstLine ? `${input.file_path}: ${firstLine}` : input.file_path
++		return truncate(rendered, 150)
++	}
++	if (line.tool_name === 'Write' && typeof input.file_path === 'string') {
++		return truncate(input.file_path, 150)
+ 	}
+ 	let s = ''
+ 	try { s = JSON.stringify(input) } catch { s = String(input) }
+-	return truncate(s, 120) || '(no input)'
++	return truncate(s, 150) || '(no input)'
+ }
+ 
+ /**
+diff --git a/.devcontainer/notify/lib/consumers/notifier.md b/.devcontainer/notify/lib/consumers/notifier.md
+index 2c52f11..cda63e0 100644
+--- a/.devcontainer/notify/lib/consumers/notifier.md
++++ b/.devcontainer/notify/lib/consumers/notifier.md
+@@ -4,6 +4,52 @@ Companion document to [notifier.js](./notifier.js). What works on each
+ platform, what doesn't, and why. Specifically focused on what happens
+ when the user **clicks** the desktop notification.
+ 
++## Session 8 note — split into two consumers
++
++Since session 8 of the [notif-cli rollout](../../../../plans/notif-cli/ROLLOUT.md),
++the desktop-notification path forks in two :
++
++- **`basic-notif`** — this file. `osascript` on macOS, `powershell.exe`
++  WinRT toast on Windows, `notify-send` stub on Linux. Registered as
++  channel `basic-notif` in [index.js](../../index.js) and included in
++  the default `NOTIFY_CHANNELS=all` expansion. Zero external
++  dependency.
++- **`notify`** — [notify-app.js](./notify-app.js). Standalone `notif`
++  binary (see [apps/notifier/](../../../../apps/notifier/)). Registered
++  as channel `notify` and **opt-in** — must be named explicitly in
++  `NOTIFY_CHANNELS` (e.g. `NOTIFY_CHANNELS=notify,sound,discord`).
++  Unlocks sender identity, per-notif dismiss (`notif remove`), and
++  callback hooks. macOS-only in v0.2 ; Windows / Linux backends land
++  in sessions 9 / 10.
++
++When both channels are listed in `NOTIFY_CHANNELS`, `notify` wins and
++`basic-notif` is dropped with a warning to avoid double-banners. See
++[index.js](../../index.js) `parseChannels` for the exact logic.
++
++## Payload contract (session 8+)
++
++Every queue line written by [hook.js](../../../skills/notify-queue/hook.js)
++carries two extra fields consumed by the `notify` channel :
++
++| Field | Type | Value in v0.2 | Purpose |
++|---|---|---|---|
++| `sender` | string | always `default` | Passed to `notif send --sender X`. Reserved for future per-event routing (`claude` vs `npm-script` vs …). |
++| `notif_id` | string | `<event>-<sid8>-<epoch-ms>` | Passed to `notif send --id Y`, remembered by `notify-app.js` in an in-memory `dispatched` Map, and passed back to `notif remove --id Y` on `cancelled:notification`. |
++
++The `basic-notif` channel ignores both fields — osascript / WinRT have
++no equivalent APIs. Adding them is idempotent : an older hook.js that
++predates session 8 lets `notify-app.js` fall back to a locally-minted
++`notif_id` (`fallback-<sid8>-<epoch-ms>`) with a one-shot warning line.
++
++## Cancel-remove wiring (session 8+)
++
++[watcher.js](../watcher.js) emits `cancelled:notification` on
++`user_replied`, `tool_started`, `tool_finished`, and `tool_cancelled`.
++Since session 8, every emission carries the `sid` so the `notify`
++consumer can look up its `dispatched` Map and issue
++`notif remove --sender X --id Y`. Pre-fire cancels (banner never
++dispatched → nothing in the Map) are silent no-ops on both channels.
++
+ ## At a glance
+ 
+ | Platform           | Toast emits | Click → app focus | Click → right window | Click → enter devcontainer |
+diff --git a/.devcontainer/notify/lib/consumers/notify-app.js b/.devcontainer/notify/lib/consumers/notify-app.js
+new file mode 100644
+index 0000000..d988bfa
+--- /dev/null
++++ b/.devcontainer/notify/lib/consumers/notify-app.js
+@@ -0,0 +1,730 @@
++// =============================================================================
++// notify-app — notif-cli-based desktop notification consumer (macOS, v0.2)
++// =============================================================================
++//
++// Alternative to the "basic-notif" (osascript / WinRT / linux-stub) consumer.
++// Dispatches through the standalone `notif` binary (apps/notifier/) so the
++// daemon gets :
++//   - sender identity control (each banner appears under a chosen `.app`)
++//   - per-notif identifier + dismiss API via `notif remove`
++//   - callbacks / Tier 3 macOS overrides available on the CLI surface
++//
++// Mutually exclusive with the basic-notif consumer — activate this one by
++// listing `notify` in NOTIFY_CHANNELS (see index.js). If both are listed,
++// index.js drops basic-notif with a warning ; they'd otherwise double-fire.
++//
++// Host support :
++//   - Any host with a `notif` binary reachable on PATH (or via the explicit
++//     `NOTIF_BIN` env / bundled fallback in getNotifPath). macOS ships a
++//     binary today ; Windows and Linux gain one when their apps/notifier
++//     backends land — no code change here to onboard them, the consumer
++//     just starts resolving a binary and stops reporting `skipped`.
++//   - Sender is always `default` (hook.js writes `line.sender = 'default'` on
++//     every queue line). Per-event routing (claude vs npm-script vs …) is a
++//     v0.3+ extension.
++//   - Cancel-remove : subscribes to `cancelled:notification` and calls
++//     `notif remove --sender X --id Y` when the banner had already been
++//     dispatched. Post-fire state lives in the module-level `dispatched` Map
++//     (auto-evicts after 10 min ; NC eventually rolls old banners off anyway).
++// =============================================================================
++
++const { spawn, spawnSync } = require('child_process')
++const fs = require('fs')
++const os = require('os')
++const path = require('path')
++const log = require('../log')
++const { getHostKind } = require('../host')
++const focusDebounce = require('../focus-debounce')
++
++// Hardcoded Claude Code sender identity. Every banner dispatched through
++// this consumer appears in Notification Center under "Claude Code" with
++// the bundled icon, regardless of what hook.js writes on `line.sender`.
++// hook.js's `sender` field remains a placeholder for future per-event
++// routing consumed by other channels — for the devcontainer daemon
++// wiring Claude Code, the identity is always Claude Code.
++const CLAUDE_CODE_SENDER = 'claude-code'
++const CLAUDE_CODE_NAME   = 'Claude Code'
++const CLAUDE_CODE_ICON   = path.join(__dirname, '..', '..', 'vendor', 'senders', 'claude-code.icns')
++// LaunchServices display name of VS Code, used as the `<APP>` slug in the
++// `focus:open-a://<APP>/<launchUrl>` DSL target we pass as `--on-click`.
++// Kept as a module const rather than inlined because this consumer only
++// targets VS Code today ; future callers (Slack, Terminal.app, custom
++// electron apps) build their own DSL string with their own slug — the DSL
++// itself in notif-core stays generic (see `focus:open` in callback.rs).
++const VSCODE_APP_SLUG = 'Visual Studio Code'
++// First-boot register requires the user to click Allow on the OS permission
++// dialog — 90 s window. Anything faster (e.g. the previous 5 s) killed the
++// dialog before the user could see it, which macOS then treated as a
++// silent denial cached in TCC — subsequent boots surfaced as "Notifications
++// are not allowed for this application".
++const REGISTER_TIMEOUT_MS = 90_000
++
++// Resolved absolute path to the `notif` binary. Set once at start() ; when
++// null (no candidate exists on disk) the consumer reports `skipped` and
++// leaves the bus alone so basic-notif can take over via NOTIFY_CHANNELS.
++let notifBinPath = null
++
++// Post-fire dispatched-notif tracking. Keyed by sid so `cancelled:notification`
++// (which watcher.js emits with `{ id, sid, eventType, reason }`) can look up
++// the exact banner without threading extra state through the bus. Value :
++// `{ sender, notifId, timeout }` where `timeout` is the auto-evict handle.
++const dispatched = new Map()
++const DISPATCHED_TTL_MS = 10 * 60 * 1000
++
++// One-shot flag — logs at most one warning when a queue line predates the
++// session-8 hook.js (no `notif_id`). Prevents daemon.log flooding when an
++// upgrade lands mid-session and older lines are still being replayed.
++let notifIdFallbackLogged = false
++
++// One-shot flag — logs at most one warning per boot when a queue line has
++// no `launchUrl` (session-1 producer contract : hook.js omits the field when
++// history is empty, e.g. fresh container before VS Code writes anything).
++// Body-click on such notifs is a no-op, and one line per boot is enough to
++// diagnose silent no-ops without flooding daemon.log.
++let launchUrlMissingLogged = false
++
++// Path to the JSONL file where the `notif` binary appends action-click
++// records (see session 3 — allow-deny-actions). Set in `start()` from the
++// projectDir passed by index.js so the file colocates with the existing
++// claude-code-vscode-ext-{inbound,outbound}.jsonl channel in
++// `.devcontainer/logs/`.
++let actionsInboxPath = null
++// Path to the outbound JSONL file the VS Code extension's outbound-action-
++// injector polls for tool_permission_response commands. Same
++// `.devcontainer/logs/` dir. Written when we process an Allow click.
++let outboundPath = null
++// Byte offset into actionsInboxPath — advanced as we drain new lines. At
++// start() we seek to the current file size so we skip lines from prior
++// daemon incarnations that were already dispatched (or lost — clicks
++// during daemon downtime are silently dropped by design).
++let inboxOffset = 0
++// Map<notifId, { sid, toolUseId, toolInput, timeout }> — populated in
++// `send()` for permission_request / permission_prompt events that carry a
++// tool_use_id, so the inbox watcher can build the outbound command when the
++// user clicks Allow. Same TTL model as `dispatched` above.
++const permissionContext = new Map()
++const PERMISSION_TTL_MS = 10 * 60 * 1000
++
++// -----------------------------------------------------------------------------
++// PUBLIC ENTRY POINT
++// -----------------------------------------------------------------------------
++
++/**
++ * Wire the notify-app consumer onto the bus. Returns { status, diag } per
++ * the index.js consumer contract.
++ *
++ * `skipped` case :
++ *   - no `notif` binary found on any candidate path (the sole gate — the
++ *     consumer serves any host once a binary is discoverable).
++ *
++ * @param {object} opts
++ * @param {import('events').EventEmitter} opts.bus   listens for send + cancel events
++ * @param {string} [opts.projectDir]                 workspace root — used to resolve
++ *                                                    `.devcontainer/logs/` paths for the
++ *                                                    Allow action inbox + outbound.jsonl
++ * @returns {{ status: 'ok'|'skipped', diag: object }}
++ */
++function start({ bus, projectDir }) {
++	const host = getHostKind()
++	notifBinPath = getNotifPath()
++	if (!notifBinPath) {
++		return { status: 'skipped', diag: { host, reason: 'notif-binary-not-found' } }
++	}
++	log.info(`[notify-app] notif binary resolved at ${notifBinPath}`)
++
++	// Ensure the "Claude Code" sender bundle exists with the bundled icon
++	// BEFORE the first send fires. `notif register` is idempotent — no-op
++	// when the bundle is already materialized with the same identifier +
++	// display name. Failure is non-fatal : we log a warning and continue ;
++	// `notif send --sender claude-code` will auto-materialize on first
++	// send anyway, just without the bundled icon.
++	const registerDiag = registerClaudeCodeSender()
++
++	// Session 3 — resolve the Allow action inbox + outbound.jsonl paths. Both
++	// live under the workspace's `.devcontainer/logs/`, alongside the existing
++	// claude-code-vscode-ext-{inbound,outbound}.jsonl channel that ext.js polls.
++	// projectDir is passed by index.js (post session 3) ; when it's absent
++	// (older index.js callers, standalone tests), Allow simply won't fire —
++	// the action arg is skipped and the notif shows Body-click only.
++	let inboxDiag = { actions_inbox: 'disabled-no-projectDir' }
++	if (projectDir) {
++		actionsInboxPath = path.join(projectDir, '.devcontainer', 'logs', 'notif-actions.jsonl')
++		outboundPath    = path.join(projectDir, '.devcontainer', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
++		inboxDiag       = startActionsInboxWatcher()
++	}
++
++	bus.on('send:notification', send)
++	bus.on('cancelled:notification', onCancelled)
++
++	const diag = { host, notif: notifBinPath, sender: CLAUDE_CODE_SENDER, ...registerDiag, ...inboxDiag }
++	return { status: 'ok', diag }
++}
++
++/**
++ * Bootstrap the "Claude Code" sender bundle at daemon boot. Two-step,
++ * both idempotent :
++ *
++ *   1. `notif register --sender claude-code --name "Claude Code" [--icon <path>]`
++ *      — materializes the bundle on a fresh install, no-ops when already
++ *      materialized (short-circuit on plist + exe presence, keeps the TCC
++ *      grant). Fires the OS permission dialog on the very first boot ;
++ *      subsequent boots do nothing.
++ *   2. `notif set-icon --sender claude-code --icon <path>` — unconditional
++ *      icon refresh, byte-compares against the on-disk icon.icns and no-ops
++ *      when identical. Handles the "existing bundle, missing / stale icon"
++ *      case that `register` short-circuits past (register does NOT refresh
++ *      icons on existing bundles).
++ *
++ * Both steps are non-fatal : on failure we log a warning and continue.
++ * The next `notif send --sender claude-code` will auto-materialize the
++ * bundle if step 1 didn't ; the icon may end up as the default bell if
++ * step 2 didn't run — the daemon still delivers banners, just under a
++ * plain sender identity.
++ *
++ * @returns {object}  diag fields to fold into start()'s return
++ */
++function registerClaudeCodeSender() {
++	const hasIcon = fs.existsSync(CLAUDE_CODE_ICON)
++	if (!hasIcon) {
++		log.warn(`[notify-app] Claude Code icon missing at ${CLAUDE_CODE_ICON} — sender will use the default bell`)
++	}
++
++	// On a FRESH install the bundle doesn't exist and `notif register` fires
++	// the OS permission dialog which needs the user to click Allow — that
++	// takes much longer than the previous 5 s timeout allowed, so the window
++	// is 90 s. On subsequent boots the bundle already exists on disk : we
++	// short-circuit to avoid re-running the setup dance (idempotent but
++	// wastes daemon boot time + may silently fail if macOS treats a fresh
++	// setup call as suspicious).
++	//
++	// Icon updates from a repo commit do NOT propagate automatically —
++	// `notif register` short-circuits on existing bundles and doesn't refresh
++	// `Contents/Resources/icon.icns`. To adopt a new icon after this file
++	// changed, run `notif set-icon --sender claude-code --icon <path>` on the
++	// host manually.
++	if (bundleAlreadyMaterialized()) {
++		return { register: 'skipped-bundle-exists' }
++	}
++	const args = ['register', '--sender', CLAUDE_CODE_SENDER, '--name', CLAUDE_CODE_NAME]
++	if (hasIcon) args.push('--icon', CLAUDE_CODE_ICON)
++	const regStatus = runNotif(args, 'register', REGISTER_TIMEOUT_MS)
++	return { register: regStatus }
++}
++
++/**
++ * Detect whether the Claude Code sender bundle already exists on disk. Used
++ * to skip step 1 above on subsequent boots. Checks both the display-named
++ * folder (`Claude Code.app` — what `notif register --name "Claude Code"`
++ * produces) and the key-fallback folder (`claude-code.app` — what an early
++ * hand-crafted register would have left behind).
++ *
++ * @returns {boolean}
++ */
++function bundleAlreadyMaterialized() {
++	const root = path.join(os.homedir(), '.local', 'share', 'notif', 'senders')
++	const candidates = [
++		path.join(root, `${CLAUDE_CODE_NAME}.app`, 'Contents', 'MacOS', 'notif'),
++		path.join(root, `${CLAUDE_CODE_SENDER}.app`, 'Contents', 'MacOS', 'notif'),
++	]
++	return candidates.some(p => fs.existsSync(p))
++}
++
++/**
++ * Small wrapper around spawnSync for the register + set-icon chain. Logs
++ * outcome + returns a diag string. Never throws.
++ *
++ * @param {string[]} args      argv passed to `notif`
++ * @param {string} label       log label ("register" / "set-icon")
++ * @param {number} timeoutMs   spawnSync timeout
++ * @returns {string}           `ok` | `failed-<code>` | `threw`
++ */
++function runNotif(args, label, timeoutMs) {
++	try {
++		const r = spawnSync(notifBinPath, args, {
++			stdio:   'pipe',
++			timeout: timeoutMs,
++			env:     { ...process.env, NOTIF_QUIET: '1' },
++		})
++		if (r.status === 0) {
++			log.info(`[notify-app] notif ${label} ok`)
++			return 'ok'
++		}
++		const stderr = (r.stderr || '').toString().trim()
++		if (r.signal) {
++			log.warn(`[notify-app] notif ${label} killed by ${r.signal} after ${timeoutMs}ms (probably user did not respond to the OS permission dialog in time) — stderr: ${stderr || '<no stderr>'}`)
++			return `timeout-${r.signal}`
++		}
++		if (stderr.includes('Notifications are not allowed')) {
++			log.warn(`[notify-app] notif ${label} exited ${r.status}: TCC has cached a "denied" state for com.notify.${CLAUDE_CODE_SENDER}. Run \`tccutil reset Notifications com.notify.${CLAUDE_CODE_SENDER}\` on the host, then rebuild the devcontainer.`)
++			return `failed-tcc-denied`
++		}
++		log.warn(`[notify-app] notif ${label} exited ${r.status}: ${stderr || '<no stderr>'}`)
++		return `failed-${r.status}`
++	} catch (e) {
++		log.warn(`[notify-app] notif ${label} threw: ${e.message}`)
++		return 'threw'
++	}
++}
++
++// -----------------------------------------------------------------------------
++// BINARY RESOLUTION
++// -----------------------------------------------------------------------------
++
++/**
++ * Resolve the absolute path to the `notif` CLI binary, in priority order :
++ *
++ *   1. `NOTIF_BIN` env — explicit override.
++ *   2. `$XDG_DATA_HOME/notif/notif` — XDG-conformant install location.
++ *   3. `~/.local/bin/notif` — common user-local bin dir.
++ *   4. `~/bin/notif` — the location suggested by apps/notifier/docs/install-macos.md.
++ *   5. `/usr/local/bin/notif` — Homebrew Intel + manual system install.
++ *   6. `/opt/homebrew/bin/notif` — Homebrew Apple Silicon.
++ *   7. `PATH` scan — any directory on `$PATH` containing `notif` (catches
++ *      MacPorts /opt/local/bin, custom shim dirs, etc).
++ *   8. `<daemon-root>/vendor/notif` — bundled fallback (daemon ships its own copy).
++ *
++ * Returns `null` if none exist. Callers report `skipped` and hand the bus
++ * back to basic-notif.
++ *
++ * @returns {string|null} absolute path, or null
++ */
++function getNotifPath() {
++	const explicit = [
++		process.env.NOTIF_BIN,
++		process.env.XDG_DATA_HOME
++			? path.join(process.env.XDG_DATA_HOME, 'notif', 'notif')
++			: null,
++		path.join(os.homedir(), '.local', 'bin', 'notif'),
++		path.join(os.homedir(), 'bin', 'notif'),
++		'/usr/local/bin/notif',
++		'/opt/homebrew/bin/notif',
++	]
++	for (const p of explicit) {
++		if (p && fs.existsSync(p)) return p
++	}
++	// PATH scan — no subprocess. `which`-style resolution for whichever
++	// bin dir the operator dropped `notif` in and exported on PATH.
++	const PATH = process.env.PATH || ''
++	for (const dir of PATH.split(path.delimiter)) {
++		if (!dir) continue
++		const candidate = path.join(dir, 'notif')
++		if (fs.existsSync(candidate)) return candidate
++	}
++	// Bundled fallback — daemon ships its own copy for zero-install cases.
++	const vendor = path.join(__dirname, '..', '..', 'vendor', 'notif')
++	if (fs.existsSync(vendor)) return vendor
++	return null
++}
++
++// -----------------------------------------------------------------------------
++// DISPATCH
++// -----------------------------------------------------------------------------
++
++/**
++ * Bus handler for `send:notification`. Extracts sender + notif_id from the
++ * queue line (hook.js writes them in session 8+), invokes
++ * `notif send --sender X --id Y --title T --body B [...]`, then records the
++ * dispatched notif so `onCancelled` can dismiss it later.
++ *
++ * @param {object} payload   { sid, eventType, ts, line, id }
++ * @returns {void}           fire-and-forget
++ */
++function send(payload) {
++	const sid  = payload.sid || ''
++	const sid8 = sid.slice(0, 8)
++	const line = payload.line || {}
++
++	const rawId = line.notif_id
++	if (!rawId && !notifIdFallbackLogged) {
++		log.warn('[notify-app] queue payload missing notif_id — hook.js pre-dates v0.2 ; using local fallback id (further occurrences squelched)')
++		notifIdFallbackLogged = true
++	}
++	// This consumer is the devcontainer notify path for Claude Code — the
++	// sender identity is always "Claude Code", overriding whatever hook.js
++	// wrote on line.sender (that field stays a placeholder for other
++	// consumers that may implement per-event routing).
++	const sender  = CLAUDE_CODE_SENDER
++	const notifId = rawId || `fallback-${sid8}-${Date.now()}`
++	// Elevate the interruption level on macOS for events that need the
++	// user's attention now. Anything else stays at Active (the default).
++	const priority = (payload.eventType === 'permission_request' || payload.eventType === 'permission_prompt') ? 'high' : null
++
++	// Reuse the basic-notif TEMPLATES via a lazy require to avoid a load-order
++	// cycle at module init. `render()` returns { title, subtitle, body } with
++	// the exact same shape basic-notif spawns.
++	const { render } = require('./notifier')
++	const rendered = render(payload)
++
++	const args = [
++		'send',
++		'--sender', sender,
++		'--id',     notifId,
++		'--title',  rendered.title,
++		'--body',   rendered.body,
++	]
++	if (rendered.subtitle) args.push('--subtitle', rendered.subtitle)
++	if (priority)          args.push('--priority', priority)
++
++	// Body-click routing : bind `focus:open-a://Visual Studio Code/<launchUrl>`
++	// so clicking the notif switches to (and cross-Space focuses) the emitting
++	// devcontainer window. See notif-core::callback::CallbackKind::FocusOpen
++	// for the DSL. When `launchUrl` is missing (session-1 producer contract),
++	// no `--on-click` is passed and click is a silent no-op.
++	const focusTarget = buildFocusTarget(line.launchUrl)
++	if (focusTarget) {
++		args.push('--on-click', focusTarget)
++	} else if (!launchUrlMissingLogged) {
++		log.warn('[notify-app] event has no valid launchUrl — body-click is a no-op (session-1 producer contract ; further occurrences squelched)')
++		launchUrlMissingLogged = true
++	}
++
++	// Session 3 — Allow action button for permission_request / permission_prompt
++	// events. Emits a `--on-action Allow:file:<inbox>` that lets the `notif`
++	// binary append a JSONL record to the inbox when the user taps Allow ; the
++	// tail watcher (startActionsInboxWatcher) then writes a
++	// tool_permission_response into outbound.jsonl for the ext.js injector.
++	// Deliberately no Deny button — body-click focuses VS Code where the user
++	// can deny with feedback in the Claude Code UI.
++	if (
++		actionsInboxPath &&
++		(payload.eventType === 'permission_request' || payload.eventType === 'permission_prompt') &&
++		typeof line.tool_use_id === 'string' && line.tool_use_id
++	) {
++		args.push('--on-action', `Allow:file:${actionsInboxPath}`)
++		rememberPermissionContext(notifId, sid, line.tool_use_id, line.tool_input)
++	}
++
++	// Session 4 focus-aware gate. `line.focused` is written by hook.js's
++	// readLatestFocus() from the extension patch's `vscode.window.state`
++	// snapshot in pending-perms.jsonl. When the host VS Code window is
++	// focused at emission time, delay the banner by NOTIFY_FOCUS_DEBOUNCE_MS
++	// (default 5 s) — gives the user a grace window to act in-app before the
++	// macOS banner interrupts. A `cancelled:notification` on the bus (user
++	// replied, tool finished, Allow click via inbound-watch) clears the
++	// pending debounce before it fires ; no banner in that case. Missing /
++	// false `line.focused` short-circuits to the immediate dispatch path.
++	const debounceMs = focusDebounce.getDebounceMs(process.env)
++	if (line.focused === true && debounceMs > 0) {
++		log.info(`[notify-app] focus-debounce ARM ${sid8} ${payload.eventType} — ${debounceMs}ms (id=${notifId})`)
++		focusDebounce.armDebounce(sid, debounceMs, () => {
++			log.info(`[notify-app] focus-debounce FIRE ${sid8} ${payload.eventType} — timeout expired (id=${notifId})`)
++			dispatchNow(sid, sid8, sender, notifId, args, payload.eventType)
++		})
++		return
++	}
++	dispatchNow(sid, sid8, sender, notifId, args, payload.eventType)
++}
++
++/**
++ * Spawn `notif send` with the pre-built argv and record the dispatched banner
++ * so cancel signals can later dismiss it. Extracted from `send()` so the
++ * focus-aware gate can either invoke it directly (not focused) or defer it
++ * behind a debounce timer (focused).
++ *
++ * @param {string}   sid
++ * @param {string}   sid8       first 8 chars for log lines
++ * @param {string}   sender     'claude-code' in v0.2
++ * @param {string}   notifId
++ * @param {string[]} args       fully-built `notif send` argv
++ * @param {string}   eventType  logged for diagnostics
++ * @returns {void}              fire-and-forget
++ */
++function dispatchNow(sid, sid8, sender, notifId, args, eventType) {
++	log.info(`[notify-app] DISPATCH ${eventType} ${sid8} — id=${notifId} sender=${sender}`)
++	// Enforce the "1 delivered banner per sid" invariant : dismiss any prior
++	// banner for this sid BEFORE dispatching the new one, so Notification
++	// Center never accumulates duplicates when a session emits multiple
++	// events (e.g. permission_request then stop).
++	dismissPrevious(sid, 'replaced-by-new-notif')
++	spawnFireAndForget(notifBinPath, args)
++	rememberDispatched(sid, sender, notifId)
++}
++
++/**
++ * Dismiss the currently-tracked banner for a sid via `notif remove`, and drop
++ * the `dispatched` entry. Silent no-op when nothing is tracked (pre-fire
++ * cancels never had a banner to remove ; a fresh dispatch on an empty slot
++ * has nothing to replace).
++ *
++ * @param {string} sid
++ * @param {string} reason  logged for diagnostics
++ * @returns {void}         fire-and-forget
++ */
++function dismissPrevious(sid, reason) {
++	const entry = dispatched.get(sid)
++	if (!entry) return
++	dispatched.delete(sid)
++	if (entry.timeout) clearTimeout(entry.timeout)
++	const sid8 = sid.slice(0, 8)
++	log.info(`[notify-app] dismiss ${sid8} — removing notif id=${entry.notifId} (${reason})`)
++	spawnFireAndForget(notifBinPath, [
++		'remove',
++		'--sender', entry.sender,
++		'--id',     entry.notifId,
++	])
++}
++
++/**
++ * Bus handler for `cancelled:notification`. Delegates to `dismissPrevious`
++ * so the "1 banner per sid" invariant is enforced through a single code
++ * path for both cancel-triggered and dispatch-triggered dismissals.
++ *
++ * @param {object} evt
++ * @param {string} [evt.sid]        session id — provided by watcher.js since session-8
++ * @param {string} [evt.eventType]  logged for diagnostics
++ * @param {string} [evt.reason]     logged for diagnostics
++ * @returns {void}                  fire-and-forget
++ */
++function onCancelled({ sid, eventType, reason } = {}) {
++	if (!sid) return
++	// Session 4 — if a focus-debounce timer is pending for this sid, cancel
++	// it BEFORE the dismiss path : a debounced-and-cancelled event never
++	// dispatched, so `dismissPrevious` will short-circuit at its empty-map
++	// check (no banner to remove). Doing cancel-debounce first keeps the
++	// happy-path (dispatched banner + cancel) unchanged.
++	if (focusDebounce.cancelDebounce(sid)) {
++		log.info(`[notify-app] focus-debounce CANCEL ${sid.slice(0, 8)} — ${eventType || 'unknown'}/${reason}`)
++	}
++	dismissPrevious(sid, `${eventType || 'unknown'}/${reason}`)
++}
++
++/**
++ * Store the (sender, notif_id) pair for a dispatched banner so onCancelled
++ * can dismiss it. Auto-evicts after DISPATCHED_TTL_MS ; the previous entry
++ * (if any) is cleared so its timer never leaks.
++ *
++ * @param {string} sid
++ * @param {string} sender
++ * @param {string} notifId
++ * @returns {void}
++ */
++function rememberDispatched(sid, sender, notifId) {
++	if (!sid || !notifId) return
++	const prev = dispatched.get(sid)
++	if (prev?.timeout) clearTimeout(prev.timeout)
++	const timeout = setTimeout(() => dispatched.delete(sid), DISPATCHED_TTL_MS)
++	timeout.unref?.()
++	dispatched.set(sid, { sender, notifId, timeout })
++}
++
++// -----------------------------------------------------------------------------
++// SPAWN HELPER
++// -----------------------------------------------------------------------------
++
++/**
++ * Fire-and-forget spawn : stdio ignored, detached + unref'd so the child
++ * outlives the daemon on shutdown ; NOTIF_QUIET=1 silences the CLI's
++ * progress log (daemon isn't interactive). Errors are logged and swallowed
++ * — a failed notif dispatch must never crash the daemon.
++ *
++ * @param {string} cmd     absolute path to the `notif` binary
++ * @param {string[]} args  argv
++ * @returns {void}
++ */
++function spawnFireAndForget(cmd, args) {
++	try {
++		const child = spawn(cmd, args, {
++			detached: true,
++			stdio:    'ignore',
++			env:      { ...process.env, NOTIF_QUIET: '1' },
++		})
++		child.unref()
++		child.on('error', (err) => log.warn(`[notify-app] ${cmd} failed: ${err.message}`))
++	} catch (e) {
++		log.warn(`[notify-app] spawn ${cmd} threw: ${e.message}`)
++	}
++}
++
++// -----------------------------------------------------------------------------
++// FOCUS DSL HELPER
++// -----------------------------------------------------------------------------
++
++/**
++ * Build the `focus:open-a://<APP>/<URL>` DSL target for a given launchUrl,
++ * or null when the URL is missing / malformed. Shared between the body-click
++ * `--on-click` (session 2) and any future action target that wants to focus
++ * VS Code — extracted so both paths stay in sync on the sanitisation.
++ *
++ * Rejection cases : non-string, empty, or containing whitespace / NUL. All
++ * three would fail the inner `parse_target` boundary in `notif`, aborting
++ * the whole `notif send` — worse UX than a silent no-op click.
++ *
++ * @param {string|undefined} url    launchUrl candidate from the queue line
++ * @returns {string|null}           DSL target, or null when the URL is unusable
++ */
++function buildFocusTarget(url) {
++	if (typeof url !== 'string' || !url || /[\s\0]/.test(url)) return null
++	return `focus:open-a://${VSCODE_APP_SLUG}/${url}`
++}
++
++// -----------------------------------------------------------------------------
++// PERMISSION CONTEXT + ACTIONS INBOX (session 3)
++// -----------------------------------------------------------------------------
++
++/**
++ * Store the send-time (sid, tool_use_id, tool_input) triple for a
++ * permission notification so the inbox watcher can build the outbound
++ * command when the user later clicks Allow. Auto-evicts after
++ * PERMISSION_TTL_MS ; a duplicate insert clears the previous timer so it
++ * never leaks.
++ *
++ * @param {string} notifId
++ * @param {string} sid
++ * @param {string} toolUseId
++ * @param {*}      toolInput   pass-through from the queue line ; may be
++ *                              undefined / any JSON shape
++ * @returns {void}
++ */
++function rememberPermissionContext(notifId, sid, toolUseId, toolInput) {
++	if (!notifId || !sid || !toolUseId) return
++	const prev = permissionContext.get(notifId)
++	if (prev?.timeout) clearTimeout(prev.timeout)
++	const timeout = setTimeout(() => permissionContext.delete(notifId), PERMISSION_TTL_MS)
++	timeout.unref?.()
++	permissionContext.set(notifId, { sid, toolUseId, toolInput, timeout })
++}
++
++/**
++ * Wire the actions inbox tail watcher. Ensures the logs dir + inbox file
++ * exist, seeks to the current file end (so we skip records from prior
++ * daemon incarnations — Allow clicks during daemon downtime are silently
++ * lost by design), and installs a polling watcher that drains new lines
++ * as they land.
++ *
++ * Returns a small diag object folded into the consumer's start() report.
++ *
++ * @returns {object}
++ */
++function startActionsInboxWatcher() {
++	try {
++		fs.mkdirSync(path.dirname(actionsInboxPath), { recursive: true })
++		if (!fs.existsSync(actionsInboxPath)) {
++			fs.writeFileSync(actionsInboxPath, '')
++		}
++		inboxOffset = fs.statSync(actionsInboxPath).size
++	} catch (e) {
++		log.warn(`[notify-app] cannot prepare actions inbox at ${actionsInboxPath}: ${e.message}`)
++		return { actions_inbox: `failed-${e.code || 'io'}` }
++	}
++	try {
++		// 500 ms poll — matches the ext.js outbound poll cadence (200 ms) plus
++		// some slack. `fs.watchFile` uses stat polling, which is bullet-proof
++		// against the inode-swap gotchas of `fs.watch` on network / bind mounts.
++		// `persistent: false` so the watcher doesn't ref the event loop — the
++		// bus subscription is what keeps the daemon alive, and tests can exit
++		// cleanly without an explicit unwatch call.
++		fs.watchFile(actionsInboxPath, { interval: 500, persistent: false }, drainActionsInbox)
++	} catch (e) {
++		log.warn(`[notify-app] cannot watch ${actionsInboxPath}: ${e.message}`)
++		return { actions_inbox: `watch-failed-${e.code || 'io'}` }
++	}
++	log.info(`[notify-app] actions inbox attached to ${actionsInboxPath} (offset=${inboxOffset})`)
++	return { actions_inbox: actionsInboxPath }
++}
++
++/**
++ * `fs.watchFile` callback — reads the new bytes since `inboxOffset`, splits
++ * on newlines, and dispatches each parsed JSONL record via
++ * `processInboxLine`. Truncation (size < offset) resets the offset to 0.
++ *
++ * @param {fs.Stats} curr
++ * @returns {void}
++ */
++function drainActionsInbox(curr) {
++	if (curr.size < inboxOffset) {
++		// File was truncated / rotated externally — reset and drain from the top.
++		log.info('[notify-app] actions inbox truncated — offset reset')
++		inboxOffset = 0
++	}
++	if (curr.size === inboxOffset) return
++	let buf
++	try {
++		const fd = fs.openSync(actionsInboxPath, 'r')
++		buf = Buffer.alloc(curr.size - inboxOffset)
++		fs.readSync(fd, buf, 0, buf.length, inboxOffset)
++		fs.closeSync(fd)
++	} catch (e) {
++		log.warn(`[notify-app] read ${actionsInboxPath} failed: ${e.message}`)
++		return
++	}
++	inboxOffset = curr.size
++	const text = buf.toString('utf8')
++	for (const raw of text.split('\n')) {
++		if (!raw) continue
++		let record
++		try { record = JSON.parse(raw) }
++		catch (e) {
++			log.warn(`[notify-app] bad JSONL in actions inbox: ${e.message}`)
++			continue
++		}
++		processInboxLine(record)
++	}
++}
++
++/**
++ * Dispatch one parsed actions-inbox record. Only records with
++ * `event === "action:Allow"` produce an outbound line ; anything else is
++ * logged and ignored (future action labels can extend the switch).
++ *
++ * @param {object} record   CallbackPayload written by `notif`'s file: DSL
++ * @param {string} [record.notif_id]
++ * @param {string} [record.event]     e.g. "action:Allow"
++ * @returns {void}
++ */
++function processInboxLine(record) {
++	const notifId = record?.notif_id
++	const event   = record?.event
++	if (!notifId || event !== 'action:Allow') return
++	const ctx = permissionContext.get(notifId)
++	if (!ctx) {
++		log.warn(`[notify-app] action:Allow received for unknown notif_id=${notifId} — dropped`)
++		return
++	}
++	permissionContext.delete(notifId)
++	if (ctx.timeout) clearTimeout(ctx.timeout)
++	writeAllowOutbound(ctx.sid, ctx.toolUseId, ctx.toolInput)
++}
++
++/**
++ * Append a `tool_permission_response` allow command to the outbound.jsonl
++ * file the VS Code extension's outbound-action-injector polls. Schema
++ * mirrors outbound-tester.js exactly so the ext.js watcher parses both
++ * sources identically.
++ *
++ * Naming note — the parameter is called `toolUseId` for historical continuity
++ * with the queue-line field `line.tool_use_id`, but its actual value is the
++ * ext-side channel `requestId` (hex 32 chars) sourced from pending-perms.jsonl
++ * by hook.js. NOT the model-side `toolu_XXX` from Claude — those are a
++ * disjoint ID namespace and would fail the injector's pending-request match.
++ *
++ * @param {string} sid
++ * @param {string} toolUseId   ext channel requestId — see naming note above
++ * @param {*}      toolInput   passthrough of the original tool_input ;
++ *                              becomes `updatedInput` on the wire
++ * @returns {void}
++ */
++function writeAllowOutbound(sid, toolUseId, toolInput) {
++	if (!outboundPath) return
++	const cmd = {
++		cmd:                'tool_permission_response',
++		sessionId:          sid,
++		requestId:          toolUseId,
++		behavior:           'allow',
++		updatedInput:       toolInput ?? {},
++		updatedPermissions: [],
++	}
++	try {
++		fs.mkdirSync(path.dirname(outboundPath), { recursive: true })
++		fs.appendFileSync(outboundPath, JSON.stringify(cmd) + '\n')
++		log.info(`[notify-app] allow ack written for sid=${sid.slice(0, 8)} rid=${toolUseId.slice(0, 8)}`)
++	} catch (e) {
++		log.warn(`[notify-app] outbound append failed at ${outboundPath}: ${e.message}`)
++	}
++}
++
++module.exports = {
++	start,
++	getNotifPath,
++	// Exposed for tests only ; do not consume from production code.
++	_test: { buildFocusTarget, processInboxLine, rememberPermissionContext, permissionContext },
++}
+diff --git a/.devcontainer/notify/lib/focus-debounce.js b/.devcontainer/notify/lib/focus-debounce.js
+new file mode 100644
+index 0000000..567b1ff
+--- /dev/null
++++ b/.devcontainer/notify/lib/focus-debounce.js
+@@ -0,0 +1,93 @@
++// =============================================================================
++// focus-debounce — per-sid setTimeout for focus-aware banner delay
++// =============================================================================
++//
++// Session 4 : when a queue event carries `line.focused === true` (host VS Code
++// window is focused per the extension patch's `vscode.window.state` snapshot,
++// see `.devcontainer/skills/notify-queue/hook.js::readLatestFocus`), the
++// notify-app consumer arms a per-sid setTimeout instead of spawning `notif
++// send` immediately. Two exit paths :
++//
++//   1. Timer expires without cancel → `onFire()` is invoked → banner fires
++//      after the debounce delay. Matches the "delay N s, then remind" policy
++//      confirmed during Phase 3.
++//   2. `cancelDebounce(sid)` is called before the timer fires (via
++//      `cancelled:notification` from the bus — user replied, tool finished,
++//      Allow click) → `onFire` is never invoked, no banner fires.
++//
++// State is a module-level `Map<sid, timeout>`. A new arm on an existing sid
++// clears the previous timer so identical events collapse to the latest arm
++// (matches the "1 banner per sid" invariant enforced by the daemon).
++//
++// `NOTIFY_FOCUS_DEBOUNCE_MS` overrides the default 5000 ms delay. Setting it
++// to 0 or negative disables the gate entirely (send() short-circuits and
++// dispatches immediately), useful for tests and users who don't want the
++// delay.
++// =============================================================================
++
++const DEFAULT_DEBOUNCE_MS = 5000
++const MAX_DEBOUNCE_MS = 60 * 1000
++
++const timers = new Map()
++
++/**
++ * Read `NOTIFY_FOCUS_DEBOUNCE_MS` from env with sane defaults + clamping.
++ * A value of 0 (or any non-positive integer) disables the debounce entirely.
++ *
++ * @param {NodeJS.ProcessEnv} env    typically process.env
++ * @returns {number}                 delay in ms, or 0 when the gate is off
++ */
++function getDebounceMs(env) {
++	const raw = env && env.NOTIFY_FOCUS_DEBOUNCE_MS
++	if (raw === undefined || raw === null || raw === '') return DEFAULT_DEBOUNCE_MS
++	const n = Number(raw)
++	if (!Number.isFinite(n)) return DEFAULT_DEBOUNCE_MS
++	if (n <= 0) return 0
++	if (n > MAX_DEBOUNCE_MS) return MAX_DEBOUNCE_MS
++	return Math.floor(n)
++}
++
++/**
++ * Arm a per-sid debounce timer. If a timer is already armed for this sid, it
++ * is cleared and replaced ("latest wins") — the caller is expected to have
++ * dropped or superseded the earlier event.
++ *
++ * @param {string} sid           session id
++ * @param {number} ms            delay in ms
++ * @param {() => void} onFire    invoked once when the timer expires
++ * @returns {void}
++ */
++function armDebounce(sid, ms, onFire) {
++	if (!sid || typeof onFire !== 'function') return
++	cancelDebounce(sid)
++	const timeout = setTimeout(() => {
++		timers.delete(sid)
++		try { onFire() } catch (_) { /* consumer logs its own errors */ }
++	}, ms)
++	timeout.unref?.()
++	timers.set(sid, timeout)
++}
++
++/**
++ * Cancel any pending debounce timer for a sid. Idempotent — no-op when no
++ * timer is armed.
++ *
++ * @param {string} sid
++ * @returns {boolean}   true when a timer was actually cleared, false otherwise
++ */
++function cancelDebounce(sid) {
++	const timeout = timers.get(sid)
++	if (!timeout) return false
++	clearTimeout(timeout)
++	timers.delete(sid)
++	return true
++}
++
++module.exports = {
++	getDebounceMs,
++	armDebounce,
++	cancelDebounce,
++	DEFAULT_DEBOUNCE_MS,
++	MAX_DEBOUNCE_MS,
++	_test: { timers },
++}
+diff --git a/.devcontainer/notify/lib/state.js b/.devcontainer/notify/lib/state.js
+index 33cc5a4..fb359fc 100644
+--- a/.devcontainer/notify/lib/state.js
++++ b/.devcontainer/notify/lib/state.js
+@@ -27,9 +27,16 @@
+ //
+ // SCHEMAS (see notify/README.md for the human-readable doc)
+ //   pending.json :
+-//     { updated_at, pid, pending: [{ sid, eventType, armed_at, fire_at, delay_ms }, …] }
++//     { updated_at, pid, pending: [{ sid, eventType, armed_at, fire_at, delay_ms, payload }, …] }
+ //   actions.jsonl line :
+ //     { ts, action, sid, eventType, …action-specific keys }
++//
++//   `payload` is the raw parsed JSONL `line` from notify-queue/hook.js
++//   buildLine — carries tool_name / tool_input / session_name /
++//   last_message_excerpt / message / notification_type … per eventType.
++//   Present on `armed` and `replaced` (pending.json + audit line) ; omitted
++//   on `cancelled` / `fired` / `unmapped` (the matching `armed` is
++//   searchable by sid + ts).
+ // =============================================================================
+ 
+ const fs = require('fs')
+@@ -39,7 +46,7 @@ const { writeAtomic } = require('./atomic-write')
+ let pendingPath = ''
+ let actionsPath = ''
+ let ownPid      = 0
+-const pendingMap = new Map()  // sid → { sid, eventType, armed_at, fire_at, delay_ms }
++const pendingMap = new Map()  // sid → { sid, eventType, armed_at, fire_at, delay_ms, payload? }
+ 
+ /**
+  * Boot the state module. Resolves the on-disk paths under queue/state/,
+@@ -113,14 +120,17 @@ function appendAction(entry) {
+  * @param {string} evt.sid         session ID (Claude Code session UUID or short form)
+  * @param {string} evt.eventType   event class label (e.g. 'permission_request')
+  * @param {number} evt.delayMs     debounce delay in ms; fire_at = now + delayMs
++ * @param {object} [evt.payload]   raw parsed JSONL `line` (notify-queue/hook.js buildLine).
++ *                                 Mirrored into pending.json and the audit line so an external
++ *                                 consumer can render / route from state alone.
+  * @returns {void}                 mutates pendingMap, flushes pending.json, appends to actions.jsonl
+  */
+-function armed({ sid, eventType, delayMs }) {
++function armed({ sid, eventType, delayMs, payload }) {
+ 	const armed_at = nowIso()
+ 	const fire_at  = new Date(Date.now() + delayMs).toISOString()
+-	pendingMap.set(sid, { sid, eventType, armed_at, fire_at, delay_ms: delayMs })
++	pendingMap.set(sid, { sid, eventType, armed_at, fire_at, delay_ms: delayMs, payload })
+ 	flushPending()
+-	appendAction({ action: 'armed', sid, eventType, delayMs, fireAt: fire_at })
++	appendAction({ action: 'armed', sid, eventType, delayMs, fireAt: fire_at, payload })
+ }
+ 
+ /**
+@@ -133,14 +143,16 @@ function armed({ sid, eventType, delayMs }) {
+  * @param {string} evt.prevEventType    event class previously armed for this sid
+  * @param {string} evt.newEventType     event class taking over
+  * @param {number} evt.delayMs          debounce delay in ms for the new timer
++ * @param {object} [evt.payload]        raw parsed JSONL `line` for the NEW event ; mirrored into
++ *                                      pending.json and the audit line (overrides the prior payload).
+  * @returns {void}                      mutates pendingMap, flushes pending.json, appends to actions.jsonl
+  */
+-function replaced({ sid, prevEventType, newEventType, delayMs }) {
++function replaced({ sid, prevEventType, newEventType, delayMs, payload }) {
+ 	const armed_at = nowIso()
+ 	const fire_at  = new Date(Date.now() + delayMs).toISOString()
+-	pendingMap.set(sid, { sid, eventType: newEventType, armed_at, fire_at, delay_ms: delayMs })
++	pendingMap.set(sid, { sid, eventType: newEventType, armed_at, fire_at, delay_ms: delayMs, payload })
+ 	flushPending()
+-	appendAction({ action: 'replaced', sid, prevEventType, newEventType, delayMs, fireAt: fire_at })
++	appendAction({ action: 'replaced', sid, prevEventType, newEventType, delayMs, fireAt: fire_at, payload })
+ }
+ 
+ /**
+diff --git a/.devcontainer/notify/lib/watcher.js b/.devcontainer/notify/lib/watcher.js
+index 4e8bdb5..4f04ee4 100644
+--- a/.devcontainer/notify/lib/watcher.js
++++ b/.devcontainer/notify/lib/watcher.js
+@@ -125,7 +125,16 @@ function start({ bus, queueDir, delays, state }) {
+ 	// firing independently — this is purely additive.
+ 	bus.on('cancel:notification', ({ sid, kind, reason }) => {
+ 		const pending = timers.get(sid)
+-		if (!pending) return
++		if (!pending) {
++			// No pending timer — banner may already be dispatched (user took
++			// >30s to click, so the timer fired first). Emit post-fire cancel
++			// so notify-app can dismiss the delivered banner via `notif remove`.
++			// No `kind === 'permission'` filter here : under the "1 banner per
++			// sid" invariant only one banner exists, so any user action on the
++			// sid legitimately dismisses it regardless of what event fired it.
++			bus.emit('cancelled:notification', { sid, eventType: null, reason: `inbound-post-fire:${reason}` })
++			return
++		}
+ 		if (kind === 'permission'
+ 		 && pending.eventType !== 'permission_request'
+ 		 && pending.eventType !== 'permission_prompt') return
+@@ -133,7 +142,10 @@ function start({ bus, queueDir, delays, state }) {
+ 		timers.delete(sid)
+ 		log.info(`[watcher] cancel:notification ${sid.slice(0, 8)} — ${pending.eventType} cancelled (${reason})`)
+ 		state?.cancelled({ sid, eventType: pending.eventType, cause: 'cancel:notification', kind, reason })
+-		bus.emit('cancelled:notification', { id: pending.id, eventType: pending.eventType, reason: `inbound:${reason}` })
++		// Include `sid` so notify-app.js can look up its `dispatched` map. Pre-fire
++		// there's nothing dispatched yet, but keeping the shape consistent with
++		// the post-fire emit above avoids future footguns.
++		bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: `inbound:${reason}` })
+ 	})
+ 
+ 	log.info(`[watcher] watching ${queueDir} (delays: ${JSON.stringify(delays)})`)
+@@ -247,6 +259,11 @@ function readNewLines(file, offsets) {
+  *      and arm a fresh one based on the new event ("latest wins").
+  *   5. ARM — no previous timer ; setTimeout(delays[type]) and store.
+  *
++ * The raw parsed `line` is passed as `payload` into `state.armed` and
++ * `state.replaced` so pending.json + actions.jsonl expose the full
++ * notification payload to external consumers, not just the timer
++ * bookkeeping.
++ *
+  * The `notification` super-event is flattened to its `notification_type`
+  * sub-string (idle_prompt / permission_prompt / elicitation_dialog) so
+  * the rest of the pipeline only sees flat event types.
+@@ -278,9 +295,14 @@ function handleLine(line, { timers, bus, delays, state }) {
+ 			timers.delete(sid)
+ 			log.info(`[watcher] user_replied   ${sid8} — CANCELLED pending ${pending.eventType}`)
+ 			state?.cancelled({ sid, eventType: pending.eventType, cause: 'user_replied' })
+-			bus.emit('cancelled:notification', { id: pending.id, eventType: pending.eventType, reason: 'user_replied' })
++			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: 'user_replied' })
+ 		} else {
+-			log.info(`[watcher] user_replied   ${sid8} — no pending timer (already fired or never armed)`)
++			log.info(`[watcher] user_replied   ${sid8} — no pending timer (already fired or never armed) — signalling post-fire cancel to consumers`)
++			// Post-fire cancel : the notif already fired ; consumers (notify-app)
++			// maintain their own "dispatched" state to dismiss the delivered banner.
++			// Without this bus emission, `notif remove` never fires and the
++			// banner lingers in Notification Center until the user swipes it.
++			bus.emit('cancelled:notification', { sid, eventType: null, reason: 'user_replied' })
+ 		}
+ 		return
+ 	}
+@@ -310,7 +332,18 @@ function handleLine(line, { timers, bus, delays, state }) {
+ 			timers.delete(sid)
+ 			log.info(`[watcher] ${event.padEnd(14)} ${sid8} — CANCELLED pending ${pending.eventType}`)
+ 			state?.cancelled({ sid, eventType: pending.eventType, cause: event })
+-			bus.emit('cancelled:notification', { id: pending.id, eventType: pending.eventType, reason: event })
++			bus.emit('cancelled:notification', { id: pending.id, sid, eventType: pending.eventType, reason: event })
++		} else if (event === 'tool_cancelled' || event === 'tool_finished') {
++			// Post-fire cancel : the permission notif already fired and the user
++			// closed the loop — either by denying (`tool_cancelled` via
++			// tail-cancel.js's transcript scan) or by approving+running the tool
++			// to completion (`tool_finished` via PostToolUse). Either way the
++			// banner is stale and must be dismissed via `notif remove` to keep
++			// the "1 delivered banner per sid" invariant.
++			// `tool_started` (PreToolUse) stays a no-op : it fires while the user
++			// is still deciding, and dismissing then would kill the banner
++			// mid-decision.
++			bus.emit('cancelled:notification', { sid, eventType: null, reason: event })
+ 		}
+ 		return
+ 	}
+@@ -342,10 +375,10 @@ function handleLine(line, { timers, bus, delays, state }) {
+ 	if (existing) {
+ 		clearTimeout(existing.timeout)
+ 		log.info(`[watcher] ${eventType.padEnd(14)} ${sid8} — REPLACED previous ${existing.eventType} timer`)
+-		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs })
+-		bus.emit('cancelled:notification', { id: existing.id, eventType: existing.eventType, reason: `replaced-by-${eventType}` })
++		state?.replaced({ sid, prevEventType: existing.eventType, newEventType: eventType, delayMs, payload: line })
++		bus.emit('cancelled:notification', { id: existing.id, sid, eventType: existing.eventType, reason: `replaced-by-${eventType}` })
+ 	} else {
+-		state?.armed({ sid, eventType, delayMs })
++		state?.armed({ sid, eventType, delayMs, payload: line })
+ 	}
+ 
+ 	const timeout = setTimeout(() => {
+diff --git a/.devcontainer/notify/tests/README-vm-smoke.md b/.devcontainer/notify/tests/README-vm-smoke.md
+new file mode 100644
+index 0000000..b85fda7
+--- /dev/null
++++ b/.devcontainer/notify/tests/README-vm-smoke.md
+@@ -0,0 +1,392 @@
++# VM smoke harness — Node.js daemon + replay fixtures on a bare VM
++
++This doc explains how to exercise the [notify daemon](../index.js) and the
++[`notify-app` consumer](../lib/consumers/notify-app.js) on a Windows or Linux
++virtual machine that has **no Docker, no VS Code hook stream, no devcontainer**.
++It is the verification playbook prefix for every W1→W5 and L1→L5 milestone in
++the `notifier-cross-platform` rollout — once you have a working `notif` binary
++on the VM, the steps below drive end-to-end banners through the same code
++path the devcontainer uses on macOS.
++
++The harness is intentionally minimal : the daemon is host-agnostic already
++(see [`lib/host.js`](../lib/host.js)), and the replay runner
++([`replay-fixture.js`](./replay-fixture.js)) writes canonical JSONL lines
++into the daemon's queue directory just like the Claude Code hook would.
++`fs.watch` picks them up ; the notify-app consumer spawns
++`notif send …` ; the OS renders the banner. No extra infrastructure needed.
++
++---
++
++## 1. Prerequisites on the VM
++
++- **Node.js 18 or newer** on PATH (`node --version`). The daemon exits at
++  boot on Node < 18 with a clear error.
++- **`notif` binary** on PATH, or reachable through one of the resolution
++  paths in `getNotifPath()` at
++  [`notify-app.js:291-317`](../lib/consumers/notify-app.js#L291-L317).
++  In priority order the consumer checks : the `NOTIF_BIN` env override,
++  `$XDG_DATA_HOME/notif/notif`, `~/.local/bin/notif`, `~/bin/notif`,
++  `/usr/local/bin/notif`, `/opt/homebrew/bin/notif`, then every entry on
++  `$PATH`, then the daemon's bundled `vendor/notif` fallback.
++  - **Windows** — after W1 you'll have `apps\notifier\target\release\notif.exe`.
++    Copy or symlink it to `%LOCALAPPDATA%\notif\notif.exe` and add that dir
++    to PATH, or set `NOTIF_BIN=<abs-path>` for a one-shot boot.
++  - **Linux** — after L1 you'll have `apps/notifier/target/release/notif`.
++    `ln -sf "$PWD/apps/notifier/target/release/notif" ~/.local/bin/notif`
++    is enough on Ubuntu 24.04 (`~/.local/bin` is on PATH via `~/.profile`).
++- **A checkout of the repo** on the VM (Parallels Shared Folders, `git clone`,
++  or scp). The daemon expects the workspace layout to be intact — it locates
++  its queue via [`lib/locate.js`](../lib/locate.js) starting from the current
++  working directory, so run all commands with the repo root as CWD.
++
++**Not required** : Docker, VS Code, the devcontainer, a running Claude Code
++session, or any GUI. A plain Terminal is enough.
++
++---
++
++## 2. Boot the daemon standalone
++
++The daemon runs a Docker liveness poll by default (used inside the
++devcontainer to exit cleanly when the container stops). On a VM there is
++no container to watch, so disable the poll with `NOTIFY_DOCKER_POLL_MS=0` :
++
++**Linux / macOS shell** :
++```bash
++NOTIFY_DOCKER_POLL_MS=0 node .devcontainer/notify/index.js
++```
++
++**Windows PowerShell** :
++```powershell
++$env:NOTIFY_DOCKER_POLL_MS = "0"
++node .devcontainer\notify\index.js
++```
++
++Expected log lines (visible on stdout and in `.devcontainer/notify/queue/daemon.log`) :
++
++```
++daemon started — platform=<darwin|win32|linux> host=<macos|windows|linux> pid=<n> project="<name>" queue=<abs>
++[docker-watch] disabled via NOTIFY_DOCKER_POLL_MS=0
++[notify-app] notif binary resolved at <abs-path>
++STATUS notify ok host=<host> notif=<abs-path> sender=claude-code ...
++READY pid=<n> channels=notify,...
++```
++
++If you see `STATUS notify skipped reason=notif-binary-not-found` instead,
++the daemon booted correctly but `notif` isn't discoverable — fix the PATH
++or set `NOTIF_BIN` and restart.
++
++**What's off vs. devcontainer mode** :
++- No Docker liveness watch — the daemon will not self-terminate ; stop it
++  with Ctrl-C or `kill`.
++- No VS Code hook stream — the pending-perms bridge in
++  [`lib/inbound-watch.js`](../lib/inbound-watch.js) logs a one-line
++  fallback and stays in standby. Fixture replay is the only producer.
++
++**What's still on** : the `fs.watch` on
++`.devcontainer/notify/queue/*.jsonl`, which is all the smoke harness needs.
++
++---
++
++## 3. Inject a single canonical fixture (one-shot)
++
++Open a second terminal (leave the daemon running in the first) :
++
++```bash
++node .devcontainer/notify/tests/replay-fixture.js permission_request 1
++```
++
++[`replay-fixture.js`](./replay-fixture.js) reads
++[`fixtures/permission_request/1.jsonl`](./fixtures/permission_request/1.jsonl),
++substitutes a fresh `sid` (UUID) and `ts` (now), then writes the result to
++`.devcontainer/notify/queue/<sid>.jsonl`. The running daemon picks it up
++within a few `fs.watch` ticks.
++
++Expected on the VM : a system banner reading
++> **Claude Code**
++> Bash — php vendor/bin/phinx migrate
++> Run pending Phinx migrations
++> [ Allow ]
++
++The `[ Allow ]` action button only appears for
++`permission_request` / `permission_prompt` fixtures that carry a
++`tool_use_id`. Other fixtures produce banner-only notifications.
++
++To replay any other fixture :
++```bash
++node .devcontainer/notify/tests/replay-fixture.js <type> [num]     # → fixtures/<type>/<num>.jsonl
++node .devcontainer/notify/tests/replay-fixture.js <path.jsonl>     # any absolute or relative path
++```
++
++---
++
++## 4. Replay a full captured session (realistic timing)
++
++`replay-fixture.js` fires one synthetic event and stops — great for a
++smoke check on the notify-app dispatch, useless for anything timing-
++sensitive. For end-to-end validation of the focus-debounce arm/fire/cancel
++lifecycle, inbound cancel signals racing queue events, or long-idle
++behavior, use [`replay-session.js`](./replay-session.js) with one of the
++three real-capture session fixtures shipped under
++[`fixtures/sessions/`](./fixtures/sessions/) :
++
++| Slug                | Queue span | Queue · Inbound · Pending-perms | Use case                                                                    |
++|---------------------|------------|---------------------------------|-----------------------------------------------------------------------------|
++| `a-permission-rich` | 109 min    | 317 · 170 · 20                  | 32 `permission_request` events — dense action-button flow.                  |
++| `b-balanced`        | 125 min    | 236 · 160 · 20                  | 10 `permission_request` over a typical dev session. Default choice.         |
++| `c-long-idle`       | 508 min    | 361 · 250 · 30                  | ~8 h with long idle gaps — validates focus-debounce over sparse activity.   |
++
++Queue span is the `first_ts` → `last_ts` gap of the queue stream (read
++from each fixture's `meta.json`). The merged timeline (queue + inbound +
++pending-perms) usually extends 30-70 % beyond that ; the exact merged
++span + projected wall-time is printed by `replay-session.js` at boot.
++
++### Basic invocation
++
++```bash
++node .devcontainer/notify/tests/replay-session.js b-balanced
++```
++
++Replays the balanced fixture at 10× speed with waits capped at 5 s (both
++defaults) — the ~220 min merged timeline finishes in ~4-5 min of wall
++time (the script prints the exact projection at boot). The three streams
++— queue events, VS Code extension inbound signals, pending-perms focus
++snapshots — are merged into a single timeline sorted by `ts`, then each
++event is written to the same path the live devcontainer uses :
++
++- Queue events → `.devcontainer/notify/queue/<fresh-sid>.jsonl` (daemon watches via `fs.watch`).
++- Inbound → `.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl` (appended).
++- Pending-perms → `.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl` (appended).
++
++Every occurrence of the captured `sid` / `sessionId` is rewritten to a
++fresh UUID per invocation (string-level replacement, so deeply nested
++fields like `payload.request.sessionId` are also caught). Every `ts` is
++rewritten to current wall clock time.
++
++### Speed and delay controls
++
++```bash
++node .devcontainer/notify/tests/replay-session.js b-balanced --speed 1
++# real-time — mirrors production pacing exactly (long !).
++
++node .devcontainer/notify/tests/replay-session.js b-balanced --speed 100 --max-delay-ms 200
++# burst — good for CI-style regression smoke.
++
++node .devcontainer/notify/tests/replay-session.js c-long-idle --max-delay-ms 2000
++# snappier ~8 h — collapses long idles to ≤ 2 s waits.
++```
++
++- `--speed N` scales captured inter-event delays (default `10`).
++- `--max-delay-ms MS` caps individual waits (default `5000`) so a captured
++  long idle doesn't stall the smoke run.
++- `--min-delay-ms MS` floors individual waits — useful for visible pacing
++  when `--speed` alone would burst too fast to eyeball.
++
++### Interactive step-through
++
++```bash
++node .devcontainer/notify/tests/replay-session.js b-balanced -i
++```
++
++Waits for a keypress between events (raw-mode stdin, no dep) :
++
++| Key                   | Action                                       |
++|-----------------------|----------------------------------------------|
++| `n` / Enter / space   | Fire the next event.                         |
++| `a`                   | Switch to auto (timed) mode from here on.    |
++| `s`                   | Skip this event (do not write it).           |
++| `q` / Ctrl+C          | Quit.                                        |
++
++Use this to probe a specific point in a real captured flow — advance to
++the `permission_request` you want to inspect, then let auto mode play the
++rest.
++
++### Dry-run and isolated outputs
++
++```bash
++node .devcontainer/notify/tests/replay-session.js b-balanced --dry-run
++```
++
++Prints the full merged timeline without writing anywhere. Cheapest way to
++audit the sequence of events a fixture will produce before committing to
++a real replay.
++
++For fully isolated smokes (no risk of appending to the real
++`.devcontainer/logs/` files that VS Code may be reading) :
++
++```bash
++node .devcontainer/notify/tests/replay-session.js b-balanced \
++  --queue-dir /tmp/smoke/queue \
++  --inbound-log /tmp/smoke/inbound.jsonl \
++  --pending-perms-log /tmp/smoke/pending-perms.jsonl
++```
++
++Pair with `--no-inbound` and/or `--no-pending-perms` to skip either
++sibling stream entirely (queue-only replay, useful when the daemon under
++test doesn't have the inbound-watch bridge wired).
++
++### Known limitation
++
++The 8-char sid prefix embedded in `notif_id` fields (`<event>-<sid[0:8]>-<epoch-ms>`)
++is NOT rewritten — the full UUID is caught by string replacement but the
++short prefix is too generic to safely regex. Rapid consecutive replays of
++the same fixture can produce colliding `notif_id`s (the epoch-ms is
++frozen in the fixture). Not a blocker for smoke ; if it bites you, add a
++`sleep 1` between replays or file a follow-up to add the `notif_id`
++rewrite.
++
++---
++
++## 5. Verify user interaction landed
++
++When you click **Allow** on a permission banner, `notif` appends a JSONL
++record to the actions inbox and the notify-app consumer's tail watcher
++picks it up. Tail the file in a third terminal :
++
++```bash
++tail -f .devcontainer/logs/notif-actions.jsonl
++```
++
++Expected new line after each click, shape :
++```json
++{"notif_id":"<id>","event":"action:Allow","sender":"claude-code","ts":"<iso-8601>"}
++```
++
++For body-click (not action-button), the click is dispatched via
++`focus:open-a://Visual Studio Code/<launchUrl>` at
++[`notify-app.js:373-379`](../lib/consumers/notify-app.js#L373-L379). On a
++bare VM the launchUrl is missing from every fixture, so body-clicks are a
++silent no-op by design — that's the "session-1 producer contract" logged
++in the daemon output. This is expected and does not indicate a bug.
++
++---
++
++## 6. Fixture matrix — what each single-fixture replay triggers
++
++Rows below cover the one-shot synthetic fixtures loaded by
++[`replay-fixture.js`](./replay-fixture.js) (§3) — the multi-event captured
++session fixtures loaded by [`replay-session.js`](./replay-session.js) (§4)
++are documented in that section's table instead. All single-fixtures share
++a one-line JSONL schema ; see any file under
++[`fixtures/`](./fixtures/) for the exact shape.
++
++| Fixture directory   | Effect on replay                                                                                                                                    |
++|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
++| `permission_request` | Banner with the tool description and an **Allow** action button. Clicking Allow writes to `notif-actions.jsonl`. Best fixture for the click-through smoke. |
++| `permission_prompt`  | Banner with the prompt message. No Allow button (fixture omits `tool_use_id`). Body-click focuses VS Code if `launchUrl` is set (bare VM : no-op).       |
++| `stop`               | Banner rendering the session's `last_message_excerpt` as body. No action button.                                                                     |
++| `notification`       | Generic banner. Fixture 1 exercises the "unmapped `notification_type`" warning path.                                                                 |
++| `elicitation_dialog` | Banner surfacing an `AskUserQuestion` prompt. No action button.                                                                                      |
++| `idle_prompt`        | Banner surfacing the idle-prompt message. No action button.                                                                                          |
++| `tool_started`       | First half of the tool-lifecycle pair. On its own : silent (daemon arms a deferred banner and waits).                                                |
++| `tool_finished`      | Cancel signal — the daemon emits `cancelled:notification` on the bus, which dismisses any banner previously dispatched for that sid.                 |
++| `tool_cancelled`     | Same cancel semantics as `tool_finished`.                                                                                                            |
++| `user_replied`       | Cancel signal (user replied in the Claude Code UI). Same effect as above.                                                                            |
++
++**Sequence-dependent fixtures** : `tool_started` alone will not produce a
++visible banner (or produces a delayed one, depending on the fixture's
++`focused` flag) ; the daemon expects a matching `tool_finished` /
++`tool_cancelled` / `user_replied` line on the same `sid` to clear it.
++`replay-fixture.js` rewrites `sid` per invocation, so replaying
++`tool_started` then `tool_finished` in two separate commands does **not**
++pair them — the second gets a fresh sid. Two ways out : (a) hand-craft a
++JSONL file with a shared sid and pass it via
++`replay-fixture.js <path.jsonl>`, or (b) use `replay-session.js` (§4)
++which preserves matched sids across every event of a captured session,
++which is precisely what makes it the right tool for cancel-path smoke.
++
++---
++
++## 7. What fixture replay covers — and what it doesn't
++
++The parity contract for the `notif` binary is **4 callback events**
++(click / action / dismiss / timeout) × **4 callback kinds**
++(hook / url / file / focus:open) = **16 combinations**.
++
++Both `replay-fixture.js` and `replay-session.js` drive the same daemon,
++and the daemon only ever emits **2 of the 16** combos
++(see [`notify-app.js:332-416`](../lib/consumers/notify-app.js#L332-L416)) :
++
++| Callback event | Callback kind    | Triggered by                                                         |
++|----------------|------------------|----------------------------------------------------------------------|
++| `--on-click`   | `focus:open-a://` | every queue line with a valid `launchUrl`                             |
++| `--on-action`  | `file:`           | `permission_request` / `permission_prompt` lines with `tool_use_id`   |
++
++The other 14 combinations (all dismiss / timeout events, plus hook / url
++callback kinds on click and action) are **not** produced by the daemon and
++cannot be reached through either replay tool. They are covered by the
++**direct `notif` invocations** in the W1→W5 (Windows) and L1→L5 (Linux)
++verification playbooks — see the PowerShell / bash blocks in the approved
++rollout plan and mirrored in each session's prompt.
++
++What each replay tool adds on top of that shared surface :
++- **`replay-fixture.js`** — one synthetic event, no timing. Fastest way
++  to smoke a specific queue-line shape.
++- **`replay-session.js`** — a full merged timeline (queue + inbound +
++  pending-perms) with realistic pacing. The right tool for anything
++  touching focus-debounce, inbound cancel races, or long-idle behavior
++  — the flows a single-event fixture can't exercise.
++
++Rule of thumb :
++- **Replay tools** = daemon → notif integration path.
++- **Direct `notif` commands** = notif → OS callback path.
++
++Both must be green for a milestone to be considered done.
++
++---
++
++## 8. Running the unit tests on the VM
++
++`.devcontainer/notify/package.json` currently has no `scripts` section, so
++`npm test` is a no-op. Invoke each test file directly with `node` :
++
++```bash
++node .devcontainer/notify/tests/notify-app-focus.test.js
++node .devcontainer/notify/tests/notify-app-actions.test.js
++node .devcontainer/notify/tests/notify-app-click.test.js
++node .devcontainer/notify/tests/get-notif-path.test.js
++```
++
++Each script exits 0 on success and throws with non-zero on failure. These
++tests use in-process stubs and do not spawn `notif`, so they are safe to
++run without a binary installed.
++
++---
++
++## 9. Common pitfalls
++
++- **Linux over SSH** — no D-Bus session bus, so `Notify` calls fail
++  silently. Fix : run from the desktop Terminal, or prepend `eval $(dbus-launch --sh-syntax)`.
++- **Focus Assist (Windows) / Do Not Disturb (macOS) / GNOME "show-banners"** —
++  banners are silently swallowed by the OS. Toggle them off in system
++  settings before smoke-testing. On GNOME :
++  `gsettings get org.gnome.desktop.notifications show-banners`.
++- **Missing `notif` binary** — the daemon boots fine and reports
++  `STATUS notify skipped reason=notif-binary-not-found` in the status
++  line. Fix the discovery paths from §1 or set `NOTIF_BIN=<abs-path>`.
++- **Daemon already running** — `.devcontainer/notify/queue/.daemon.pid`
++  is a single-instance lockfile ; a second `node index.js` will exit 0
++  with `another daemon already running (pid=N) — exiting`. Kill the
++  first instance or wait for its 30 s heartbeat to expire (stale
++  lockfiles are auto-reclaimed).
++- **`NOTIFY_CHANNELS=all` skips the notify consumer** — `all` expands to
++  every channel EXCEPT the opt-in `notify` one (see `ALL_EXCLUDES` at
++  [`index.js:122`](../index.js#L122)). To run the notify-app path on the
++  VM, either set `NOTIFY_CHANNELS=notify` explicitly, or add it to a
++  CSV : `NOTIFY_CHANNELS=basic-notif,notify,sound`.
++- **Wayland focus** — the `focus:open-a://` callback needs the
++  compositor to honor `xdg-activation-v1` (GNOME 46+, KWin 6+, Sway).
++  Older LXDE / XFCE may fall back to the X11 `wmctrl` path — install
++  `wmctrl` if it's missing (`sudo apt install wmctrl`).
++- **`replay-session.js` appends to the live logs by default** — the
++  `--inbound-log` and `--pending-perms-log` defaults point at the
++  standard `.devcontainer/logs/claude-code-vscode-ext-*.jsonl` files.
++  If the VS Code extension is actively reading those (devcontainer up,
++  session live), a replay can inject events the extension will treat as
++  real. On a VM smoke there's nothing to interfere with, so the
++  defaults are fine ; on a live devcontainer, override both with
++  temp paths (see §4 "Custom output paths").
++- **Session fixtures contain real captured content** — the JSONL under
++  `fixtures/sessions/*/` is extracted from real Claude Code sessions
++  (task descriptions, user messages, tool inputs). Fine for internal
++  smoke ; do not mirror the fixture dir into a public repo without
++  redacting first.
+diff --git a/.devcontainer/notify/tests/fake-hook.sh b/.devcontainer/notify/tests/fake-hook.sh
+new file mode 100755
+index 0000000..ce608e5
+--- /dev/null
++++ b/.devcontainer/notify/tests/fake-hook.sh
+@@ -0,0 +1,165 @@
++#!/usr/bin/env bash
++# fake-hook.sh — simulate what hook.js would write to the queue when
++# Claude Code fires a real event, so the notify daemon runs its full
++# pipeline (watcher → notify-app → notif send / remove) without needing
++# an actual Claude Code session in the loop.
++#
++# Runs on the Mac host (or in the container — both see the same queue
++# via bind-mount). Requires jq for the JSON build ; every mac has it.
++#
++# Subcommands are named around the user-facing Claude Code lifecycle
++# (send / question / perm-request) rather than the raw watcher event
++# names. This mirrors how an operator running smokes thinks : "a perm
++# request that got approved" reads better than the underlying
++# permission_request → tool_finished pair.
++#
++# Usage :
++#   ./fake-hook.sh send                       # plain user-facing message
++#   ./fake-hook.sh question                   # Claude idle, waiting for input
++#   ./fake-hook.sh reply [SID]                # user typed a reply — closes any
++#                                             # pending event (question, perm,
++#                                             # stop). Universal cancel signal.
++#   ./fake-hook.sh perm-request               # tool asks permission (30s delay)
++#   ./fake-hook.sh perm-request-approved      # user clicked Allow, tool ran
++#   ./fake-hook.sh perm-request-denied        # user clicked Deny
++#   ./fake-hook.sh stop                       # end of Claude message turn
++#   ./fake-hook.sh invariant                  # full-flow combo test
++#
++# The queue dir defaults to `.devcontainer/notify/queue/` relative to
++# the current working directory. Override with $QUEUE_DIR if the daemon
++# writes elsewhere on your host.
++
++set -euo pipefail
++
++QUEUE_DIR="${QUEUE_DIR:-.devcontainer/notify/queue}"
++mkdir -p "$QUEUE_DIR"
++
++now_iso() { date -u +"%Y-%m-%dT%H:%M:%S.000Z" ; }
++now_ms()  { date +%s%3N 2>/dev/null || date +%s000 ; }
++
++# Deterministic per-run SID so cancel-remove can target it. Overridable
++# via `SID=xxx ./fake-hook.sh …` for repeated runs against the same
++# fake session.
++: "${SID:=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo deadbeef-1111-2222-3333-444444444444)}"
++SID8="${SID:0:8}"
++
++# Append one JSONL line to the queue for the given SID.
++queue_line() {
++    local target_sid="$1"
++    local line="$2"
++    echo "$line" >> "${QUEUE_DIR}/${target_sid}.jsonl"
++}
++
++fake_send() {
++    local NOTIF_ID="notification-${SID8}-$(now_ms)"
++    queue_line "$SID" "{\"ts\":\"$(now_iso)\",\"sid\":\"${SID}\",\"event\":\"notification\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\",\"message\":\"fake-hook send test\"}"
++    echo "queued notification (plain) for sid=${SID} — fires instantly"
++    echo "  → banner subject to your NOTIFY_CHANNELS ; daemon.log will show DISPATCH within 500 ms"
++}
++
++fake_question() {
++    local NOTIF_ID="notification-${SID8}-$(now_ms)"
++    queue_line "$SID" "{\"ts\":\"$(now_iso)\",\"sid\":\"${SID}\",\"event\":\"notification\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\",\"notification_type\":\"idle_prompt\",\"message\":\"fake-hook question — Claude waiting for input\"}"
++    echo "queued notification (idle_prompt) for sid=${SID} — fires instantly"
++    echo "  → close it with : $0 reply ${SID}"
++}
++
++fake_reply() {
++    local target_sid="${1:-${SID}}"
++    local target_sid8="${target_sid:0:8}"
++    local NOTIF_ID="user_replied-${target_sid8}-$(now_ms)"
++    queue_line "$target_sid" "{\"ts\":\"$(now_iso)\",\"sid\":\"${target_sid}\",\"event\":\"user_replied\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\"}"
++    echo "queued user_replied for sid=${target_sid}"
++    echo "  → universal cancel signal — closes ANY pending notification (question, perm-request, stop)"
++    echo "  → pre-fire pending timer cleared ; post-fire banner dismissed via notif remove"
++}
++
++fake_perm_request() {
++    local NOTIF_ID="permission_request-${SID8}-$(now_ms)"
++    queue_line "$SID" "{\"ts\":\"$(now_iso)\",\"sid\":\"${SID}\",\"event\":\"permission_request\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"fake test\"}}"
++    echo "queued permission_request for sid=${SID} — fires in ~30 s (EVENT_DELAYS_MS)"
++    echo "  → approve with : SID=${SID} $0 perm-request-approved"
++    echo "  → deny with    : SID=${SID} $0 perm-request-denied"
++}
++
++fake_perm_request_approved() {
++    local NOTIF_ID="tool_finished-${SID8}-$(now_ms)"
++    queue_line "$SID" "{\"ts\":\"$(now_iso)\",\"sid\":\"${SID}\",\"event\":\"tool_finished\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\",\"tool_name\":\"Bash\"}"
++    echo "queued tool_finished for sid=${SID} — post-fire banner dismissed via notif remove"
++    echo "  → v0.2.8 invariant : the earlier perm-request banner must disappear from NC within 500 ms"
++}
++
++fake_perm_request_denied() {
++    local NOTIF_ID="tool_cancelled-${SID8}-$(now_ms)"
++    queue_line "$SID" "{\"ts\":\"$(now_iso)\",\"sid\":\"${SID}\",\"event\":\"tool_cancelled\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\",\"tool_name\":\"Bash\"}"
++    echo "queued tool_cancelled for sid=${SID} — post-fire banner dismissed via notif remove"
++}
++
++fake_stop() {
++    local NOTIF_ID="stop-${SID8}-$(now_ms)"
++    queue_line "$SID" "{\"ts\":\"$(now_iso)\",\"sid\":\"${SID}\",\"event\":\"stop\",\"sender\":\"default\",\"notif_id\":\"${NOTIF_ID}\",\"last_message_excerpt\":\"fake-hook stop test — recap goes here\"}"
++    echo "queued stop for sid=${SID} — fires in ~30 s"
++}
++
++# Full-flow combo scenario. Validates the "1 banner per sid" invariant
++# end-to-end : after step 3, Notification Center must show exactly ONE
++# banner (the `send` one), not two (perm + send).
++fake_invariant() {
++    echo "=== invariant test — sid=${SID} ==="
++    echo "step 1/3 : queue perm-request (fires in ~30 s)"
++    fake_perm_request
++    echo
++    echo "step 2/3 : sleep 32 s so the perm banner delivers …"
++    sleep 32
++    echo
++    echo "step 3/3 : queue a plain send on the same sid"
++    fake_send
++    echo
++    sleep 3
++    echo "=== done ==="
++    echo "→ inspect Notification Center : should see exactly ONE banner (the send)"
++    echo "→ if the perm-request banner is still visible, the v0.2.8 invariant is broken"
++}
++
++case "${1:-help}" in
++    send)                    fake_send                                    ;;
++    question)                fake_question                                ;;
++    reply)                   shift ; fake_reply "${1:-}"                  ;;
++    perm-request)            fake_perm_request                            ;;
++    perm-request-approved)   fake_perm_request_approved                   ;;
++    perm-request-denied)     fake_perm_request_denied                     ;;
++    stop)                    fake_stop                                    ;;
++    invariant)               fake_invariant                               ;;
++    *)
++        cat <<EOF
++usage: $0 <subcommand> [SID]
++
++Subcommands (user-facing lifecycle) :
++  send                       plain message notification (fires instantly)
++  question                   Claude idle, waiting for input (idle_prompt)
++  reply [SID]                user typed a reply — user_replied event.
++                             Universal cancel signal : closes ANY pending
++                             notification (question / perm-request / stop).
++                             This is what fires when the user types a new
++                             prompt instead of clicking Allow/Deny on a
++                             pending perm-request.
++  perm-request               tool asks permission (30 s delay)
++  perm-request-approved      user clicked Allow → tool_finished
++  perm-request-denied        user clicked Deny  → tool_cancelled
++  stop                       end of Claude message turn (30 s delay)
++  invariant                  combo scenario : perm → wait 32 s → send
++
++Environment overrides :
++  QUEUE_DIR   default: .devcontainer/notify/queue
++  SID         default: fresh UUID per invocation
++
++Examples :
++  $0 send                                        # instant fire
++  $0 perm-request                                # 30 s delay
++  SID=my-test-sid $0 perm-request                # fixed SID …
++  SID=my-test-sid $0 perm-request-approved       # … then approve
++  $0 invariant                                   # full-flow smoke
++EOF
++        exit 1
++        ;;
++esac
+diff --git a/.devcontainer/notify/tests/get-notif-path.test.js b/.devcontainer/notify/tests/get-notif-path.test.js
+new file mode 100644
+index 0000000..1d320fc
+--- /dev/null
++++ b/.devcontainer/notify/tests/get-notif-path.test.js
+@@ -0,0 +1,138 @@
++#!/usr/bin/env node
++// get-notif-path.test.js — resolution order for notify-app::getNotifPath.
++//
++// Runs the 8 candidate branches (NOTIF_BIN → $XDG_DATA_HOME → ~/.local/bin →
++// ~/bin → /usr/local/bin → /opt/homebrew/bin → $PATH scan → vendor fallback)
++// plus the all-missing case. Uses a per-test temp $HOME so real disk state
++// can't leak into the assertions. Absolute paths (Homebrew, arbitrary $PATH
++// entries) can't be sandboxed — the terminal "all missing" case only
++// asserts `null` when we neutralise $PATH too.
++//
++// Run: node .devcontainer/notify/tests/get-notif-path.test.js
++// Exits 0 on success ; throws + non-zero on failure.
++
++const assert = require('assert')
++const fs     = require('fs')
++const os     = require('os')
++const path   = require('path')
++
++const { getNotifPath } = require('../lib/consumers/notify-app')
++
++// Snapshot the env slots we mutate so the test process leaves nothing behind.
++const SNAPSHOT_ENV = {
++	NOTIF_BIN:      process.env.NOTIF_BIN,
++	XDG_DATA_HOME:  process.env.XDG_DATA_HOME,
++	HOME:           process.env.HOME,
++	PATH:           process.env.PATH,
++}
++function restoreEnv() {
++	for (const [k, v] of Object.entries(SNAPSHOT_ENV)) {
++		if (v === undefined) delete process.env[k]
++		else                 process.env[k] = v
++	}
++}
++process.on('exit', restoreEnv)
++
++// Fresh sandbox $HOME + $XDG_DATA_HOME per test — old candidates never carry
++// over. Directory is nuked at the top of each case for full isolation.
++const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-app-test-'))
++function resetSandbox() {
++	fs.rmSync(SANDBOX, { recursive: true, force: true })
++	fs.mkdirSync(SANDBOX, { recursive: true })
++}
++process.on('exit', () => fs.rmSync(SANDBOX, { recursive: true, force: true }))
++
++function touch(p) {
++	fs.mkdirSync(path.dirname(p), { recursive: true })
++	fs.writeFileSync(p, '#!/bin/sh\necho stub\n', { mode: 0o755 })
++}
++
++function clearEnv() {
++	delete process.env.NOTIF_BIN
++	delete process.env.XDG_DATA_HOME
++}
++
++// 1. NOTIF_BIN env wins over every other candidate.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	const explicit  = path.join(SANDBOX, 'somewhere', 'notif-explicit')
++	const dotLocal  = path.join(SANDBOX, '.local', 'bin', 'notif')
++	touch(explicit)
++	touch(dotLocal)                                // decoy — must NOT win
++	process.env.NOTIF_BIN = explicit
++	assert.strictEqual(getNotifPath(), explicit, 'NOTIF_BIN must win over ~/.local/bin')
++}
++
++// 2. XDG_DATA_HOME/notif/notif wins when NOTIF_BIN is unset.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	process.env.XDG_DATA_HOME = path.join(SANDBOX, 'xdg')
++	const xdg      = path.join(SANDBOX, 'xdg', 'notif', 'notif')
++	const dotLocal = path.join(SANDBOX, '.local', 'bin', 'notif')
++	touch(xdg)
++	touch(dotLocal)                                // decoy — lower priority
++	assert.strictEqual(getNotifPath(), xdg, 'XDG_DATA_HOME must win over ~/.local/bin')
++}
++
++// 3. ~/.local/bin/notif wins when the two above are missing.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	const dotLocal = path.join(SANDBOX, '.local', 'bin', 'notif')
++	const homeBin  = path.join(SANDBOX, 'bin', 'notif')
++	touch(dotLocal)
++	touch(homeBin)                                 // decoy — lower priority
++	assert.strictEqual(getNotifPath(), dotLocal, '~/.local/bin/notif must win over ~/bin/notif')
++}
++
++// 4. ~/bin/notif wins when the previous three are missing.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	const homeBin = path.join(SANDBOX, 'bin', 'notif')
++	touch(homeBin)
++	assert.strictEqual(getNotifPath(), homeBin)
++}
++
++// 5. All candidates missing → null. Neutralise $PATH so the terminal $PATH
++// scan can't match a real system `notif` binary and skew the assertion.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	process.env.PATH = ''
++	assert.strictEqual(getNotifPath(), null, 'no explicit + empty PATH → null')
++}
++
++// 6. $PATH scan finds notif when explicit candidates miss. Uses the sandbox
++// as a fake bin dir so the scan is deterministic on any host.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	const pathBin = path.join(SANDBOX, 'somewhere-on-path', 'notif')
++	touch(pathBin)
++	process.env.PATH = path.dirname(pathBin)
++	assert.strictEqual(getNotifPath(), pathBin, '$PATH scan finds sandboxed notif')
++}
++
++// 7. Explicit candidates beat $PATH scan even when both exist.
++{
++	resetSandbox()
++	clearEnv()
++	process.env.HOME = SANDBOX
++	const dotLocal = path.join(SANDBOX, '.local', 'bin', 'notif')
++	const pathBin  = path.join(SANDBOX, 'somewhere-on-path', 'notif')
++	touch(dotLocal)
++	touch(pathBin)
++	process.env.PATH = path.dirname(pathBin)
++	assert.strictEqual(getNotifPath(), dotLocal, '~/.local/bin/notif wins over $PATH scan')
++}
++
++console.log('get-notif-path.test.js — all assertions passed')
+diff --git a/.devcontainer/notify/tests/notify-app-actions.test.js b/.devcontainer/notify/tests/notify-app-actions.test.js
+new file mode 100644
+index 0000000..73761c8
+--- /dev/null
++++ b/.devcontainer/notify/tests/notify-app-actions.test.js
+@@ -0,0 +1,314 @@
++#!/usr/bin/env node
++// notify-app-actions.test.js — Allow action wiring (session 3 of the
++// notif-outbound-actions rollout).
++//
++// Two surfaces are covered :
++//
++//   (A) send() argv construction
++//       Same stub-and-load pattern as notify-app-click.test.js — poison
++//       child_process.spawn, require.cache the logger + host module, then
++//       drive send:notification through a real EventEmitter and assert on
++//       the captured argv.
++//
++//   (B) actions-inbox tail → outbound.jsonl
++//       Directly exercises the exported `_test` seams (buildFocusTarget,
++//       rememberPermissionContext, processInboxLine) so we can validate
++//       the tail dispatch path without waiting on fs.watchFile polling.
++//       This mirrors the pattern inbound-watch.test.js would use — the
++//       state is module-scoped, so seeding via rememberPermissionContext
++//       and asserting the outbound file grew is enough.
++//
++// Run : node .devcontainer/notify/tests/notify-app-actions.test.js
++// Exits 0 on success ; throws + non-zero on failure.
++
++const assert = require('assert')
++const fs     = require('fs')
++const os     = require('os')
++const path   = require('path')
++const { EventEmitter } = require('events')
++
++// -----------------------------------------------------------------------------
++// Stub child_process BEFORE notify-app is required (same rationale as
++// notify-app-click.test.js — top-level destructure captures references at
++// load time).
++
++const cp = require('child_process')
++const spawnCalls     = []
++const spawnSyncCalls = []
++cp.spawn = (cmd, args) => {
++	spawnCalls.push({ cmd, args })
++	return { unref: () => {}, on: () => {}, stderr: null }
++}
++cp.spawnSync = (cmd, args) => {
++	spawnSyncCalls.push({ cmd, args })
++	return { status: 0, signal: null, stdout: Buffer.from(''), stderr: Buffer.from('') }
++}
++
++// -----------------------------------------------------------------------------
++// Sandbox HOME + a fake notif binary so getNotifPath resolves cleanly.
++
++const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-app-actions-'))
++process.env.HOME = SANDBOX
++delete process.env.NOTIF_BIN
++delete process.env.XDG_DATA_HOME
++const fakeNotif = path.join(SANDBOX, '.local', 'bin', 'notif')
++fs.mkdirSync(path.dirname(fakeNotif), { recursive: true })
++fs.writeFileSync(fakeNotif, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
++
++// Fake workspace root — index.js passes this as `projectDir`. Both the
++// actions inbox and outbound.jsonl paths are derived from it.
++const PROJECT_DIR = path.join(SANDBOX, 'workspace')
++fs.mkdirSync(path.join(PROJECT_DIR, '.devcontainer', 'logs'), { recursive: true })
++const INBOX_PATH    = path.join(PROJECT_DIR, '.devcontainer', 'logs', 'notif-actions.jsonl')
++const OUTBOUND_PATH = path.join(PROJECT_DIR, '.devcontainer', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
++
++process.on('exit', () => fs.rmSync(SANDBOX, { recursive: true, force: true }))
++
++// -----------------------------------------------------------------------------
++// Stub the shared logger.
++
++const warns = []
++const infos = []
++const logPath = require.resolve('../lib/log')
++require.cache[logPath] = {
++	id:       logPath,
++	filename: logPath,
++	loaded:   true,
++	exports: {
++		init:  () => {},
++		info:  (msg) => infos.push(msg),
++		warn:  (msg) => warns.push(msg),
++		error: (msg) => warns.push(msg),
++	},
++}
++
++// Force host detection to macos.
++
++const hostPath = require.resolve('../lib/host')
++require.cache[hostPath] = {
++	id:       hostPath,
++	filename: hostPath,
++	loaded:   true,
++	exports:  { getHostKind: () => 'macos' },
++}
++
++// -----------------------------------------------------------------------------
++// Load the consumer, then start() with our sandbox projectDir.
++
++const notifyApp = require('../lib/consumers/notify-app')
++const bus = new EventEmitter()
++const startResult = notifyApp.start({ bus, projectDir: PROJECT_DIR })
++assert.strictEqual(
++	startResult.status,
++	'ok',
++	`start() expected ok, got ${JSON.stringify(startResult)}`,
++)
++assert.strictEqual(
++	startResult.diag.actions_inbox,
++	INBOX_PATH,
++	`start() diag expected actions_inbox=${INBOX_PATH}, got ${startResult.diag.actions_inbox}`,
++)
++
++// Discard register/set-icon noise from start().
++spawnCalls.length     = 0
++spawnSyncCalls.length = 0
++warns.length          = 0
++infos.length          = 0
++
++// -----------------------------------------------------------------------------
++// Helpers.
++
++function makePermPayload({ sid, launchUrl, toolUseId, toolInput, eventType } = {}) {
++	sid = sid || 'abcdef01-1234-5678-9012-345678901234'
++	return {
++		sid,
++		eventType: eventType || 'permission_request',
++		ts:        '2026-07-11T10:00:00.000Z',
++		line: {
++			sid,
++			event:        eventType || 'permission_request',
++			notif_id:     `perm-${sid.slice(0, 8)}-${Date.now()}`,
++			tool_name:    'Bash',
++			tool_use_id:  toolUseId || 'toolu_01ABC',
++			tool_input:   toolInput || { command: 'ls -la' },
++			...(launchUrl !== undefined ? { launchUrl } : {}),
++		},
++	}
++}
++
++function sendSpawns() {
++	return spawnCalls.filter(c => c.args[0] === 'send')
++}
++
++function findOnAction(args) {
++	const out = []
++	for (let i = 0; i < args.length; i++) {
++		if (args[i] === '--on-action') out.push(args[i + 1])
++	}
++	return out
++}
++
++function findOnClick(args) {
++	const i = args.indexOf('--on-click')
++	return i >= 0 ? args[i + 1] : null
++}
++
++// -----------------------------------------------------------------------------
++// (A) argv construction cases.
++// -----------------------------------------------------------------------------
++
++// Case A1 : permission_request + tool_use_id + launchUrl → Allow:file:<inbox>
++// AND --on-click focus:open-a. NO Deny action (session 3 dropped Deny).
++
++{
++	const payload = makePermPayload({
++		sid:       'a1a1a1a1-aaaa-bbbb-cccc-dddddddddddd',
++		launchUrl: 'vscode://vscode-remote/dev-container+abc/workspace',
++		toolUseId: 'toolu_01A1',
++	})
++	bus.emit('send:notification', payload)
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 1, `A1: expected 1 send spawn, got ${sends.length}`)
++	const onActions = findOnAction(sends[0].args)
++	assert.deepStrictEqual(
++		onActions,
++		[`Allow:file:${INBOX_PATH}`],
++		`A1: expected exactly one Allow action; got ${JSON.stringify(onActions)}`,
++	)
++	assert.strictEqual(
++		findOnClick(sends[0].args),
++		'focus:open-a://Visual Studio Code/vscode://vscode-remote/dev-container+abc/workspace',
++		'A1: body-click DSL still built via buildFocusTarget helper',
++	)
++}
++
++// Case A2 : permission_request WITHOUT tool_use_id → NO Allow action.
++// (buildLine in hook.js only omits tool_use_id when the transcript event
++// itself lacked it, which is a producer bug — Allow is unsafe without a
++// requestId to pin to.)
++
++spawnCalls.length = 0
++{
++	const payload = makePermPayload({
++		sid:       'a2a2a2a2-aaaa-bbbb-cccc-dddddddddddd',
++		launchUrl: 'vscode://vscode-remote/dev-container+def/workspace',
++		toolUseId: '',
++	})
++	// Kill the tool_use_id so send() sees it as missing.
++	delete payload.line.tool_use_id
++	bus.emit('send:notification', payload)
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 1, `A2: expected 1 send spawn, got ${sends.length}`)
++	assert.deepStrictEqual(
++		findOnAction(sends[0].args),
++		[],
++		'A2: no tool_use_id → no --on-action Allow',
++	)
++}
++
++// Case A3 : `stop` event → no Allow action regardless of tool_use_id
++// presence. Only permission_request / permission_prompt trigger it.
++
++spawnCalls.length = 0
++{
++	const payload = makePermPayload({
++		sid:       'a3a3a3a3-aaaa-bbbb-cccc-dddddddddddd',
++		launchUrl: 'vscode://vscode-remote/dev-container+ghi/workspace',
++		eventType: 'stop',
++	})
++	bus.emit('send:notification', payload)
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 1, `A3: expected 1 send spawn, got ${sends.length}`)
++	assert.deepStrictEqual(
++		findOnAction(sends[0].args),
++		[],
++		'A3: stop event → no --on-action',
++	)
++}
++
++// Case A4 : permission_prompt behaves like permission_request.
++
++spawnCalls.length = 0
++{
++	const payload = makePermPayload({
++		sid:       'a4a4a4a4-aaaa-bbbb-cccc-dddddddddddd',
++		launchUrl: 'vscode://vscode-remote/dev-container+jkl/workspace',
++		toolUseId: 'toolu_01A4',
++		eventType: 'permission_prompt',
++	})
++	bus.emit('send:notification', payload)
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 1, `A4: expected 1 send spawn, got ${sends.length}`)
++	assert.deepStrictEqual(
++		findOnAction(sends[0].args),
++		[`Allow:file:${INBOX_PATH}`],
++		`A4: permission_prompt should behave like permission_request`,
++	)
++}
++
++// -----------------------------------------------------------------------------
++// (B) inbox tail → outbound.jsonl.
++// -----------------------------------------------------------------------------
++
++// Case B1 : seed the context map with rememberPermissionContext, feed a
++// synthetic action:Allow record through processInboxLine, and assert the
++// outbound file grew by exactly one JSONL line with the expected schema.
++
++{
++	const { rememberPermissionContext, processInboxLine, permissionContext } = notifyApp._test
++	const notifId   = 'perm-b1b1b1b1-9999'
++	const sid       = 'b1b1b1b1-aaaa-bbbb-cccc-dddddddddddd'
++	const toolUseId = 'toolu_01B1'
++	const toolInput = { command: 'ls -la /etc' }
++
++	rememberPermissionContext(notifId, sid, toolUseId, toolInput)
++	assert.ok(permissionContext.has(notifId), 'B1: context populated on remember')
++
++	// Ensure outbound file is empty for a clean diff.
++	if (fs.existsSync(OUTBOUND_PATH)) fs.unlinkSync(OUTBOUND_PATH)
++
++	processInboxLine({ notif_id: notifId, event: 'action:Allow' })
++
++	assert.ok(!permissionContext.has(notifId), 'B1: context cleared after processing')
++	assert.ok(fs.existsSync(OUTBOUND_PATH), 'B1: outbound file created')
++	const lines = fs.readFileSync(OUTBOUND_PATH, 'utf8').split('\n').filter(Boolean)
++	assert.strictEqual(lines.length, 1, `B1: expected 1 outbound line, got ${lines.length}`)
++	const parsed = JSON.parse(lines[0])
++	assert.deepStrictEqual(parsed, {
++		cmd:                'tool_permission_response',
++		sessionId:          sid,
++		requestId:          toolUseId,
++		behavior:           'allow',
++		updatedInput:       toolInput,
++		updatedPermissions: [],
++	}, 'B1: outbound schema matches outbound-tester.js contract')
++}
++
++// Case B2 : unknown notif_id → outbound unchanged, warn logged.
++
++{
++	const { processInboxLine } = notifyApp._test
++	const before = fs.existsSync(OUTBOUND_PATH) ? fs.readFileSync(OUTBOUND_PATH, 'utf8') : ''
++	warns.length = 0
++	processInboxLine({ notif_id: 'never-seen', event: 'action:Allow' })
++	const after = fs.existsSync(OUTBOUND_PATH) ? fs.readFileSync(OUTBOUND_PATH, 'utf8') : ''
++	assert.strictEqual(after, before, 'B2: outbound must not grow on unknown notif_id')
++	const unknownWarns = warns.filter(w => w.includes('unknown notif_id'))
++	assert.strictEqual(unknownWarns.length, 1, `B2: expected 1 unknown-notif_id warn, got ${unknownWarns.length}`)
++}
++
++// Case B3 : non-Allow event kinds are ignored (e.g. click on the same
++// inbox file would land with event="click"). processInboxLine returns
++// silently ; outbound unchanged.
++
++{
++	const { rememberPermissionContext, processInboxLine, permissionContext } = notifyApp._test
++	rememberPermissionContext('perm-b3-3333', 'b3b3b3b3-aaaa-bbbb-cccc-dddddddddddd', 'toolu_01B3', { command: 'noop' })
++	const before = fs.existsSync(OUTBOUND_PATH) ? fs.readFileSync(OUTBOUND_PATH, 'utf8') : ''
++	processInboxLine({ notif_id: 'perm-b3-3333', event: 'click' })
++	const after = fs.existsSync(OUTBOUND_PATH) ? fs.readFileSync(OUTBOUND_PATH, 'utf8') : ''
++	assert.strictEqual(after, before, 'B3: click event must not produce outbound line')
++	assert.ok(permissionContext.has('perm-b3-3333'), 'B3: context kept on unrelated event')
++}
++
++console.log('notify-app-actions.test.js — all assertions passed')
+diff --git a/.devcontainer/notify/tests/notify-app-click.test.js b/.devcontainer/notify/tests/notify-app-click.test.js
+new file mode 100644
+index 0000000..14c0d8b
+--- /dev/null
++++ b/.devcontainer/notify/tests/notify-app-click.test.js
+@@ -0,0 +1,197 @@
++#!/usr/bin/env node
++// notify-app-click.test.js — body-click --on-click argv injection for the
++// focus:open DSL (session 2 of the notif-outbound-actions rollout).
++//
++// Stubs child_process.spawn / spawnSync + the shared logger + host detection
++// so the consumer's `start()` returns ok on any OS. Then emits synthetic
++// send:notification events on a real bus and asserts on the captured argv :
++//
++//   1. payload with a valid `launchUrl`  → argv contains
++//      `['--on-click', 'focus:open-a://Visual Studio Code/<launchUrl>']`
++//   2. two payloads WITHOUT launchUrl    → no --on-click on either send ;
++//                                          the one-shot warn fires ONCE.
++//   3. payload with a whitespace URL     → rejected at the JS boundary (no
++//                                          --on-click), avoids handing a
++//                                          malformed target to `notif`'s
++//                                          inner parse_target.
++//
++// Run : node .devcontainer/notify/tests/notify-app-click.test.js
++// Exits 0 on success ; throws + non-zero on failure.
++
++const assert = require('assert')
++const fs     = require('fs')
++const os     = require('os')
++const path   = require('path')
++const { EventEmitter } = require('events')
++
++// -----------------------------------------------------------------------------
++// Stub child_process BEFORE notify-app is required — the consumer's top-level
++// `const { spawn, spawnSync } = require('child_process')` captures whatever
++// the module has at that moment. Mutating cp.spawn on the shared cached
++// module object works because notify-app hasn't destructured yet.
++
++const cp = require('child_process')
++const spawnCalls     = []
++const spawnSyncCalls = []
++cp.spawn = (cmd, args) => {
++	spawnCalls.push({ cmd, args })
++	return { unref: () => {}, on: () => {}, stderr: null }
++}
++cp.spawnSync = (cmd, args) => {
++	spawnSyncCalls.push({ cmd, args })
++	return { status: 0, signal: null, stdout: Buffer.from(''), stderr: Buffer.from('') }
++}
++
++// -----------------------------------------------------------------------------
++// Sandbox HOME + a fake notif binary so getNotifPath resolves to ~/.local/bin.
++
++const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-app-click-'))
++process.env.HOME = SANDBOX
++delete process.env.NOTIF_BIN
++delete process.env.XDG_DATA_HOME
++const fakeNotif = path.join(SANDBOX, '.local', 'bin', 'notif')
++fs.mkdirSync(path.dirname(fakeNotif), { recursive: true })
++fs.writeFileSync(fakeNotif, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
++process.on('exit', () => fs.rmSync(SANDBOX, { recursive: true, force: true }))
++
++// -----------------------------------------------------------------------------
++// Stub the shared logger — assertions check the count of missing-launchUrl
++// warns. We poison require.cache BEFORE notify-app loads so its top-level
++// `require('../log')` picks up our stub. resolve() gives us the same absolute
++// path notify-app itself will resolve to.
++
++const warns = []
++const infos = []
++const logPath = require.resolve('../lib/log')
++require.cache[logPath] = {
++	id:       logPath,
++	filename: logPath,
++	loaded:   true,
++	exports: {
++		init:  () => {},
++		info:  (msg) => infos.push(msg),
++		warn:  (msg) => warns.push(msg),
++		error: (msg) => warns.push(msg),
++	},
++}
++
++// -----------------------------------------------------------------------------
++// Force host detection to macos so the consumer proceeds instead of returning
++// skipped for a linux runtime. Same require.cache trick as the logger.
++
++const hostPath = require.resolve('../lib/host')
++require.cache[hostPath] = {
++	id:       hostPath,
++	filename: hostPath,
++	loaded:   true,
++	exports:  { getHostKind: () => 'macos' },
++}
++
++// -----------------------------------------------------------------------------
++// Now load the consumer under test and wire it up.
++
++const notifyApp = require('../lib/consumers/notify-app')
++const bus = new EventEmitter()
++const startResult = notifyApp.start({ bus })
++assert.strictEqual(
++	startResult.status,
++	'ok',
++	`start() expected ok, got ${JSON.stringify(startResult)}`,
++)
++
++// Discard whatever start()'s register/set-icon path did — from here we
++// only care about send/remove spawns and post-start warns.
++spawnCalls.length     = 0
++spawnSyncCalls.length = 0
++warns.length          = 0
++
++// -----------------------------------------------------------------------------
++// Helpers
++
++function makePayload({ sid, launchUrl } = {}) {
++	sid = sid || 'abcdef01-1234-5678-9012-345678901234'
++	return {
++		sid,
++		eventType: 'stop',
++		ts:        '2026-07-11T10:00:00.000Z',
++		line: {
++			sid,
++			event:                'stop',
++			notif_id:             `stop-${sid.slice(0, 8)}-123`,
++			last_message_excerpt: 'test',
++			...(launchUrl !== undefined ? { launchUrl } : {}),
++		},
++	}
++}
++
++function sendSpawns() {
++	return spawnCalls.filter(c => c.args[0] === 'send')
++}
++
++function findOnClick(args) {
++	const i = args.indexOf('--on-click')
++	return i >= 0 ? args[i + 1] : null
++}
++
++// -----------------------------------------------------------------------------
++// Case 1 : payload with a valid `launchUrl` produces the DSL --on-click arg.
++
++{
++	bus.emit('send:notification', makePayload({
++		sid:       '11111111-aaaa-bbbb-cccc-dddddddddddd',
++		launchUrl: 'vscode://vscode-remote/dev-container+abc/workspace',
++	}))
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 1, `expected 1 send spawn, got ${sends.length}`)
++	assert.strictEqual(
++		findOnClick(sends[0].args),
++		'focus:open-a://Visual Studio Code/vscode://vscode-remote/dev-container+abc/workspace',
++		'valid launchUrl must produce the DSL --on-click arg',
++	)
++	const missingWarns = warns.filter(w => w.includes('no valid launchUrl'))
++	assert.strictEqual(missingWarns.length, 0, 'no warn on valid launchUrl')
++}
++
++// -----------------------------------------------------------------------------
++// Case 2 : two payloads WITHOUT launchUrl → no --on-click on either ; the
++// one-shot warn fires exactly ONCE across both emissions.
++
++spawnCalls.length = 0
++warns.length      = 0
++{
++	bus.emit('send:notification', makePayload({ sid: '22222222-aaaa-bbbb-cccc-dddddddddddd' }))
++	bus.emit('send:notification', makePayload({ sid: '33333333-aaaa-bbbb-cccc-dddddddddddd' }))
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 2, `expected 2 send spawns, got ${sends.length}`)
++	for (const s of sends) {
++		assert.strictEqual(findOnClick(s.args), null, 'missing launchUrl → no --on-click')
++	}
++	const missingWarns = warns.filter(w => w.includes('no valid launchUrl'))
++	assert.strictEqual(
++		missingWarns.length,
++		1,
++		`expected exactly 1 missing-launchUrl warn across 2 events, got ${missingWarns.length}: ${JSON.stringify(warns)}`,
++	)
++}
++
++// -----------------------------------------------------------------------------
++// Case 3 : whitespace / control-char in launchUrl → rejected at JS boundary.
++// No --on-click added. No new warn (one-shot already fired in case 2).
++
++spawnCalls.length = 0
++warns.length      = 0
++{
++	bus.emit('send:notification', makePayload({
++		sid:       '44444444-aaaa-bbbb-cccc-dddddddddddd',
++		launchUrl: 'has space',
++	}))
++	const sends = sendSpawns()
++	assert.strictEqual(sends.length, 1, `expected 1 send spawn, got ${sends.length}`)
++	assert.strictEqual(
++		findOnClick(sends[0].args),
++		null,
++		'whitespace launchUrl must be rejected — no --on-click passed to notif',
++	)
++}
++
++console.log('notify-app-click.test.js — all assertions passed')
+diff --git a/.devcontainer/notify/tests/notify-app-focus.test.js b/.devcontainer/notify/tests/notify-app-focus.test.js
+new file mode 100644
+index 0000000..30e04bc
+--- /dev/null
++++ b/.devcontainer/notify/tests/notify-app-focus.test.js
+@@ -0,0 +1,241 @@
++#!/usr/bin/env node
++// notify-app-focus.test.js — focus-aware banner delay (session 4 of the
++// notif-outbound-actions rollout).
++//
++// Two surfaces are covered :
++//
++//   (A) focus-debounce module standalone (getDebounceMs / arm / cancel).
++//   (B) notify-app.send() gating on line.focused + onCancelled cleanup.
++//
++// Same stub-and-load pattern as notify-app-actions.test.js — poison
++// child_process.spawn BEFORE the consumer is required, require.cache the
++// logger + host module, drive send:notification through a real EventEmitter.
++//
++// Run : node .devcontainer/notify/tests/notify-app-focus.test.js
++// Exits 0 on success ; throws + non-zero on failure.
++
++const assert = require('assert')
++const fs     = require('fs')
++const os     = require('os')
++const path   = require('path')
++const { EventEmitter } = require('events')
++
++// -----------------------------------------------------------------------------
++// Force a tiny debounce so live-timer cases resolve fast without mocking timers.
++// Applied BEFORE any require() so the consumer picks it up at load time.
++
++process.env.NOTIFY_FOCUS_DEBOUNCE_MS = '40'
++
++// -----------------------------------------------------------------------------
++// Stub child_process BEFORE notify-app is required.
++
++const cp = require('child_process')
++const spawnCalls = []
++cp.spawn = (cmd, args) => {
++	spawnCalls.push({ cmd, args })
++	return { unref: () => {}, on: () => {}, stderr: null }
++}
++cp.spawnSync = () => ({ status: 0, signal: null, stdout: Buffer.from(''), stderr: Buffer.from('') })
++
++// -----------------------------------------------------------------------------
++// Sandbox HOME + a fake notif binary so getNotifPath resolves cleanly.
++
++const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-app-focus-'))
++process.env.HOME = SANDBOX
++delete process.env.NOTIF_BIN
++delete process.env.XDG_DATA_HOME
++const fakeNotif = path.join(SANDBOX, '.local', 'bin', 'notif')
++fs.mkdirSync(path.dirname(fakeNotif), { recursive: true })
++fs.writeFileSync(fakeNotif, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
++
++const PROJECT_DIR = path.join(SANDBOX, 'workspace')
++fs.mkdirSync(path.join(PROJECT_DIR, '.devcontainer', 'logs'), { recursive: true })
++
++process.on('exit', () => fs.rmSync(SANDBOX, { recursive: true, force: true }))
++
++// -----------------------------------------------------------------------------
++// Stub the shared logger + force host detection to macos.
++
++const infos = []
++const warns = []
++const logPath = require.resolve('../lib/log')
++require.cache[logPath] = {
++	id: logPath, filename: logPath, loaded: true,
++	exports: {
++		init:  () => {},
++		info:  (m) => infos.push(m),
++		warn:  (m) => warns.push(m),
++		error: (m) => warns.push(m),
++	},
++}
++const hostPath = require.resolve('../lib/host')
++require.cache[hostPath] = {
++	id: hostPath, filename: hostPath, loaded: true,
++	exports: { getHostKind: () => 'macos' },
++}
++
++// -----------------------------------------------------------------------------
++// Load modules.
++
++const focusDebounce = require('../lib/focus-debounce')
++const notifyApp     = require('../lib/consumers/notify-app')
++const bus           = new EventEmitter()
++const startResult   = notifyApp.start({ bus, projectDir: PROJECT_DIR })
++assert.strictEqual(startResult.status, 'ok', `start() expected ok, got ${JSON.stringify(startResult)}`)
++
++// Discard register/set-icon spawn noise from start().
++spawnCalls.length = 0
++infos.length      = 0
++warns.length      = 0
++
++// -----------------------------------------------------------------------------
++// Helpers.
++
++function makePayload({ sid, eventType, focused } = {}) {
++	sid = sid || 'aaaaaaaa-1111-2222-3333-444444444444'
++	const line = {
++		sid,
++		event:    eventType || 'stop',
++		notif_id: `${eventType || 'stop'}-${sid.slice(0, 8)}-${Date.now()}`,
++		sender:   'default',
++	}
++	if (eventType === 'stop') line.last_message_excerpt = 'test'
++	if (focused !== undefined) line.focused = focused
++	return { sid, eventType: eventType || 'stop', ts: '2026-07-12T10:00:00.000Z', line }
++}
++
++function sendSpawns() {
++	return spawnCalls.filter(c => c.args[0] === 'send')
++}
++
++function waitMs(ms) {
++	return new Promise(r => setTimeout(r, ms))
++}
++
++// -----------------------------------------------------------------------------
++// All cases run sequentially inside an async main() — inter-case timer races
++// would double-count spawn calls otherwise.
++
++async function main() {
++
++	// (A1) getDebounceMs env parsing — unset → default, 0 → off, valid → int, huge → clamp.
++	assert.strictEqual(focusDebounce.getDebounceMs({}), focusDebounce.DEFAULT_DEBOUNCE_MS, 'A1: unset → default')
++	assert.strictEqual(focusDebounce.getDebounceMs({ NOTIFY_FOCUS_DEBOUNCE_MS: '' }), focusDebounce.DEFAULT_DEBOUNCE_MS, 'A1: empty → default')
++	assert.strictEqual(focusDebounce.getDebounceMs({ NOTIFY_FOCUS_DEBOUNCE_MS: '3000' }), 3000, 'A1: valid int')
++	assert.strictEqual(focusDebounce.getDebounceMs({ NOTIFY_FOCUS_DEBOUNCE_MS: '0' }), 0, 'A1: 0 disables')
++	assert.strictEqual(focusDebounce.getDebounceMs({ NOTIFY_FOCUS_DEBOUNCE_MS: '-5' }), 0, 'A1: negative disables')
++	assert.strictEqual(focusDebounce.getDebounceMs({ NOTIFY_FOCUS_DEBOUNCE_MS: 'x' }), focusDebounce.DEFAULT_DEBOUNCE_MS, 'A1: garbage → default')
++	assert.strictEqual(focusDebounce.getDebounceMs({ NOTIFY_FOCUS_DEBOUNCE_MS: '999999' }), focusDebounce.MAX_DEBOUNCE_MS, 'A1: huge clamped')
++
++	// (A2) armDebounce fires onFire after delay.
++	{
++		let fired = 0
++		focusDebounce.armDebounce('sid-a2', 20, () => { fired++ })
++		assert.strictEqual(focusDebounce._test.timers.has('sid-a2'), true, 'A2: armed')
++		await waitMs(60)
++		assert.strictEqual(fired, 1, 'A2: onFire fired once')
++		assert.strictEqual(focusDebounce._test.timers.has('sid-a2'), false, 'A2: entry cleared post-fire')
++	}
++
++	// (A3) cancelDebounce clears timer + prevents fire.
++	{
++		let fired = 0
++		focusDebounce.armDebounce('sid-a3', 20, () => { fired++ })
++		assert.strictEqual(focusDebounce.cancelDebounce('sid-a3'), true, 'A3: cancel returns true')
++		assert.strictEqual(focusDebounce._test.timers.has('sid-a3'), false, 'A3: entry gone')
++		await waitMs(60)
++		assert.strictEqual(fired, 0, 'A3: onFire never called')
++		assert.strictEqual(focusDebounce.cancelDebounce('sid-a3'), false, 'A3: cancel idempotent')
++	}
++
++	// (A4) re-arm on existing sid replaces the previous timer.
++	{
++		let fired = 0, latest = null
++		focusDebounce.armDebounce('sid-a4', 20, () => { fired++; latest = 'first' })
++		focusDebounce.armDebounce('sid-a4', 20, () => { fired++; latest = 'second' })
++		await waitMs(60)
++		assert.strictEqual(fired, 1, 'A4: latest wins')
++		assert.strictEqual(latest, 'second', 'A4: latest callback ran')
++	}
++
++	// (B1) focused=false → immediate dispatch, no arm.
++	spawnCalls.length = 0
++	infos.length      = 0
++	{
++		const payload = makePayload({ sid: 'b1111111-0000-0000-0000-000000000000', eventType: 'stop', focused: false })
++		bus.emit('send:notification', payload)
++		assert.strictEqual(sendSpawns().length, 1, 'B1: 1 spawn')
++		assert.strictEqual(focusDebounce._test.timers.has(payload.sid), false, 'B1: no arm')
++		assert.ok(!infos.some(m => m.includes('focus-debounce ARM')), 'B1: no ARM log')
++	}
++
++	// (B2) line.focused missing → immediate dispatch.
++	spawnCalls.length = 0
++	{
++		const payload = makePayload({ sid: 'b2222222-0000-0000-0000-000000000000', eventType: 'stop' })
++		bus.emit('send:notification', payload)
++		assert.strictEqual(sendSpawns().length, 1, 'B2: 1 spawn')
++		assert.strictEqual(focusDebounce._test.timers.has(payload.sid), false, 'B2: no arm')
++	}
++
++	// (B3) focused=true → arm, no spawn ; wait timer → spawn fires.
++	spawnCalls.length = 0
++	infos.length      = 0
++	{
++		const sid = 'b3333333-0000-0000-0000-000000000000'
++		bus.emit('send:notification', makePayload({ sid, eventType: 'stop', focused: true }))
++		assert.strictEqual(sendSpawns().length, 0, 'B3: no spawn while armed')
++		assert.strictEqual(focusDebounce._test.timers.has(sid), true, 'B3: armed')
++		assert.ok(infos.some(m => m.includes('focus-debounce ARM')), 'B3: ARM log')
++		await waitMs(80)
++		assert.strictEqual(sendSpawns().length, 1, 'B3: spawn after timeout')
++		assert.ok(infos.some(m => m.includes('focus-debounce FIRE')), 'B3: FIRE log')
++		assert.strictEqual(focusDebounce._test.timers.has(sid), false, 'B3: entry cleared')
++	}
++
++	// (B4) focused=true → arm → cancelled:notification → no spawn.
++	spawnCalls.length = 0
++	infos.length      = 0
++	{
++		const sid = 'b4444444-0000-0000-0000-000000000000'
++		bus.emit('send:notification', makePayload({ sid, eventType: 'permission_request', focused: true }))
++		assert.strictEqual(focusDebounce._test.timers.has(sid), true, 'B4: armed')
++		bus.emit('cancelled:notification', { sid, eventType: 'permission_request', reason: 'user_replied' })
++		assert.strictEqual(focusDebounce._test.timers.has(sid), false, 'B4: cancelled')
++		await waitMs(80)
++		assert.strictEqual(sendSpawns().length, 0, 'B4: no spawn after cancel')
++		assert.ok(infos.some(m => m.includes('focus-debounce CANCEL')), 'B4: CANCEL log')
++	}
++
++	// (B5) NOTIFY_FOCUS_DEBOUNCE_MS=0 → gate disabled ; focused=true fires direct.
++	{
++		const prev = process.env.NOTIFY_FOCUS_DEBOUNCE_MS
++		process.env.NOTIFY_FOCUS_DEBOUNCE_MS = '0'
++		try {
++			spawnCalls.length = 0
++			const sid = 'b5555555-0000-0000-0000-000000000000'
++			bus.emit('send:notification', makePayload({ sid, eventType: 'stop', focused: true }))
++			assert.strictEqual(sendSpawns().length, 1, 'B5: gate off → immediate spawn')
++			assert.strictEqual(focusDebounce._test.timers.has(sid), false, 'B5: no arm')
++		} finally {
++			process.env.NOTIFY_FOCUS_DEBOUNCE_MS = prev
++		}
++	}
++
++	// (B6) back-to-back send:notification same sid → latest wins.
++	spawnCalls.length = 0
++	infos.length      = 0
++	{
++		const sid = 'b6666666-0000-0000-0000-000000000000'
++		bus.emit('send:notification', makePayload({ sid, eventType: 'notification', focused: true }))
++		bus.emit('send:notification', makePayload({ sid, eventType: 'stop', focused: true }))
++		assert.strictEqual(focusDebounce._test.timers.has(sid), true, 'B6: armed')
++		await waitMs(80)
++		assert.strictEqual(sendSpawns().length, 1, 'B6: only latest fires')
++		assert.strictEqual(focusDebounce._test.timers.has(sid), false, 'B6: no lingering timer')
++	}
++
++	console.log('notify-app-focus.test.js — all assertions passed (A1-A4 module, B1-B6 send/cancel)')
++}
++
++main().catch(err => { console.error(err); process.exit(1) })
+diff --git a/.devcontainer/notify/tests/replay-session.js b/.devcontainer/notify/tests/replay-session.js
+new file mode 100755
+index 0000000..8fe1f9d
+--- /dev/null
++++ b/.devcontainer/notify/tests/replay-session.js
+@@ -0,0 +1,305 @@
++#!/usr/bin/env node
++// =============================================================================
++// replay-session — replay a captured Claude Code session against the daemon
++// =============================================================================
++//
++// Takes a session fixture (queue + inbound + pending-perms JSONL streams,
++// captured from a real Claude Code session) and plays it back to the running
++// daemon with realistic inter-event timing. Rewrites the session identifier
++// to a fresh UUID per invocation so replays don't collide.
++//
++// Fixture layout : tests/fixtures/sessions/<slug>/
++//                    queue.jsonl          (Claude Code hook stream)
++//                    inbound.jsonl        (VS Code extension → daemon signals)
++//                    pending-perms.jsonl  (extension focus-state snapshots)
++//                    meta.json            (source sid, duration, counts)
++//
++// USAGE
++//   node replay-session.js <slug-or-path> [options]
++//
++//   Slugs are looked up in tests/fixtures/sessions/ ; a literal path with
++//   a slash is treated verbatim (so external fixture dirs work).
++//
++// OPTIONS
++//   --speed N               time scaling — 1 = real-time, 10 = 10x faster,
++//                           100 = burst. Default 10.
++//   --max-delay-ms MS       cap wait between consecutive events (default 5000)
++//   --min-delay-ms MS       floor wait between events (default 0)
++//   --interactive, -i       step through events one by one. Keys :
++//                             n / Enter / space  → fire next event
++//                             a                  → switch to auto (timed) mode
++//                             s                  → skip this event (don't fire)
++//                             q / Ctrl+C         → quit
++//   --queue-dir PATH        where to write the queue file (default: sibling
++//                           `../queue/` — the daemon's watched dir)
++//   --inbound-log PATH      where to append inbound events (default: standard
++//                           `.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl`)
++//   --pending-perms-log PATH  where to append pending-perms events (default:
++//                           standard `.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl`)
++//   --no-inbound            skip inbound events
++//   --no-pending-perms      skip pending-perms events
++//   --dry-run               print the schedule, write nothing
++//
++// EXAMPLES
++//   node replay-session.js b-balanced                     # 10x speed, capped at 5s waits
++//   node replay-session.js a-permission-rich --speed 1    # real-time (long!)
++//   node replay-session.js c-long-idle --max-delay-ms 2000  # snappier smoke
++//   node replay-session.js b-balanced -i                  # interactive — press n between events
++//   node replay-session.js b-balanced --dry-run           # inspect schedule only
++// =============================================================================
++
++const fs = require('fs')
++const path = require('path')
++const crypto = require('crypto')
++
++const FIXTURES_ROOT = path.join(__dirname, 'fixtures', 'sessions')
++
++// -----------------------------------------------------------------------------
++// arg parsing
++// -----------------------------------------------------------------------------
++const args = process.argv.slice(2)
++if (!args[0] || args[0] === '-h' || args[0] === '--help') {
++	console.error('Usage: node replay-session.js <slug-or-path> [--speed N] [--max-delay-ms MS]')
++	console.error('                                              [--queue-dir PATH] [--inbound-log PATH]')
++	console.error('                                              [--pending-perms-log PATH]')
++	console.error('                                              [--no-inbound] [--no-pending-perms] [--dry-run]')
++	console.error('')
++	console.error('Available fixtures :')
++	try {
++		for (const d of fs.readdirSync(FIXTURES_ROOT)) {
++			const metaPath = path.join(FIXTURES_ROOT, d, 'meta.json')
++			if (fs.existsSync(metaPath)) {
++				const m = JSON.parse(fs.readFileSync(metaPath, 'utf8'))
++				console.error(`  ${d.padEnd(24)} ${m.counts.queue_events} queue · ${m.counts.inbound_events} inbound · ${m.counts.pending_perms_events} pending · ${m.duration_human}`)
++			}
++		}
++	} catch (_) {}
++	process.exit(2)
++}
++
++const slugOrPath = args[0]
++const fixtureDir = slugOrPath.includes('/') || slugOrPath.includes('\\')
++	? slugOrPath
++	: path.join(FIXTURES_ROOT, slugOrPath)
++
++function argValue(name, fallback) {
++	const i = args.indexOf(name)
++	if (i < 0) return fallback
++	return args[i + 1]
++}
++function argFlag(name) {
++	return args.includes(name)
++}
++
++const speed = Number(argValue('--speed', '10')) || 10
++const maxDelayMs = Number(argValue('--max-delay-ms', '5000')) || 5000
++const minDelayMs = Number(argValue('--min-delay-ms', '0')) || 0
++const queueDir = argValue('--queue-dir', path.resolve(__dirname, '..', 'queue'))
++const inboundLog = argValue('--inbound-log', path.resolve(__dirname, '..', '..', 'logs', 'claude-code-vscode-ext-inbound.jsonl'))
++const pendingPermsLog = argValue('--pending-perms-log', path.resolve(__dirname, '..', '..', 'logs', 'claude-code-vscode-ext-pending-perms.jsonl'))
++const skipInbound = argFlag('--no-inbound')
++const skipPendingPerms = argFlag('--no-pending-perms')
++const dryRun = argFlag('--dry-run')
++let interactive = argFlag('--interactive') || argFlag('-i')
++
++// -----------------------------------------------------------------------------
++// fixture load + timeline merge
++// -----------------------------------------------------------------------------
++function loadJsonl(p) {
++	if (!fs.existsSync(p)) return []
++	return fs.readFileSync(p, 'utf8')
++		.split('\n')
++		.filter(l => l.trim())
++		.map(l => JSON.parse(l))
++}
++
++if (!fs.existsSync(fixtureDir)) {
++	console.error(`✗ fixture dir not found: ${fixtureDir}`)
++	process.exit(1)
++}
++
++const meta = JSON.parse(fs.readFileSync(path.join(fixtureDir, 'meta.json'), 'utf8'))
++const PLACEHOLDER_SID = '00000000-0000-0000-0000-000000000000'
++
++// Load JSONL preserving both the parsed object (for sorting + inspection) and
++// the original raw line (for string-level sid substitution at replay time —
++// simpler and safer than deep-walking every nested key looking for `sid` /
++// `sessionId` fields that might live under payload.request.sessionId etc).
++function loadStream(streamName, filename) {
++	const p = path.join(fixtureDir, filename)
++	return loadJsonl(p).map((_obj, i) => {
++		const raw = fs.readFileSync(p, 'utf8').split('\n').filter(l => l.trim())[i]
++		return { stream: streamName, obj: _obj, raw }
++	})
++}
++
++const queueEvents = loadStream('queue', 'queue.jsonl')
++const inboundEvents = skipInbound ? [] : loadStream('inbound', 'inbound.jsonl')
++const ppEvents = skipPendingPerms ? [] : loadStream('pending-perms', 'pending-perms.jsonl')
++
++const timeline = [...queueEvents, ...inboundEvents, ...ppEvents]
++	.filter(e => e.obj.ts)
++	.map(e => ({ ...e, absMs: new Date(e.obj.ts).getTime() }))
++	.sort((a, b) => a.absMs - b.absMs)
++
++if (timeline.length === 0) {
++	console.error('✗ no events found in fixture')
++	process.exit(1)
++}
++
++const t0Ms = timeline[0].absMs
++const totalDurationMs = timeline[timeline.length - 1].absMs - t0Ms
++const totalReplayMs = Math.min(totalDurationMs / speed, timeline.reduce((acc, e, i) => {
++	if (i === 0) return 0
++	const raw = (e.absMs - timeline[i - 1].absMs) / speed
++	return acc + Math.max(minDelayMs, Math.min(raw, maxDelayMs))
++}, 0))
++
++// -----------------------------------------------------------------------------
++// sid rewrite + output paths
++// -----------------------------------------------------------------------------
++const newSid = crypto.randomUUID()
++const queueOutFile = path.join(queueDir, `${newSid}.jsonl`)
++
++if (!dryRun) {
++	fs.mkdirSync(queueDir, { recursive: true })
++	fs.mkdirSync(path.dirname(inboundLog), { recursive: true })
++	fs.mkdirSync(path.dirname(pendingPermsLog), { recursive: true })
++}
++
++function rewriteEvent(evt) {
++	const nowIso = new Date().toISOString()
++	const withSid = evt.raw.replaceAll(PLACEHOLDER_SID, newSid)
++	const parsed = JSON.parse(withSid)
++	if (parsed.ts) parsed.ts = nowIso
++	return JSON.stringify(parsed)
++}
++
++function targetFile(stream) {
++	if (stream === 'queue') return queueOutFile
++	if (stream === 'inbound') return inboundLog
++	return pendingPermsLog
++}
++
++// -----------------------------------------------------------------------------
++// summary banner
++// -----------------------------------------------------------------------------
++const startWall = Date.now()
++console.error('═══════════════════════════════════════════════════════════════')
++console.error(`▶ replay ${path.basename(fixtureDir)}  (source sid ${meta.source_sid ? meta.source_sid.slice(0, 8) : '?'})`)
++console.error(`  events   : ${timeline.length}  (queue ${queueEvents.length} · inbound ${inboundEvents.length} · pending-perms ${ppEvents.length})`)
++console.error(`  captured : ${(totalDurationMs / 60000).toFixed(1)}min real time`)
++console.error(`  replay   : ~${(totalReplayMs / 1000).toFixed(1)}s (speed=${speed}× · max-delay=${maxDelayMs}ms)`)
++console.error(`  new sid  : ${newSid}`)
++console.error(`  queue    : ${queueOutFile}`)
++console.error(`  inbound  : ${skipInbound ? 'skipped' : inboundLog}`)
++console.error(`  pending  : ${skipPendingPerms ? 'skipped' : pendingPermsLog}`)
++if (dryRun) console.error(`  MODE     : dry-run (no writes)`)
++if (interactive) console.error(`  MODE     : interactive — [n/Enter/space] fire · [a] auto · [s] skip · [q] quit`)
++console.error('═══════════════════════════════════════════════════════════════')
++
++// -----------------------------------------------------------------------------
++// countdown ticker (\r-refreshes a single stderr line)
++// -----------------------------------------------------------------------------
++function fmtEvent(e) {
++	if (e.stream === 'queue' && e.obj.event) return `queue.${e.obj.event}`
++	if (e.stream === 'inbound' && e.obj.type) return `inbound.${e.obj.type}`
++	if (e.stream === 'pending-perms') return 'pending-perms.snapshot'
++	return e.stream
++}
++
++function tickerLine(idx, total, nextEvent, waitMs) {
++	const wait = (waitMs / 1000).toFixed(1)
++	const label = fmtEvent(nextEvent).padEnd(30)
++	return `[${String(idx + 1).padStart(3)}/${total}] next: ${label}  in ${wait.padStart(5)}s ⏳`
++}
++
++function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
++
++// -----------------------------------------------------------------------------
++// interactive keypress prompt — resolves with 'next' | 'auto' | 'skip'
++// -----------------------------------------------------------------------------
++function promptKey() {
++	return new Promise((resolve) => {
++		const stdin = process.stdin
++		if (stdin.isTTY) stdin.setRawMode(true)
++		stdin.resume()
++		const onData = (buf) => {
++			const c = buf.toString()
++			if (c === 'n' || c === '\r' || c === '\n' || c === ' ') {
++				stdin.removeListener('data', onData)
++				if (stdin.isTTY) stdin.setRawMode(false)
++				stdin.pause()
++				resolve('next')
++			} else if (c === 'a') {
++				stdin.removeListener('data', onData)
++				if (stdin.isTTY) stdin.setRawMode(false)
++				stdin.pause()
++				resolve('auto')
++			} else if (c === 's') {
++				stdin.removeListener('data', onData)
++				if (stdin.isTTY) stdin.setRawMode(false)
++				stdin.pause()
++				resolve('skip')
++			} else if (c === 'q' || c === '') {
++				if (stdin.isTTY) stdin.setRawMode(false)
++				console.error('\n✗ aborted')
++				process.exit(130)
++			}
++		}
++		stdin.on('data', onData)
++	})
++}
++
++// -----------------------------------------------------------------------------
++// main replay loop
++// -----------------------------------------------------------------------------
++async function main() {
++	let firedCount = 0
++	let skippedCount = 0
++	for (let i = 0; i < timeline.length; i++) {
++		const evt = timeline[i]
++		const capturedDelayMs = i === 0 ? 0 : (evt.absMs - timeline[i - 1].absMs)
++		let waitMs = capturedDelayMs / speed
++		waitMs = Math.max(minDelayMs, Math.min(waitMs, maxDelayMs))
++		let action = 'next'
++
++		if (interactive) {
++			process.stderr.write(`\n[${String(i + 1).padStart(3)}/${timeline.length}] next: ${fmtEvent(evt).padEnd(30)}  (captured Δ ${(capturedDelayMs / 1000).toFixed(1)}s)  press [n/a/s/q] `)
++			action = await promptKey()
++			process.stderr.write('\n')
++			if (action === 'auto') { interactive = false }
++			if (action === 'skip') {
++				skippedCount++
++				process.stderr.write(`[${String(i + 1).padStart(3)}/${timeline.length}]         ${fmtEvent(evt).padEnd(30)}  ⤳ skipped\n`)
++				continue
++			}
++		} else if (waitMs > 0 && !dryRun) {
++			const deadline = Date.now() + waitMs
++			while (Date.now() < deadline) {
++				const remaining = deadline - Date.now()
++				process.stderr.write('\r' + tickerLine(i, timeline.length, evt, remaining))
++				await sleep(Math.min(250, remaining))
++			}
++			process.stderr.write('\r' + ' '.repeat(80) + '\r')
++		}
++
++		const line = rewriteEvent(evt)
++		const dst = targetFile(evt.stream)
++		const elapsedSec = ((Date.now() - startWall) / 1000).toFixed(1)
++		process.stderr.write(`[${String(i + 1).padStart(3)}/${timeline.length}] +${elapsedSec.padStart(5)}s  ${fmtEvent(evt).padEnd(30)}  → ${path.basename(dst)}\n`)
++
++		if (!dryRun) {
++			fs.appendFileSync(dst, line + '\n')
++		}
++		firedCount++
++	}
++	console.error('═══════════════════════════════════════════════════════════════')
++	console.error(`✓ replay complete — ${firedCount}/${timeline.length} events fired${skippedCount ? ` (${skippedCount} skipped)` : ''} in ${((Date.now() - startWall) / 1000).toFixed(1)}s`)
++	if (!dryRun) console.error(`  queue file at ${queueOutFile}`)
++}
++
++main().catch(e => {
++	console.error('\n✗ replay failed:', e.message)
++	process.exit(1)
++})
+diff --git a/.devcontainer/notify/tests/state-test.js b/.devcontainer/notify/tests/state-test.js
+new file mode 100644
+index 0000000..bba6c6a
+--- /dev/null
++++ b/.devcontainer/notify/tests/state-test.js
+@@ -0,0 +1,145 @@
++#!/usr/bin/env node
++// state-test.js — assertions for lib/state.js payload pass-through.
++//
++// Run: `node .devcontainer/notify/tests/state-test.js`
++// Exits 0 on success, throws + non-zero on failure.
++
++const assert = require('assert')
++const fs     = require('fs')
++const os     = require('os')
++const path   = require('path')
++
++const state = require('../lib/state')
++
++// Spin up an isolated queue dir under tmpdir/ so this test never touches the
++// real .devcontainer/notify/queue/state/ files.
++const queueDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-state-test-'))
++const stateDir = path.join(queueDir, 'state')
++const pendingPath = path.join(stateDir, 'pending.json')
++const actionsPath = path.join(stateDir, 'actions.jsonl')
++
++state.init({ queueDir, pid: 99999 })
++
++// Helpers -----------------------------------------------------------------
++
++const readPending = () => JSON.parse(fs.readFileSync(pendingPath, 'utf8'))
++const readActions = () => fs.readFileSync(actionsPath, 'utf8')
++	.split('\n').filter(Boolean).map((s) => JSON.parse(s))
++
++// 1. armed({ payload }) mirrors the payload into pending.json + audit line.
++const sid = 'abc12345-test-0001'
++const permLine = {
++	ts:             '2026-06-13T10:00:00.000Z',
++	sid,
++	event:          'permission_request',
++	session_name:   'state-payload session',
++	tool_use_id:    'toolu_abc123',
++	tool_name:      'Bash',
++	tool_input:     { command: 'ls -la' }
++}
++state.armed({ sid, eventType: 'permission_request', delayMs: 30000, payload: permLine })
++
++const afterArm = readPending()
++assert.strictEqual(afterArm.pending.length, 1, 'one pending entry after armed')
++const armedEntry = afterArm.pending[0]
++assert.strictEqual(armedEntry.sid, sid)
++assert.strictEqual(armedEntry.eventType, 'permission_request')
++assert.strictEqual(armedEntry.delay_ms, 30000)
++assert.deepStrictEqual(armedEntry.payload, permLine,
++	'pending.json carries the full payload verbatim')
++
++const armedActions = readActions()
++assert.strictEqual(armedActions.length, 1, 'one audit line after armed')
++assert.strictEqual(armedActions[0].action, 'armed')
++assert.deepStrictEqual(armedActions[0].payload, permLine,
++	'armed audit line carries the payload')
++
++// 2. replaced({ payload }) overwrites pending.json + emits a replaced line.
++const stopLine = {
++	ts:                    '2026-06-13T10:00:05.000Z',
++	sid,
++	event:                 'stop',
++	session_name:          'state-payload session',
++	last_message_excerpt:  'Tests passing, PR ready'
++}
++state.replaced({
++	sid,
++	prevEventType: 'permission_request',
++	newEventType: 'stop',
++	delayMs:      30000,
++	payload:      stopLine
++})
++
++const afterReplace = readPending()
++assert.strictEqual(afterReplace.pending.length, 1, 'still one pending entry after replaced')
++const replacedEntry = afterReplace.pending[0]
++assert.strictEqual(replacedEntry.eventType, 'stop')
++assert.deepStrictEqual(replacedEntry.payload, stopLine,
++	'pending.json now carries the NEW payload')
++
++const replacedActions = readActions()
++assert.strictEqual(replacedActions.length, 2, 'two audit lines after replaced')
++assert.strictEqual(replacedActions[1].action, 'replaced')
++assert.strictEqual(replacedActions[1].prevEventType, 'permission_request')
++assert.strictEqual(replacedActions[1].newEventType, 'stop')
++assert.deepStrictEqual(replacedActions[1].payload, stopLine,
++	'replaced audit line carries the new payload')
++
++// 3. cancelled({ ... }) removes pending entry, no payload field on the audit line.
++state.cancelled({ sid, eventType: 'stop', cause: 'user_replied' })
++
++const afterCancel = readPending()
++assert.strictEqual(afterCancel.pending.length, 0, 'pending entry removed after cancelled')
++
++const cancelActions = readActions()
++assert.strictEqual(cancelActions.length, 3)
++assert.strictEqual(cancelActions[2].action, 'cancelled')
++assert.ok(!('payload' in cancelActions[2]),
++	'cancelled audit line carries no payload (by design)')
++
++// 4. fired({ ... }) removes pending entry, no payload field on the audit line.
++const sid2 = 'def67890-test-0002'
++state.armed({
++	sid:       sid2,
++	eventType: 'stop',
++	delayMs:   30000,
++	payload:   { ts: '2026-06-13T10:01:00.000Z', sid: sid2, event: 'stop', last_message_excerpt: 'short stop' }
++})
++state.fired({ sid: sid2, eventType: 'stop' })
++
++const afterFire = readPending()
++assert.strictEqual(afterFire.pending.length, 0, 'pending entry removed after fired')
++
++const fireActions = readActions()
++assert.strictEqual(fireActions[fireActions.length - 1].action, 'fired')
++assert.ok(!('payload' in fireActions[fireActions.length - 1]),
++	'fired audit line carries no payload (by design)')
++
++// 5. End-to-end : a realistic permission_request line round-trips faithfully
++//    (including nested tool_input fields).
++state.init({ queueDir, pid: 99999 })  // reset state for a clean assertion
++const sid3 = 'cafe1234-test-0003'
++const realistic = {
++	ts:           '2026-06-13T10:02:00.000Z',
++	sid:          sid3,
++	event:        'permission_request',
++	session_name: 'My DevContainer session',
++	tool_use_id:  'toolu_xyz',
++	tool_name:    'Bash',
++	tool_input:   {
++		command:     'echo "hello, world — café"',
++		description: 'Print a greeting'
++	}
++}
++state.armed({ sid: sid3, eventType: 'permission_request', delayMs: 5000, payload: realistic })
++const roundTrip = readPending().pending[0].payload
++assert.deepStrictEqual(roundTrip, realistic,
++	'realistic permission_request line round-trips verbatim through pending.json')
++assert.strictEqual(roundTrip.tool_input.command, 'echo "hello, world — café"',
++	'nested tool_input.command preserves UTF-8 verbatim')
++
++// Cleanup -----------------------------------------------------------------
++
++fs.rmSync(queueDir, { recursive: true, force: true })
++
++console.log('state-test.js — all assertions passed')
+diff --git a/.devcontainer/notify/tools/session-title.js b/.devcontainer/notify/tools/session-title.js
+new file mode 100755
+index 0000000..7d3e3d3
+--- /dev/null
++++ b/.devcontainer/notify/tools/session-title.js
+@@ -0,0 +1,76 @@
++#!/usr/bin/env node
++// Map a Claude Code session UUID → most recent tab title.
++//
++// Reads .devcontainer/logs/claude-code-vscode-ext-inbound.jsonl (written by
++// user-action-observer.py) and indexes every `update_session_state` and
++// `rename_tab` event by sessionId, keeping the newest title per UUID.
++//
++// Usage:
++//   session-title.js <uuid-or-prefix>   print title for one UUID (prefix ≥ 4 chars OK)
++//   session-title.js                    tab-separated list: uuid<TAB>ts<TAB>title (newest first)
++//   session-title.js --json             JSON object { uuid: title }
++//
++// Exit codes: 0 ok, 1 UUID not found, 2 log file missing.
++
++const fs   = require('node:fs')
++const path = require('node:path')
++
++process.stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(0); throw e })
++
++const LOG_FILE = path.resolve(
++	__dirname, '..', '..', 'logs', 'claude-code-vscode-ext-inbound.jsonl'
++)
++
++function buildIndex() {
++	if (!fs.existsSync(LOG_FILE)) {
++		process.stderr.write(`session-title: log file not found: ${LOG_FILE}\n`)
++		process.exit(2)
++	}
++	const index = new Map()
++	const raw = fs.readFileSync(LOG_FILE, 'utf8')
++	for (const line of raw.split('\n')) {
++		if (!line) continue
++		let evt
++		try { evt = JSON.parse(line) } catch { continue }
++		const req = evt && evt.payload && evt.payload.request
++		if (!req) continue
++		if (req.type !== 'update_session_state' && req.type !== 'rename_tab') continue
++		const sid   = evt.sessionId
++		const title = req.title
++		const ts    = evt.ts || ''
++		if (!sid || typeof title !== 'string' || !title) continue
++		const prev = index.get(sid)
++		if (!prev || ts > prev.ts) index.set(sid, { title, ts })
++	}
++	return index
++}
++
++const argv     = process.argv.slice(2)
++const jsonMode = argv.includes('--json')
++const query    = argv.find(a => !a.startsWith('--'))
++const index    = buildIndex()
++
++if (query) {
++	const q = query.toLowerCase()
++	const matches = [...index.entries()].filter(([uuid]) => uuid.toLowerCase().startsWith(q))
++	if (matches.length === 0) {
++		process.stderr.write(`session-title: no session matches "${query}"\n`)
++		process.exit(1)
++	}
++	if (matches.length === 1) {
++		process.stdout.write(matches[0][1].title + '\n')
++	} else {
++		for (const [uuid, { title }] of matches) {
++			process.stdout.write(`${uuid}\t${title}\n`)
++		}
++	}
++} else if (jsonMode) {
++	const out = {}
++	for (const [uuid, { title }] of index) out[uuid] = title
++	process.stdout.write(JSON.stringify(out, null, 2) + '\n')
++} else {
++	const rows = [...index.entries()].sort((a, b) => b[1].ts.localeCompare(a[1].ts))
++	for (const [uuid, { title, ts }] of rows) {
++		process.stdout.write(`${uuid}\t${ts}\t${title}\n`)
++	}
++}
+diff --git a/.devcontainer/notify/vendor/senders/claude-code.icns b/.devcontainer/notify/vendor/senders/claude-code.icns
+new file mode 100644
+index 0000000..3cdf4ce
+Binary files /dev/null and b/.devcontainer/notify/vendor/senders/claude-code.icns differ
+diff --git a/.devcontainer/skills/notify-queue/hook.js b/.devcontainer/skills/notify-queue/hook.js
+index bc9bce6..e68cd8d 100755
+--- a/.devcontainer/skills/notify-queue/hook.js
++++ b/.devcontainer/skills/notify-queue/hook.js
+@@ -15,6 +15,17 @@ const path = require('path')
+ const QUEUE_DIR = '/workspace/.devcontainer/notify/queue'
+ const MAX_EXCERPT = 200
+ 
++// Session 4 : pending-perms.jsonl is written by the VS Code extension patch
++// `outbound-action-injector.py` at every tool_use permission cycle, with a
++// `vscode.window.state` snapshot (`focused` / `active`). The container-side
++// hook reads the latest snapshot to propagate the host window-focus state
++// into every queue event — the daemon uses it to debounce banners when the
++// user is engaged in VS Code. Trade-off : snapshots only refresh on
++// permission cycles (~one every few tool_uses) ; between cycles the value
++// is stale but still the best signal we have from the container side.
++const PENDING_PERMS_PATH = '/workspace/.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl'
++const PENDING_PERMS_TAIL_BYTES = 64 * 1024
++
+ const ARG_TO_EVENT = {
+ 	stop: 'stop',
+ 	notification: 'notification',
+@@ -159,7 +170,186 @@ function lastMatch(text, re) {
+ 	return last
+ }
+ 
+-function buildLine(eventName, payload) {
++// Resolve the container's `vscode-remote://` launch URL, so downstream
++// consumers can `open` it without any cross-container authority
++// lookup. The authority string (`dev-container+<hex>`) encodes the
++// host workspace path + Docker context — the container can scavenge
++// it from VS Code's own local history instead of recomputing it (it
++// doesn't know `localDocker` / `settings.context` first-hand).
++//
++// Three layers, ranked by ground-truth fidelity :
++//   L1. `<QUEUE_DIR>/.authority` — written by the Claude Code
++//       extension's authority-writer patch at activation, sourced from
++//       `vscode.workspace.workspaceFolders[0].uri.authority` (VS Code's
++//       own API, 100% correct). Bind-mounted (visible from host for
++//       debug) ; rewritten on every extension activation.
++//   L2. History scan — enumerate
++//       ~/.vscode-server/data/User/History/*/entries.json for
++//       `dev-container%2B[0-9a-f]+`. Fallback when the patch hasn't
++//       fired yet (very early hook fires) or is uninstalled. All
++//       entries in one session share the authority — first match wins.
++//   L3. Reconstruct — bit-exact rebuild from HOST_WORKSPACE_PATH env.
++//       Matches what the Dev Containers extension emits on macOS /
++//       Windows Docker Desktop. Two env overrides for atypical setups
++//       (Linux plain daemon, Podman) : DEVCONTAINER_DOCKER_CONTEXT
++//       (default "desktop-linux") and DEVCONTAINER_LOCAL_DOCKER
++//       (default "false"). Bit-exact reconstruction is required — VS
++//       Code's URL handler compares authority strings verbatim.
++//
++// Returns full URL (`vscode://vscode-remote/<authority>/workspace`) or
++// null. If all three layers fail, the daemon gets no launchUrl and the
++// body-click becomes a no-op (session 2's contract).
++const AUTHORITY_CACHE = path.join(QUEUE_DIR, '.authority')
++const AUTHORITY_PREFIX = 'dev-container+'
++const HISTORY_DIR = process.env.HOME
++	? path.join(process.env.HOME, '.vscode-server/data/User/History')
++	: null
++
++function resolveLaunchUrl(historyDir = HISTORY_DIR, cachePath = AUTHORITY_CACHE) {
++	try {
++		const authority = resolveAuthority(historyDir, cachePath)
++		return authority ? `vscode://vscode-remote/${authority}/workspace` : null
++	} catch { return null }
++}
++
++function resolveAuthority(historyDir, cachePath) {
++	// L1 — extension-written cache.
++	try {
++		const cached = fs.readFileSync(cachePath, 'utf8').trim()
++		if (cached.startsWith(AUTHORITY_PREFIX) &&
++			/^[0-9a-fA-F]+$/.test(cached.slice(AUTHORITY_PREFIX.length))) {
++			return cached
++		}
++	} catch { /* miss — fall through */ }
++
++	// L2 — History scan.
++	if (historyDir) {
++		let entries
++		try { entries = fs.readdirSync(historyDir) } catch { entries = [] }
++		const rx = /dev-container%2B([0-9a-fA-F]+)/
++		for (const dir of entries) {
++			const p = path.join(historyDir, dir, 'entries.json')
++			let content
++			try { content = fs.readFileSync(p, 'utf8') } catch { continue }
++			const m = content.match(rx)
++			if (!m) continue
++			const authority = AUTHORITY_PREFIX + m[1].toLowerCase()
++			try { fs.writeFileSync(cachePath, authority) } catch { /* best-effort */ }
++			return authority
++		}
++	}
++
++	// L3 — reconstruction from env.
++	const reconstructed = reconstructAuthority()
++	if (reconstructed) {
++		try { fs.writeFileSync(cachePath, reconstructed) } catch { /* best-effort */ }
++		return reconstructed
++	}
++	return null
++}
++
++// Bit-exact rebuild of the `dev-container+<hex>` authority from the
++// container-side env. Shape reference : URI.toJSON in vscode core
++// (src/vs/base/common/uri.ts) — configFile key order is `$mid → fsPath
++// → _sep? → external → path → scheme`. `_sep: 1` is emitted only when
++// the fsPath uses backslash separators (Windows host). Outer payload
++// order (hostPath, localDocker, settings, configFile) matches what the
++// closed-source Dev Containers extension emits, verified against a
++// captured ground truth (see docstring on resolveAuthority).
++function reconstructAuthority() {
++	const hostPath = process.env.HOST_WORKSPACE_PATH
++	if (!hostPath) return null
++	const isWinHost = /^[A-Za-z]:[\\/]/.test(hostPath)
++	const sep = isWinHost ? '\\' : '/'
++	const cfg = hostPath + sep + '.devcontainer' + sep + 'devcontainer.json'
++	const configFile = { $mid: 1, fsPath: cfg }
++	if (isWinHost) configFile._sep = 1
++	const cfgUri = isWinHost ? cfg.replace(/\\/g, '/') : cfg
++	configFile.external = 'file://' + (isWinHost ? '/' : '') + cfgUri
++	configFile.path = (isWinHost ? '/' : '') + cfgUri
++	configFile.scheme = 'file'
++	const payload = {
++		hostPath,
++		localDocker: process.env.DEVCONTAINER_LOCAL_DOCKER === 'true',
++		settings: { context: process.env.DEVCONTAINER_DOCKER_CONTEXT || 'desktop-linux' },
++		configFile,
++	}
++	const hex = Buffer.from(JSON.stringify(payload), 'utf8').toString('hex')
++	return AUTHORITY_PREFIX + hex
++}
++
++// Scan the tail of pending-perms.jsonl for two pieces of state:
++//
++//   - `focused`  — latest boolean seen, any session (drives daemon debounce).
++//   - `requestId` — latest ext-side `requestId` from a `settled:false` record
++//     whose `sessionId` matches the caller-provided sid (drives daemon's
++//     `--on-action Allow:file:…` binding for permission_request events).
++//
++// Both are extracted from a single backward tail-scan. Returns
++// `{ focused, requestId }` with either field null when not found (fresh boot
++// before the first perm cycle, file absent, parse failure, no matching sid).
++//
++// Why sourced from pending-perms and not the Claude Code hook payload : the
++// `PermissionRequest` hook doesn't provide the ext's `requestId` (its
++// `tool_use_id`, if present, would be the model-side `toolu_XXX`, which is a
++// disjoint ID space from the ext's channel-level requestId that
++// `outbound-action-injector.py` expects on the ack path).
++//
++// Reads at most PENDING_PERMS_TAIL_BYTES from the end of the file : one entry
++// per perm cycle keeps the working set small, and the extension patch wipes
++// the file on every container start so it never accumulates across boots.
++function readPendingPermsTail(pendingPath = PENDING_PERMS_PATH, sid = null, tailBytes = PENDING_PERMS_TAIL_BYTES) {
++	let fd
++	try {
++		const stat = fs.statSync(pendingPath)
++		if (stat.size <= 0) return { focused: null, requestId: null }
++		fd = fs.openSync(pendingPath, 'r')
++		const size  = Math.min(stat.size, tailBytes)
++		const start = Math.max(0, stat.size - size)
++		const buf   = Buffer.alloc(size)
++		fs.readSync(fd, buf, 0, size, start)
++		const text  = buf.toString('utf8')
++		const lines = text.split('\n')
++		let focused = null
++		let requestId = null
++		// Once a record matching the caller's sid is seen with a boolean
++		// `settled`, its state is the "current" perm state — a `settled:true`
++		// closes out any earlier `settled:false` for the same request. So
++		// the first hit backward that carries `settled` for our sid decides
++		// whether requestId is emitted or not.
++		let permDecidedForSid = false
++		for (let i = lines.length - 1; i >= 0; i--) {
++			const raw = lines[i].trim()
++			if (!raw) continue
++			let evt
++			try { evt = JSON.parse(raw) } catch { continue }
++			if (focused === null && typeof evt.focused === 'boolean') {
++				focused = evt.focused
++			}
++			if (!permDecidedForSid
++				&& typeof evt.settled === 'boolean'
++				&& (!sid || evt.sessionId === sid)) {
++				permDecidedForSid = true
++				if (evt.settled === false
++					&& typeof evt.requestId === 'string' && evt.requestId) {
++					requestId = evt.requestId
++				}
++			}
++			if (focused !== null && permDecidedForSid) break
++		}
++		return { focused, requestId }
++	} catch { return { focused: null, requestId: null } }
++	finally { if (fd !== undefined) try { fs.closeSync(fd) } catch (_) {} }
++}
++
++// Backward-compat wrapper — session 4 shipped `readLatestFocus` in the public
++// export ; kept as a thin shim over `readPendingPermsTail` so existing callers
++// and tests don't have to migrate. New code should call the tail directly.
++function readLatestFocus(pendingPath = PENDING_PERMS_PATH, tailBytes = PENDING_PERMS_TAIL_BYTES) {
++	return readPendingPermsTail(pendingPath, null, tailBytes).focused
++}
++
++function buildLine(eventName, payload, pendingPath = PENDING_PERMS_PATH) {
+ 	const sid = payload.session_id
+ 	if (!sid) return null
+ 
+@@ -169,18 +359,52 @@ function buildLine(eventName, payload) {
+ 		event: eventName
+ 	}
+ 
++	// Sender + notif_id — v0.2 additions consumed by the notifier
++	// (via `notif send --sender X --id Y`) so the daemon can later
++	// dismiss the exact banner on cancel events via `notif remove`.
++	// Sender is always `default` in v0.2 ; per-event routing (claude
++	// vs npm-script vs …) is a future extension. notif_id is unique
++	// per hook invocation — millisecond-resolution Date.now() crossed
++	// with the 8-char sid and the event class.
++	line.sender = 'default'
++	line.notif_id = `${eventName}-${sid.slice(0, 8)}-${Date.now()}`
++
+ 	// Attach Claude Code's session name (aiTitle from the transcript,
+ 	// falls back to the auto-generated slug). Absent when no transcript.
+ 	const name = readSessionName(payload.transcript_path)
+ 	if (name) line.session_name = name
+ 
++	// Attach the container's vscode-remote launch URL when resolvable
++	// (see resolveLaunchUrl). Absent on fresh boot before VS Code has
++	// written any history file — daemon body-click no-ops in that
++	// window (session 2 contract).
++	const launchUrl = resolveLaunchUrl()
++	if (launchUrl) line.launchUrl = launchUrl
++
++	// Attach the latest host window-focus snapshot and — for permission
++	// events — the ext's pending requestId, both sourced from pending-perms.jsonl
++	// via a single backward tail-scan. user_replied is a pure cancel signal
++	// and needs neither. Absent field → daemon treats as "not focused" and
++	// fires immediately ; missing requestId → daemon drops the Allow button
++	// (no way to route the ack).
++	let pending = { focused: null, requestId: null }
++	if (eventName !== 'user_replied') {
++		pending = readPendingPermsTail(pendingPath, sid)
++		if (pending.focused !== null) line.focused = pending.focused
++	}
++
+ 	if (eventName === 'stop') {
+ 		line.last_message_excerpt = excerptV2(payload.last_assistant_message)
+ 	} else if (eventName === 'notification') {
+ 		line.notification_type = payload.notification_type || ''
+ 		line.message = truncate(payload.message || '', MAX_EXCERPT)
+ 	} else if (eventName === 'permission_request') {
+-		if (payload.tool_use_id) line.tool_use_id = payload.tool_use_id
++		// tool_use_id is the ext-side `requestId` (see readPendingPermsTail
++		// docstring) — the daemon writes it as `requestId` on the outbound
++		// tool_permission_response, which is what outbound-action-injector.py
++		// matches against pending permissions. Sourced from pending-perms
++		// only ; the Claude Code hook payload does not carry it.
++		if (pending.requestId) line.tool_use_id = pending.requestId
+ 		line.tool_name = payload.tool_name || ''
+ 		// Pass-through: emit tool_input verbatim as an object. Any
+ 		// formatting (per-tool summary, truncation, JSON pretty-print)
+@@ -239,4 +463,4 @@ function main() {
+ 
+ if (require.main === module) main()
+ 
+-module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes }
++module.exports = { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus, readPendingPermsTail, AUTHORITY_CACHE, PENDING_PERMS_PATH }
+diff --git a/.devcontainer/skills/notify-queue/test-excerpt.js b/.devcontainer/skills/notify-queue/test-excerpt.js
+index 6bacc51..65b4640 100644
+--- a/.devcontainer/skills/notify-queue/test-excerpt.js
++++ b/.devcontainer/skills/notify-queue/test-excerpt.js
+@@ -5,7 +5,10 @@
+ // Exits 0 on success, throws + non-zero on failure.
+ 
+ const assert = require('assert')
+-const { excerptV1, excerptV2, decodeUnicodeEscapes } = require('./hook')
++const fs = require('fs')
++const os = require('os')
++const path = require('path')
++const { excerptV1, excerptV2, decodeUnicodeEscapes, buildLine, resolveLaunchUrl, readLatestFocus, readPendingPermsTail } = require('./hook')
+ 
+ // 1. The reported mojibake : `\uXXXX` literals in a Recap line.
+ const reported =
+@@ -36,4 +39,326 @@ assert.strictEqual(decodeUnicodeEscapes('a\\\\b'),        'a\\\\b')
+ // 6. Surrogate pair (emoji) decodes to the right codepoint.
+ assert.strictEqual(decodeUnicodeEscapes('\\uD83D\\uDE00'), '😀')
+ 
++// --- buildLine — session 8 sender + notif_id fields ---
++//
++// The daemon reads `line.sender` and `line.notif_id` from every queue
++// line and threads them into `notif send --sender X --id Y`. Missing
++// either would silently make `notif remove` unable to dismiss the
++// banner later, so both must land on every event class.
++
++const SID = '11111111-2222-3333-4444-555555555555'
++
++const stop = buildLine('stop', {
++	session_id:            SID,
++	last_assistant_message: '**Recap** — Ok',
++})
++assert.strictEqual(stop.sender, 'default', 'stop.sender defaults to "default"')
++assert.match(stop.notif_id, /^stop-11111111-\d+$/,
++	`stop.notif_id shape: ${stop.notif_id}`)
++
++const notif = buildLine('notification', {
++	session_id:        SID,
++	notification_type: 'permission_prompt',
++	message:           'hi',
++})
++assert.strictEqual(notif.sender, 'default')
++assert.match(notif.notif_id, /^notification-11111111-\d+$/)
++
++const perm = buildLine('permission_request', {
++	session_id: SID,
++	tool_name:  'Bash',
++	tool_input: { command: 'ls' },
++})
++assert.strictEqual(perm.sender, 'default')
++assert.match(perm.notif_id, /^permission_request-11111111-\d+$/)
++assert.deepStrictEqual(perm.tool_input, { command: 'ls' }, 'tool_input passes through')
++
++const replied = buildLine('user_replied', { session_id: SID })
++assert.strictEqual(replied.sender, 'default')
++assert.match(replied.notif_id, /^user_replied-11111111-\d+$/)
++
++// notif_id changes across invocations even for the same session/event —
++// Date.now() ticks at millisecond resolution and the two calls straddle
++// at least one tick under any realistic test scheduler.
++const a = buildLine('stop', { session_id: SID, last_assistant_message: 'x' })
++// Busy-wait until the clock ticks so uniqueness holds even on machines
++// with a coarse Date.now (some CI runners round to 4 ms).
++const t0 = Date.now()
++while (Date.now() === t0) { /* spin briefly */ }
++const b = buildLine('stop', { session_id: SID, last_assistant_message: 'x' })
++assert.notStrictEqual(a.notif_id, b.notif_id, 'notif_id must be unique per invocation')
++
++// --- resolveLaunchUrl — session-1 producer-launchurl ---
++//
++// Tested end-to-end via injectable historyDir + cachePath so we don't
++// touch the real /tmp cache or ~/.vscode-server state. Each subtest
++// gets its own tmpdir + tmpcache.
++
++const REAL_HEX = '7b22686f737450617468223a222f566f6c756d65732f446174612f6465762f64' // truncated but valid hex
++const REAL_AUTHORITY = 'dev-container+' + REAL_HEX
++const ENTRIES_JSON = JSON.stringify({
++	version: 1,
++	resource: `vscode-remote://dev-container%2B${REAL_HEX}/workspace/foo.txt`,
++	entries: [{ id: 'a.txt', timestamp: 123 }],
++})
++
++function tmpDir() {
++	return fs.mkdtempSync(path.join(os.tmpdir(), 'notify-queue-test-'))
++}
++
++// 7. Cache hit → returns cached authority as-is, no scan needed.
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	fs.writeFileSync(cache, REAL_AUTHORITY)
++	const emptyHistory = path.join(dir, 'empty-history')
++	fs.mkdirSync(emptyHistory)
++	const url = resolveLaunchUrl(emptyHistory, cache)
++	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
++		`cache hit expected — got: ${url}`)
++}
++
++// 8. Cache miss + populated history → extracts authority, writes cache.
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	const history = path.join(dir, 'history')
++	fs.mkdirSync(path.join(history, '-abcdef01'), { recursive: true })
++	fs.writeFileSync(path.join(history, '-abcdef01', 'entries.json'), ENTRIES_JSON)
++	const url = resolveLaunchUrl(history, cache)
++	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
++		`scan expected — got: ${url}`)
++	assert.strictEqual(fs.readFileSync(cache, 'utf8'), REAL_AUTHORITY,
++		'cache should be written on successful scan')
++}
++
++// 9. Cache miss + empty history → null (no fallback).
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	const history = path.join(dir, 'history')
++	fs.mkdirSync(history)
++	const url = resolveLaunchUrl(history, cache)
++	assert.strictEqual(url, null, `empty history should return null — got: ${url}`)
++	assert.strictEqual(fs.existsSync(cache), false,
++		'cache should not be written on scan miss')
++}
++
++// 10. Cache miss + non-existent history dir → null.
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	const url = resolveLaunchUrl(path.join(dir, 'does-not-exist'), cache)
++	assert.strictEqual(url, null, `missing history dir should return null — got: ${url}`)
++}
++
++// 11. Malformed cache → falls through to scan.
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	fs.writeFileSync(cache, 'garbage-not-an-authority')
++	const history = path.join(dir, 'history')
++	fs.mkdirSync(path.join(history, '-abcdef01'), { recursive: true })
++	fs.writeFileSync(path.join(history, '-abcdef01', 'entries.json'), ENTRIES_JSON)
++	const url = resolveLaunchUrl(history, cache)
++	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
++		`malformed cache should re-scan — got: ${url}`)
++	assert.strictEqual(fs.readFileSync(cache, 'utf8'), REAL_AUTHORITY,
++		'cache should be overwritten with valid authority')
++}
++
++// 12. Empty cache file → falls through to scan.
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	fs.writeFileSync(cache, '')
++	const history = path.join(dir, 'history')
++	fs.mkdirSync(path.join(history, '-abcdef01'), { recursive: true })
++	fs.writeFileSync(path.join(history, '-abcdef01', 'entries.json'), ENTRIES_JSON)
++	const url = resolveLaunchUrl(history, cache)
++	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
++		`empty cache should re-scan — got: ${url}`)
++}
++
++// 13. Subdir with entries.json that has no authority is skipped ;
++//     scan continues into the next subdir.
++{
++	const dir = tmpDir()
++	const cache = path.join(dir, 'cache')
++	const history = path.join(dir, 'history')
++	fs.mkdirSync(path.join(history, '-00000001'), { recursive: true })
++	fs.mkdirSync(path.join(history, '-00000002'), { recursive: true })
++	fs.writeFileSync(path.join(history, '-00000001', 'entries.json'),
++		JSON.stringify({ version: 1, resource: 'file:///tmp/x' }))
++	fs.writeFileSync(path.join(history, '-00000002', 'entries.json'), ENTRIES_JSON)
++	const url = resolveLaunchUrl(history, cache)
++	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
++		`should skip non-matching entries.json — got: ${url}`)
++}
++
++// --- readLatestFocus — session 4 focus-aware-delivery ---
++//
++// hook.js reads pending-perms.jsonl (written by the extension patch
++// `outbound-action-injector.py`) tail-first and returns the most recent
++// `focused` boolean. buildLine attaches it as `line.focused` on every
++// dispatch event so the daemon can debounce banners when the host VS
++// Code window is focused.
++
++function pendingPermsFixture(lines) {
++	const dir = tmpDir()
++	const file = path.join(dir, 'pending-perms.jsonl')
++	fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
++	return file
++}
++
++// 13. Tail-first scan — returns the LAST entry's focused, not the first.
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', focused: true,  active: true },
++		{ ts: '2026-07-12T10:01:00Z', focused: false, active: false },
++	])
++	assert.strictEqual(readLatestFocus(file), false, 'latest entry (focused:false) wins')
++}
++
++// 14. Skips entries without a `focused` field (session_boot markers, etc).
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', focused: true },
++		{ ts: '2026-07-12T10:01:00Z', ev: 'session_boot' },
++	])
++	assert.strictEqual(readLatestFocus(file), true, 'session_boot marker skipped, focused:true from prior entry returned')
++}
++
++// 15. Missing file → null (fresh boot before the extension patch runs).
++{
++	const dir = tmpDir()
++	assert.strictEqual(readLatestFocus(path.join(dir, 'does-not-exist.jsonl')), null,
++		'missing pending-perms.jsonl → null (fail-open at daemon side)')
++}
++
++// 16. Empty file → null.
++{
++	const dir = tmpDir()
++	const file = path.join(dir, 'empty.jsonl')
++	fs.writeFileSync(file, '')
++	assert.strictEqual(readLatestFocus(file), null, 'empty file → null')
++}
++
++// 17. Malformed JSON lines are skipped ; the last valid focused entry wins.
++{
++	const dir = tmpDir()
++	const file = path.join(dir, 'malformed.jsonl')
++	fs.writeFileSync(file, '{"focused":true}\n{not json at all\n{"focused":false\n')
++	// Line 3 truncated ; line 2 not JSON ; only line 1 parses → true.
++	assert.strictEqual(readLatestFocus(file), true, 'malformed lines skipped')
++}
++
++// 18. buildLine attaches line.focused when pending-perms yields a value.
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', focused: true, active: true },
++	])
++	const stopLine = buildLine('stop', { session_id: SID, last_assistant_message: 'x' }, file)
++	assert.strictEqual(stopLine.focused, true, 'stop.focused = latest pending-perms focused')
++
++	const permLine = buildLine('permission_request', {
++		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
++	}, file)
++	assert.strictEqual(permLine.focused, true, 'permission_request.focused = latest pending-perms focused')
++}
++
++// 19. buildLine omits line.focused when pending-perms has no snapshot.
++{
++	const dir = tmpDir()
++	const empty = path.join(dir, 'empty.jsonl')
++	fs.writeFileSync(empty, '')
++	const stopLine = buildLine('stop', { session_id: SID, last_assistant_message: 'x' }, empty)
++	assert.strictEqual('focused' in stopLine, false, 'focused omitted when snapshot absent')
++}
++
++// 20. user_replied never reads pending-perms — it's a pure cancel signal.
++{
++	const file = pendingPermsFixture([{ ts: '2026-07-12T10:00:00Z', focused: true }])
++	const replied = buildLine('user_replied', { session_id: SID }, file)
++	assert.strictEqual('focused' in replied, false, 'user_replied never carries focused')
++}
++
++// --- readPendingPermsTail + buildLine.tool_use_id — session 5 smoke fix ---
++//
++// The Claude Code PermissionRequest hook payload does not carry the
++// ext-side requestId that outbound-action-injector.py expects on the
++// ack path. Sourced from pending-perms.jsonl instead : latest record
++// with `settled:false`, matching sessionId, non-empty requestId wins.
++
++const REQ_ID = 'cfa581dae6fc206ce21ce8ad3bf8d7a8'
++
++// 21. readPendingPermsTail returns both focused and requestId in one scan.
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: true, settled: false },
++	])
++	const t = readPendingPermsTail(file, SID)
++	assert.strictEqual(t.focused,   true,   'tail focused = latest boolean')
++	assert.strictEqual(t.requestId, REQ_ID, 'tail requestId = latest settled:false matching sid')
++}
++
++// 22. readPendingPermsTail ignores settled:true records for requestId.
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: false, settled: false },
++		{ ts: '2026-07-12T10:00:05Z', sessionId: SID, requestId: REQ_ID, focused: false, settled: true, outcome: 'allow' },
++	])
++	const t = readPendingPermsTail(file, SID)
++	assert.strictEqual(t.requestId, null, 'settled:true → requestId not returned (perm already resolved)')
++	assert.strictEqual(t.focused,   false, 'focused still resolves from either record')
++}
++
++// 23. readPendingPermsTail filters by sid — non-matching sessions ignored.
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', sessionId: 'other-sid', requestId: 'other-req', focused: true, settled: false },
++	])
++	const t = readPendingPermsTail(file, SID)
++	assert.strictEqual(t.requestId, null, 'requestId for a different sessionId is not returned')
++}
++
++// 24. buildLine attaches line.tool_use_id from pending-perms.requestId.
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: true, settled: false },
++	])
++	const perm = buildLine('permission_request', {
++		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
++	}, file)
++	assert.strictEqual(perm.tool_use_id, REQ_ID,
++		'permission_request.tool_use_id = latest pending-perms requestId (settled:false, matching sid)')
++}
++
++// 25. buildLine omits line.tool_use_id when pending-perms has no matching entry.
++{
++	const dir = tmpDir()
++	const empty = path.join(dir, 'empty.jsonl')
++	fs.writeFileSync(empty, '')
++	const perm = buildLine('permission_request', {
++		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
++	}, empty)
++	assert.strictEqual('tool_use_id' in perm, false,
++		'tool_use_id omitted when pending-perms absent (daemon drops Allow button)')
++}
++
++// 26. buildLine ignores payload.tool_use_id — pending-perms is the only source.
++//     (Guards against a future Claude Code version adding tool_use_id in the
++//      hook payload : it would be the model-side `toolu_XXX`, wrong namespace.)
++{
++	const file = pendingPermsFixture([
++		{ ts: '2026-07-12T10:00:00Z', sessionId: SID, requestId: REQ_ID, focused: true, settled: false },
++	])
++	const perm = buildLine('permission_request', {
++		session_id: SID, tool_name: 'Bash', tool_input: { command: 'ls' },
++		tool_use_id: 'toolu_01ABCDEFGH',
++	}, file)
++	assert.strictEqual(perm.tool_use_id, REQ_ID,
++		'ext requestId wins even when payload provides its own tool_use_id')
++}
++
+ console.log('test-excerpt.js — all assertions passed')

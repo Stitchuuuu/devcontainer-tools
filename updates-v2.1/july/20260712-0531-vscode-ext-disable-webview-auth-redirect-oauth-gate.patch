@@ -1,0 +1,135 @@
+diff --git a/.devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py b/.devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py
+index edec1a1..e9e5015 100644
+--- a/.devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py
++++ b/.devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py
+@@ -97,6 +97,7 @@ from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_f
+ SETTING_KEY = "claudeCode.disableWebviewAuthRedirect"
+ MARKER_INJECT = "claude-code-disable-webview-auth-redirect-inject-v1"
+ MARKER_GATE = "claude-code-disable-webview-auth-redirect-gate-v1"
++MARKER_ISAUTH = "claude-code-disable-webview-auth-redirect-isauth-v1"
+ 
+ IMPACT_LINES = [
+     "→ The 'claudeCode.disableWebviewAuthRedirect' setting will be",
+@@ -109,6 +110,8 @@ IMPACT_LINES = [
+     "    <script nonce=...> block that exposes window.IS_SIDEBAR",
+     "  - pretty/webview-index.js — processMessage, the",
+     "    `authentication_failed` branch (single call site)",
++    "  - pretty/webview-index.js — the `isAuthenticated=` reactive",
++    "    getter (single occurrence, tail-fallback `return!1` inside)",
+     "  Then update regexes in",
+     "  .devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py.",
+ ]
+@@ -124,7 +127,7 @@ def patch_package_json(pkg_path):
+                IMPACT_LINES)
+         sys.exit(1)
+     if SETTING_KEY in props:
+-        print(f"{YELLOW}[1/3]{RESET} package.json — {SETTING_KEY!r} already declared")
++        print(f"{YELLOW}[1/4]{RESET} package.json — {SETTING_KEY!r} already declared")
+         return
+     props[SETTING_KEY] = {
+         "type": "boolean",
+@@ -136,7 +139,7 @@ def patch_package_json(pkg_path):
+         ),
+     }
+     pkg_path.write_text(json.dumps(p, indent=2))
+-    print(f"{GREEN}[1/3]{RESET} package.json — added {SETTING_KEY!r}")
++    print(f"{GREEN}[1/4]{RESET} package.json — added {SETTING_KEY!r}")
+ 
+ 
+ def patch_extension_bridge(content):
+@@ -146,7 +149,7 @@ def patch_extension_bridge(content):
+     """
+     if MARKER_INJECT in content:
+         n = content.count(MARKER_INJECT)
+-        print(f"{YELLOW}[2/3]{RESET} extension.js bridge — already patched ({n} site(s))")
++        print(f"{YELLOW}[2/4]{RESET} extension.js bridge — already patched ({n} site(s))")
+         return content
+ 
+     helper_match = re.search(r'([\w$]+)\("disableLoginPrompt"\)', content)
+@@ -178,7 +181,7 @@ def patch_extension_bridge(content):
+         f'{helper}("disableWebviewAuthRedirect")===!0;'
+     )
+     new_content = content[:m.end(1)] + inject + content[m.end(1):]
+-    print(f"{GREEN}[2/3]{RESET} extension.js bridge — injected global (helper={helper})")
++    print(f"{GREEN}[2/4]{RESET} extension.js bridge — injected global (helper={helper})")
+     return new_content
+ 
+ 
+@@ -186,7 +189,7 @@ def patch_webview_gate(content):
+     """Gate the single buggy `showLogin()` call site on the new global."""
+     if MARKER_GATE in content:
+         n = content.count(MARKER_GATE)
+-        print(f"{YELLOW}[3/3]{RESET} webview/index.js gate — already patched ({n} site(s))")
++        print(f"{YELLOW}[3/4]{RESET} webview/index.js gate — already patched ({n} site(s))")
+         return content
+ 
+     pat = re.compile(
+@@ -214,7 +217,59 @@ def patch_webview_gate(content):
+         f'{ctx_var}.context.showLogin();'
+     )
+     new_content = content[:m.start()] + replacement + content[m.end():]
+-    print(f"{GREEN}[3/3]{RESET} webview/index.js gate — applied (e={e_var}, ctx={ctx_var})")
++    print(f"{GREEN}[3/4]{RESET} webview/index.js gate — applied (e={e_var}, ctx={ctx_var})")
++    return new_content
++
++
++def patch_webview_isauthenticated(content):
++    """Gate the `isAuthenticated` reactive getter final fallback on the global.
++
++    Two live redirect paths trigger the login screen : (1) the synthetic
++    assistant message with `error:"authentication_failed"` calling
++    `showLogin()` — covered by patch_webview_gate above ; (2) the extension
++    pushing an `update_state` with `authStatus:null` after `claude auth
++    status --json` reports no auth (OAuth session expired + refresh failed).
++    Path (2) drives `isAuthenticated` to false via the tail fallback, which
++    the chat panel reads to swap to the login component. Inject a bypass
++    right before that fallback : forceLogin (user-initiated login) still
++    wins, and legitimate auth still short-circuits earlier — the bypass
++    only kicks in when both signals are absent.
++    """
++    if MARKER_ISAUTH in content:
++        n = content.count(MARKER_ISAUTH)
++        print(f"{YELLOW}[4/4]{RESET} webview/index.js isAuthenticated — already patched ({n} site(s))")
++        return content
++
++    pat = re.compile(
++        r'isAuthenticated=[\w$]+\(\(\)=>\{'
++        r'if\(this\.forceLogin\.value\)return!1;'
++        r'if\(this\.authStatus\.value!==null\)return!0;'
++        r'let ([\w$]+)=this\.comms\.connection\.value;'
++        r'if\(\1\)\{let ([\w$]+)=\1\.claudeConfig\.value;'
++        r'if\(\2\)return!!\(\2\.account\.tokenSource&&\2\.account\.tokenSource!=="none"'
++        r'\|\|\2\.account\.subscriptionType\)\}'
++        r'(return!1\}\);)'
++    )
++    matches = list(pat.finditer(content))
++    if len(matches) == 0:
++        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH FAILED",
++               "webview/index.js: isAuthenticated getter anchor not found",
++               IMPACT_LINES)
++        sys.exit(1)
++    if len(matches) > 1:
++        banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH AMBIGUOUS",
++               f"webview/index.js: isAuthenticated getter matched {len(matches)} times (expected 1)",
++               IMPACT_LINES)
++        sys.exit(1)
++
++    m = matches[0]
++    fallback_start = m.start(3)
++    injection = (
++        f'/*{MARKER_ISAUTH}*/'
++        f'if(window.__CC_disableWebviewAuthRedirect__)return!0;'
++    )
++    new_content = content[:fallback_start] + injection + content[fallback_start:]
++    print(f"{GREEN}[4/4]{RESET} webview/index.js isAuthenticated — bypass injected")
+     return new_content
+ 
+ 
+@@ -236,6 +291,7 @@ def main():
+ 
+     wv_content = wv.read_text()
+     wv_new = patch_webview_gate(wv_content)
++    wv_new = patch_webview_isauthenticated(wv_new)
+     if wv_new != wv_content:
+         wv.write_text(wv_new)
+ 
