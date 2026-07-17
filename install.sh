@@ -281,6 +281,10 @@ install_files() {
 
     # ── Lifecycle (6) ──────────────────────────────────────────
     copy_templated initialize.sh
+    # initialize/ carries extracted helpers sourced by initialize.sh
+    # (notify-daemon.sh, rebuild-debug.sh) — kept as a folder so future
+    # opt-in / occasional pieces can be added without bloating the entry point.
+    copy_dir initialize
     for f in on-create post-create post-start shell-init install-extensions; do
         copy_verbatim "${f}.sh"
     done
