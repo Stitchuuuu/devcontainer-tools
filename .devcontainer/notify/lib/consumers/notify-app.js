@@ -124,13 +124,19 @@ const PERMISSION_TTL_MS = 10 * 60 * 1000
  *                                                    Allow action inbox + outbound.jsonl
  * @returns {{ status: 'ok'|'skipped', diag: object }}
  */
-function start({ bus, projectDir }) {
+function start({ bus, projectDir, projectName = '' }) {
 	const host = getHostKind()
 	notifBinPath = getNotifPath()
 	if (!notifBinPath) {
 		return { status: 'skipped', diag: { host, reason: 'notif-binary-not-found' } }
 	}
 	log.info(`[notify-app] notif binary resolved at ${notifBinPath}`)
+
+	// TEMPLATES live in notifier.js and read `projectName` from that module's
+	// scope via brandTitle(). notifier.start() is skipped when we're active
+	// (mutex in index.js), so seed it here — otherwise every --title collapses
+	// to bare "Claude Code" and duplicates the bundle header.
+	require('./notifier').setProjectName(projectName)
 
 	// Ensure the "Claude Code" sender bundle exists with the bundled icon
 	// BEFORE the first send fires. `notif register` is idempotent — no-op
@@ -385,9 +391,13 @@ function send(payload) {
 	// tool_permission_response into outbound.jsonl for the ext.js injector.
 	// Deliberately no Deny button — body-click focuses VS Code where the user
 	// can deny with feedback in the Claude Code UI.
+	// AskUserQuestion is excluded : it needs the user to pick a specific
+	// answer among N options, not a blanket "allow" — surfacing the button
+	// there would trigger an ambiguous ack (which option got allowed ?).
 	if (
 		actionsInboxPath &&
 		(payload.eventType === 'permission_request' || payload.eventType === 'permission_prompt') &&
+		line.tool_name !== 'AskUserQuestion' &&
 		typeof line.tool_use_id === 'string' && line.tool_use_id
 	) {
 		args.push('--on-action', `Allow:file:${actionsInboxPath}`)

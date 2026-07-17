@@ -270,10 +270,12 @@ function truncate(s, n) {
  * description of the tool's input. Branches, in order :
  *   1. string           → legacy hook format, pre-truncated ; clamp again to 150
  *   2. AskUserQuestion  → first question text (+ "+N more" if multiple)
- *   3. Bash             → the actual shell `command` verbatim
- *   4. Edit             → `<file_path>: <first-line-of-old_string>`
- *   5. Write            → `<file_path>`
- *   6. fallback         → JSON.stringify, clamp to 150
+ *   3. ExitPlanMode     → first `# <title>` line of the plan markdown
+ *                         (fallback : first non-empty line)
+ *   4. Bash             → the actual shell `command` verbatim
+ *   5. Edit             → `<file_path>: <first-line-of-old_string>`
+ *   6. Write            → `<file_path>`
+ *   7. fallback         → JSON.stringify, clamp to 150
  *
  * Cap is 150 chars — the practical UN Center limit for a single body line
  * before Notification Center starts truncating on its own. Session 3 bumped
@@ -291,6 +293,11 @@ function renderPermissionInput(line) {
 	if (typeof input === 'string') return truncate(input, 150) || '(no input)'
 	if (line.tool_name === 'AskUserQuestion') {
 		const summary = summarizeAskUserQuestion(input)
+		if (summary) return truncate(summary, 150)
+	}
+	if (line.tool_name === 'ExitPlanMode' && typeof input.plan === 'string') {
+		const h1 = input.plan.match(/^#\s+(.+)$/m)
+		const summary = h1 ? h1[1].trim() : input.plan.split('\n', 1)[0].trim()
 		if (summary) return truncate(summary, 150)
 	}
 	if (line.tool_name === 'Bash' && typeof input.command === 'string') {
@@ -555,6 +562,19 @@ function spawnDetached(cmd, args) {
 	}
 }
 
+/**
+ * Inject the project label used by brandTitle() without going through start().
+ * Needed by sibling consumers (notify-app) that reuse this file's TEMPLATES /
+ * render() but are mutually exclusive with start() on the channel mux — so
+ * without this hook, projectName stays '' and brandTitle() collapses to the
+ * bare BRAND_NAME, losing the ` · <project>` suffix.
+ *
+ * @param {string} pn   project name, falsy → cleared
+ */
+function setProjectName(pn) {
+	projectName = pn || ''
+}
+
 // TEMPLATES + render are exposed so tests can preview the final output
 // without spawning the OS notifier process.
-module.exports = { start, TEMPLATES, render }
+module.exports = { start, TEMPLATES, render, setProjectName }
