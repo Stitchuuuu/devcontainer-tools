@@ -54,3 +54,5 @@ LESSONS.local.md
 # Per-dev zsh override + custom OMZ plugins/themes (paths from .devcontainer/)
 zshrc.local
 .zsh-custom/
+
+tmp/
