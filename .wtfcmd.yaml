@@ -55,3 +55,17 @@
     - name: args
       desc: Arguments forwarded verbatim to the notif binary.
       is_array: true
+
+# ---- firewall — hot-reload the local layer without rebuild --------------
+# Basic mode only. Wall-guard refuses strict (mitmproxy L7 reload TBD).
+# Reads .devcontainer/firewall/domains.local.txt + policy.local.d/, resyncs
+# to /etc/devcontainer-firewall/, recompiles the split dnsmasq confs, flushes
+# only the local ipset, restarts dnsmasq. ~450ms total, no baseline downtime.
+
+- group: firewall
+  name: reload
+  desc: |
+    Hot-reload the local firewall layer (basic mode only, sub-500ms).
+    Requires root — invoke via sudo, or from a shell already root
+    (e.g. `docker exec -u 0 <container> wtf firewall reload`).
+  cmd: /workspace/.devcontainer/reload-local.sh
