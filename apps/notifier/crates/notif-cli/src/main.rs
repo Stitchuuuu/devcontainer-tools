@@ -15,6 +15,12 @@ struct Cli {
     /// setting `NOTIF_QUIET=1` — either wins.
     #[arg(long, global = true)]
     quiet: bool,
+    /// Increase verbosity on the Windows backend (raise the tracing level
+    /// from `info` to `debug`). Ignored on macOS/Linux where the existing
+    /// `warn`/`info`/`stderr` helpers already cover the diagnostic surface.
+    /// Precedence: `NOTIF_LOG_LEVEL` env > `--quiet` > `--verbose` > default.
+    #[arg(long, global = true)]
+    verbose: bool,
 }
 
 /// Portable priority. Round-trips through `Priority::wire_str` on the
@@ -27,7 +33,7 @@ enum PriorityArg {
     Critical,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl PriorityArg {
     fn to_core(self) -> notif_core::Priority {
         use notif_core::Priority;
@@ -274,7 +280,10 @@ fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     return run_macos(cli.command);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    return run_windows(cli.command, cli.verbose, cli.quiet || env_quiet);
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     return run_stub(cli.command);
 }
 
@@ -1093,6 +1102,54 @@ fn format_dry_run(
         priority = notif.priority.wire_str(),
         sender = notif.sender.key,
     )
+}
+
+// ---- Windows arm (session 1 : send + remove) -------------------------------
+
+#[cfg(target_os = "windows")]
+fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
+    notif_windows::init_logging(verbose, quiet);
+    // Tier 1 spoof AUMID until session 2 materializes our own via `.lnk` +
+    // CLSID registration. `Microsoft.VisualStudioCode` is universally present
+    // on any host that has VS Code installed ; the toast appears under the
+    // "Visual Studio Code" attribution in Action Center.
+    const AUMID: &str = "Microsoft.VisualStudioCode";
+
+    match cmd {
+        Command::Send {
+            title,
+            body,
+            subtitle,
+            sender,
+            priority,
+            id,
+            ..
+        } => {
+            let sender_key = sender.unwrap_or_else(|| "default".to_string());
+            let sender_obj = notif_core::Sender::new(sender_key)
+                .map_err(|e| anyhow::anyhow!("invalid --sender: {e}"))?;
+            let notif = notif_core::Notification {
+                title,
+                body,
+                subtitle,
+                priority: priority.map_or(notif_core::Priority::Normal, PriorityArg::to_core),
+                sender: sender_obj,
+                id,
+                sound: None,
+                image: None,
+                on_timeout: None,
+            };
+            notif_windows::dispatch_send(&notif, AUMID)
+                .map_err(|e| anyhow::anyhow!("send failed: {e}"))?;
+            Ok(())
+        }
+        Command::Remove { sender, id } => {
+            notif_windows::dispatch_remove(&sender, &id, AUMID)
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("remove failed: {e}"))
+        }
+        other => run_stub(other),
+    }
 }
 
 // ---- Non-mac dev stub ------------------------------------------------------

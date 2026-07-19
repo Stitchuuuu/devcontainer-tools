@@ -23,3 +23,10 @@ anyhow = "1"
 # transitive tree via notif-core, so this is a re-exposure, not a new
 # dep.
 time = { version = "0.3.53", features = ["formatting"] }
+
+# notif-windows is only linked when building for Windows targets. The crate's
+# public surface (WindowsBackend / dispatch_send / init_logging) is entirely
+# `#[cfg(target_os = "windows")]`, so pulling it in on macOS/Linux would just
+# add empty symbols to the build tree.
+[target.'cfg(windows)'.dependencies]
+notif-windows = { path = "../notif-windows" }

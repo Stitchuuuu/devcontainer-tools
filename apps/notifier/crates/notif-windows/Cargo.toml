@@ -6,3 +6,16 @@ license.workspace = true
 
 [dependencies]
 notif-core = { path = "../notif-core" }
+
+# All real Windows deps are target-gated. On non-Windows targets the crate is
+# essentially empty (Backend impl compiled out), so pulling `windows` /
+# `tracing` into the Linux/macOS build tree would just add work for nothing.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "Foundation_Collections",
+    "UI_Notifications",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
