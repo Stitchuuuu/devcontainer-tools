@@ -27,6 +27,8 @@ DOMAINS_LOCAL_FILE="$FIREWALL_CONFIG_DIR/domains.local.txt"
 PROBES_FILE="$FIREWALL_CONFIG_DIR/tests/probes.txt"
 BLOCKED_TESTS="$FIREWALL_CONFIG_DIR/tests/blocked.txt"
 GENERATED_DNSMASQ_CONF="/var/run/devcontainer-firewall/dnsmasq-domains.conf"
+GENERATED_DNSMASQ_BASE_CONF="/var/run/devcontainer-firewall/dnsmasq-domains-base.conf"
+GENERATED_DNSMASQ_LOCAL_CONF="/var/run/devcontainer-firewall/dnsmasq-domains-local.conf"
 GENERATED_POLICY_COMPILED="/var/run/devcontainer-firewall/policy.compiled.yaml"
 
 # -------------------------------
@@ -234,12 +236,35 @@ fi
 # See firewall/compile-policy.py for syntax + merge precedence.
 echo "📝 Compiling firewall policy from $FIREWALL_CONFIG_DIR..."
 mkdir -p "$(dirname "$GENERATED_DNSMASQ_CONF")"
-python3 /usr/local/bin/compile-policy.py \
-  --config-dir "$FIREWALL_CONFIG_DIR" \
-  --out-dnsmasq "$GENERATED_DNSMASQ_CONF" \
-  --out-policy  "$GENERATED_POLICY_COMPILED"
-chmod 644 "$GENERATED_DNSMASQ_CONF" "$GENERATED_POLICY_COMPILED"
-dbg "  generated $(grep -c '^server=' "$GENERATED_DNSMASQ_CONF") dnsmasq rules"
+if [ "$FIREWALL_MODE" = "basic" ]; then
+  # Split base/local so reload-local.sh can flush only the local layer
+  # without dropping baseline connections.
+  python3 /usr/local/bin/compile-policy.py \
+    --config-dir "$FIREWALL_CONFIG_DIR" \
+    --split-local \
+    --out-dnsmasq-base  "$GENERATED_DNSMASQ_BASE_CONF" \
+    --out-dnsmasq-local "$GENERATED_DNSMASQ_LOCAL_CONF" \
+    --out-policy        "$GENERATED_POLICY_COMPILED"
+  chmod 644 "$GENERATED_DNSMASQ_BASE_CONF" "$GENERATED_DNSMASQ_LOCAL_CONF" "$GENERATED_POLICY_COMPILED"
+  dbg "  generated $(grep -c '^server=' "$GENERATED_DNSMASQ_BASE_CONF") base + $(grep -c '^server=' "$GENERATED_DNSMASQ_LOCAL_CONF") local dnsmasq rules"
+else
+  python3 /usr/local/bin/compile-policy.py \
+    --config-dir "$FIREWALL_CONFIG_DIR" \
+    --out-dnsmasq "$GENERATED_DNSMASQ_CONF" \
+    --out-policy  "$GENERATED_POLICY_COMPILED"
+  chmod 644 "$GENERATED_DNSMASQ_CONF" "$GENERATED_POLICY_COMPILED"
+  dbg "  generated $(grep -c '^server=' "$GENERATED_DNSMASQ_CONF") dnsmasq rules"
+fi
+
+# Route baseline dnsmasq injections (ollama alias, claude-bridge sibling,
+# direct-tcp-allow) to the base conf in basic split-mode, or to the legacy
+# combined conf in strict/off. These injections are all infrastructure
+# baseline (never user-managed local overrides), hence base group in basic.
+if [ "$FIREWALL_MODE" = "basic" ]; then
+  INJECT_DNSMASQ_CONF="$GENERATED_DNSMASQ_BASE_CONF"
+else
+  INJECT_DNSMASQ_CONF="$GENERATED_DNSMASQ_CONF"
+fi
 
 # Dynamic CNAME injection for the local Ollama backend ----------------------
 # host.docker.internal carries a runtime-assigned IP (192.168.65.254 on Docker
@@ -255,8 +280,8 @@ HOST_DOCKER_IP=$(dig +short +time=2 +tries=2 @127.0.0.11 host.docker.internal A 
 if [ -n "$HOST_DOCKER_IP" ]; then
   # Drop the auto-emitted `server=` lines for the two aliases — cname wins
   # locally but the duplicate forward rule clutters the conf.
-  sed -i -E '/^server=\/ollama\.(internal|local)\//d' "$GENERATED_DNSMASQ_CONF"
-  cat >> "$GENERATED_DNSMASQ_CONF" <<EOF
+  sed -i -E '/^server=\/ollama\.(internal|local)\//d' "$INJECT_DNSMASQ_CONF"
+  cat >> "$INJECT_DNSMASQ_CONF" <<EOF
 
 # Injected by init-firewall.sh — Ollama local backend (see knowledge/ollama-local.md).
 # local-ttl=3600 is REQUIRED for the ipset pipeline to work : without it,
@@ -283,8 +308,8 @@ fi
 # 8.8.8.8` for it (8.8.8.8 doesn't know about Docker peers) — strip it and
 # substitute Docker's embedded resolver (127.0.0.11) which DOES resolve the
 # service name from the compose graph. The auto-emitted ipset directive stays.
-sed -i -E '/^server=\/claude-bridge\//d' "$GENERATED_DNSMASQ_CONF"
-cat >> "$GENERATED_DNSMASQ_CONF" <<EOF
+sed -i -E '/^server=\/claude-bridge\//d' "$INJECT_DNSMASQ_CONF"
+cat >> "$INJECT_DNSMASQ_CONF" <<EOF
 
 # Injected by init-firewall.sh — claude-bridge sidecar (UniClaudeProxy).
 server=/claude-bridge/127.0.0.11
@@ -315,8 +340,8 @@ if [ -f "$DIRECT_TCP_ALLOW" ]; then
     [ "$host" = "host.docker.internal" ] && continue  # idem
     [ "$host" = "claude-bridge" ] && continue         # hardcoded above
     escaped="${host//./\\.}"             # escape dots for sed ERE
-    sed -i -E "/^server=\\/${escaped}\\//d" "$GENERATED_DNSMASQ_CONF"
-    cat >> "$GENERATED_DNSMASQ_CONF" <<EOF
+    sed -i -E "/^server=\\/${escaped}\\//d" "$INJECT_DNSMASQ_CONF"
+    cat >> "$INJECT_DNSMASQ_CONF" <<EOF
 
 # Injected by init-firewall.sh — sibling-resolve from direct-tcp-allow.txt.
 server=/${host}/127.0.0.11
@@ -332,8 +357,15 @@ fi
 # -------------------------------
 echo "🛰  Starting dnsmasq (local resolver on 127.0.0.53)..."
 
-# Empty ipset first — dnsmasq populates it on each successful resolution
-ipset create allowed-domains hash:ip family inet timeout 3600
+# Empty ipset first — dnsmasq populates it on each successful resolution.
+# In basic mode we split into base + local so reload-local.sh can flush
+# only the local layer without touching baseline (see reload-local.sh).
+if [ "$FIREWALL_MODE" = "basic" ]; then
+  ipset create allowed-domains-base  hash:ip family inet timeout 3600
+  ipset create allowed-domains-local hash:ip family inet timeout 3600
+else
+  ipset create allowed-domains hash:ip family inet timeout 3600
+fi
 
 # Inject host-gateway IP into the ipset for the Ollama aliases.
 #
@@ -353,8 +385,14 @@ ipset create allowed-domains hash:ip family inet timeout 3600
 # chain (in the generated dnsmasq.conf above) still routes client queries
 # transparently ; this just ensures the firewall accepts the resulting packet.
 if [ -n "$HOST_DOCKER_IP" ]; then
-  ipset add allowed-domains "$HOST_DOCKER_IP" timeout 0 2>/dev/null || true
-  dbg "  ipset add allowed-domains $HOST_DOCKER_IP timeout 0  (host gateway — dnsmasq doesn't notify on local synth)"
+  if [ "$FIREWALL_MODE" = "basic" ]; then
+    # Host gateway is infrastructure baseline — always in the base group.
+    ipset add allowed-domains-base "$HOST_DOCKER_IP" timeout 0 2>/dev/null || true
+    dbg "  ipset add allowed-domains-base $HOST_DOCKER_IP timeout 0  (host gateway — dnsmasq doesn't notify on local synth)"
+  else
+    ipset add allowed-domains "$HOST_DOCKER_IP" timeout 0 2>/dev/null || true
+    dbg "  ipset add allowed-domains $HOST_DOCKER_IP timeout 0  (host gateway — dnsmasq doesn't notify on local synth)"
+  fi
 fi
 
 # Stop any leftover dnsmasq (e.g. from a previous failed run)
@@ -373,15 +411,30 @@ fi
 
 if [ -n "$DNSMASQ_USER" ]; then
   DNSMASQ_UID=$(id -u "$DNSMASQ_USER")
-  dnsmasq \
-    --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
-    --conf-file="$GENERATED_DNSMASQ_CONF" \
-    --user="$DNSMASQ_USER"
+  if [ "$FIREWALL_MODE" = "basic" ]; then
+    dnsmasq \
+      --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
+      --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
+      --conf-file="$GENERATED_DNSMASQ_LOCAL_CONF" \
+      --user="$DNSMASQ_USER"
+  else
+    dnsmasq \
+      --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
+      --conf-file="$GENERATED_DNSMASQ_CONF" \
+      --user="$DNSMASQ_USER"
+  fi
 else
   DNSMASQ_UID=""
-  dnsmasq \
-    --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
-    --conf-file="$GENERATED_DNSMASQ_CONF"
+  if [ "$FIREWALL_MODE" = "basic" ]; then
+    dnsmasq \
+      --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
+      --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
+      --conf-file="$GENERATED_DNSMASQ_LOCAL_CONF"
+  else
+    dnsmasq \
+      --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
+      --conf-file="$GENERATED_DNSMASQ_CONF"
+  fi
   echo "⚠️  No dnsmasq/nobody user available — UDP/53 UID filter disabled"
 fi
 
@@ -543,8 +596,13 @@ if [ "$MODE" = "strict" ] && [ -n "$MITMPROXY_UID" ]; then
   # UIDs (node) must go through 127.0.0.1:8080 (loopback ACCEPTed above) where
   # mitmproxy proxies the request and re-emits it from its own UID.
   iptables -A OUTPUT -m owner --uid-owner "$MITMPROXY_UID" -m set --match-set allowed-domains dst -j ACCEPT
+elif [ "$MODE" = "basic" ]; then
+  # Basic mode : any UID can reach allowlisted hosts directly. Split into
+  # base + local so reload-local.sh can flush only the local group.
+  iptables -A OUTPUT -m set --match-set allowed-domains-base  dst -j ACCEPT
+  iptables -A OUTPUT -m set --match-set allowed-domains-local dst -j ACCEPT
 else
-  # Basic mode : any UID can reach allowlisted hosts directly.
+  # Fallback (strict without mitmproxy UID captured — shouldn't happen).
   iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 fi
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
@@ -601,7 +659,15 @@ fi
   echo "=== nat ==="
   iptables -t nat -L -n -v --line-numbers
   echo
-  echo "=== ipset allowed-domains ==="
-  ipset list allowed-domains | head -30
+  if [ "$MODE" = "basic" ]; then
+    echo "=== ipset allowed-domains-base ==="
+    ipset list allowed-domains-base 2>/dev/null | head -30
+    echo
+    echo "=== ipset allowed-domains-local ==="
+    ipset list allowed-domains-local 2>/dev/null | head -30
+  else
+    echo "=== ipset allowed-domains ==="
+    ipset list allowed-domains 2>/dev/null | head -30
+  fi
 } > /tmp/iptables-dump.txt 2>&1
 chmod 644 /tmp/iptables-dump.txt

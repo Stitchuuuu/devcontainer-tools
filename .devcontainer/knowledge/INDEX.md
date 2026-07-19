@@ -16,6 +16,10 @@ case-by-case.
   17-host baseline) + firewall internals (compile-policy pipeline) + strict
   mode (force-proxy, mitmproxy, ipset, HTTPS_PROXY propagation, sysctls
   pitfalls, ruamel.yaml constraint).
+- [`firewall-reload-local.md`](firewall-reload-local.md) — hot-reload the
+  local layer (`domains.local.txt` + `policy.local.d/`) without rebuilding
+  the devcontainer, via `sudo .devcontainer/reload-local.sh`. Basic mode
+  only ; strict mode still requires rebuild.
 - [`extension-points.md`](extension-points.md) — how to add a skill,
   host-helper, ecosystem extractor, lifecycle behaviour, firewall
   domain, mitmproxy addon, Dockerfile variant.
