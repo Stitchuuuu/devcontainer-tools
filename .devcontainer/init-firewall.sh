@@ -415,7 +415,7 @@ fi
 
 if [ -n "$DNSMASQ_USER" ]; then
   DNSMASQ_UID=$(id -u "$DNSMASQ_USER")
-  if [ "$FIREWALL_MODE" = "basic" ]; then
+  if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
@@ -429,7 +429,7 @@ if [ -n "$DNSMASQ_USER" ]; then
   fi
 else
   DNSMASQ_UID=""
-  if [ "$FIREWALL_MODE" = "basic" ]; then
+  if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
