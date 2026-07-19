@@ -27,7 +27,7 @@
 # Usage (workspace root):
 #   bash .devcontainer/firewall/tests/reload-basic-isolated.sh
 #
-# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 11 "✔"
+# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 12 "✔"
 # assertions. Any failed assertion increments a FAIL counter and the script
 # exits 1 at the end — silence is not success.
 
@@ -42,8 +42,13 @@ IMG_TAG="fw-reload-basic-test:$(date +%s)"
 NET_NAME="fw-reload-basic-net-$$"
 CONTAINER="firewall-reload-basic-$$"
 PORTAL="portal-test-basic-$$"
-HOST_PORT="8766"
-HOST_SRV_PID=""
+# Two host mini-servers: 8765 stays unauthorized (must be blocked), 8766
+# is seeded into direct-tcp-allow.txt as `host:8766` (must be reachable).
+# Proves both directions of the host-port opt-in: default-block + explicit-allow.
+HOST_PORT_BLOCKED="8765"
+HOST_PORT_ALLOWED="8766"
+HOST_SRV_PID_BLOCKED=""
+HOST_SRV_PID_ALLOWED=""
 
 DOMAINS_LOCAL_HOST="$WORKSPACE_HOST_ROOT/.devcontainer/firewall/domains.local.txt"
 DOMAINS_LOCAL_SNAPSHOT=""
@@ -75,7 +80,8 @@ fi
 cleanup() {
   echo
   echo "═══ Cleanup ═══"
-  [ -n "$HOST_SRV_PID" ] && kill "$HOST_SRV_PID" 2>/dev/null || true
+  [ -n "$HOST_SRV_PID_BLOCKED" ] && kill "$HOST_SRV_PID_BLOCKED" 2>/dev/null || true
+  [ -n "$HOST_SRV_PID_ALLOWED" ] && kill "$HOST_SRV_PID_ALLOWED" 2>/dev/null || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$PORTAL"    >/dev/null 2>&1 || true
   docker network rm "$NET_NAME" >/dev/null 2>&1 || true
@@ -151,14 +157,16 @@ else
 fi
 
 echo
-echo "═══ [Setup 5/6] Spawn host mini-server on 0.0.0.0:$HOST_PORT (Node) ═══"
-node -e "require('http').createServer((_,res)=>res.end('host mini-server\n')).listen($HOST_PORT,'0.0.0.0',()=>console.error('listening'))" >/dev/null 2>&1 &
-HOST_SRV_PID=$!
+echo "═══ [Setup 5/6] Spawn TWO host mini-servers (Node) — :$HOST_PORT_BLOCKED + :$HOST_PORT_ALLOWED ═══"
+node -e "require('http').createServer((_,res)=>res.end('host mini-server $HOST_PORT_BLOCKED (unauth)\n')).listen($HOST_PORT_BLOCKED,'0.0.0.0')" >/dev/null 2>&1 &
+HOST_SRV_PID_BLOCKED=$!
+node -e "require('http').createServer((_,res)=>res.end('host mini-server $HOST_PORT_ALLOWED (allowed)\n')).listen($HOST_PORT_ALLOWED,'0.0.0.0')" >/dev/null 2>&1 &
+HOST_SRV_PID_ALLOWED=$!
 sleep 0.5
-if kill -0 "$HOST_SRV_PID" 2>/dev/null; then
-  echo "  ✔ host mini-server up (PID=$HOST_SRV_PID) — reachable via host.docker.internal:$HOST_PORT"
+if kill -0 "$HOST_SRV_PID_BLOCKED" 2>/dev/null && kill -0 "$HOST_SRV_PID_ALLOWED" 2>/dev/null; then
+  echo "  ✔ host mini-servers up (:$HOST_PORT_BLOCKED PID=$HOST_SRV_PID_BLOCKED, :$HOST_PORT_ALLOWED PID=$HOST_SRV_PID_ALLOWED)"
 else
-  echo "  ❌ host mini-server failed to start (PID=$HOST_SRV_PID died — port $HOST_PORT already bound?)" >&2
+  echo "  ❌ one or both host mini-servers failed to start — port $HOST_PORT_BLOCKED or $HOST_PORT_ALLOWED already bound?" >&2
   exit 1
 fi
 
@@ -187,9 +195,11 @@ dex cp /workspace/.devcontainer/firewall/compile-policy.py    /usr/local/bin/com
 dex cp /workspace/.devcontainer/reload-local.sh               /usr/local/bin/reload-local.sh
 dex chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/compile-policy.py /usr/local/bin/reload-local.sh
 dex sh -c 'echo basic > /etc/devcontainer-firewall/default-mode'
-# Seed portal-test:4242 in the CONTAINER's direct-tcp-allow.txt (transient —
-# container-scoped, no workspace mutation, no snapshot needed).
-dex sh -c 'echo portal-test:4242 >> /etc/devcontainer-firewall/direct-tcp-allow.txt'
+# Seed portal-test:4242 AND host:$HOST_PORT_ALLOWED into the CONTAINER's
+# direct-tcp-allow.txt (transient — container-scoped, no workspace
+# mutation, no snapshot needed). Two entries prove BOTH ways of the
+# port-gate: sibling container + host gateway via the `host` alias.
+dex sh -c "printf 'portal-test:4242\nhost:$HOST_PORT_ALLOWED\n' >> /etc/devcontainer-firewall/direct-tcp-allow.txt"
 # Same set -e / pgrep fragility workaround carried from the strict sibling.
 dex sed -i 's#| head -1)$#| head -1 || true)#' /usr/local/bin/init-firewall.sh
 echo "  ✔ basic mode + scripts installed, portal-test:4242 seeded"
@@ -311,24 +321,37 @@ case "$CODE" in
 esac
 
 echo
-echo "═══ [11] Host isolation — host.docker.internal:$HOST_PORT must be BLOCKED ═══"
-# Node mini-server on host binds 0.0.0.0:$HOST_PORT — reachable via
-# host.docker.internal from the container. Since host:$HOST_PORT is NOT in
-# direct-tcp-allow.txt, RFC1918 REJECT fires (host.docker.internal IP is
-# in a private range). The ipset ACCEPT for allowed-domains never gets
-# to trigger (would come after the REJECT anyway).
-CODE=$(curl_direct "http://host.docker.internal:$HOST_PORT/")
+echo "═══ [11] Host isolation — host.docker.internal:$HOST_PORT_BLOCKED must be BLOCKED ═══"
+# Node mini-server on host binds 0.0.0.0:$HOST_PORT_BLOCKED — reachable via
+# host.docker.internal from the container. Since host:$HOST_PORT_BLOCKED is
+# NOT in direct-tcp-allow.txt, RFC1918 REJECT fires (host.docker.internal IP
+# is in a private range).
+CODE=$(curl_direct "http://host.docker.internal:$HOST_PORT_BLOCKED/")
 case "$CODE" in
   000)
-    echo "  ✔ host.docker.internal:$HOST_PORT HTTP=000 (RFC1918 REJECT — host isolated)"
+    echo "  ✔ host.docker.internal:$HOST_PORT_BLOCKED HTTP=000 (RFC1918 REJECT — host isolated)"
     ;;
   200)
-    fail "host.docker.internal:$HOST_PORT HTTP=200 — host mini-server REACHED, isolation broken!"
+    fail "host.docker.internal:$HOST_PORT_BLOCKED HTTP=200 — host mini-server REACHED, isolation broken!"
     ;;
   *)
-    fail "host.docker.internal:$HOST_PORT HTTP=$CODE (expected 000 — RFC1918 REJECT should catch)"
+    fail "host.docker.internal:$HOST_PORT_BLOCKED HTTP=$CODE (expected 000 — RFC1918 REJECT should catch)"
     ;;
 esac
+
+echo
+echo "═══ [12] Host opt-in — host.docker.internal:$HOST_PORT_ALLOWED must PASS (host:$HOST_PORT_ALLOWED seed) ═══"
+# Same setup as [11] but this port IS seeded into direct-tcp-allow.txt as
+# `host:$HOST_PORT_ALLOWED`. init-firewall's L534-560 loop resolves the
+# `host` keyword to host.docker.internal's IP and emits a per-port ACCEPT
+# rule that fires BEFORE the RFC1918 REJECT — so this specific port
+# reaches the host mini-server.
+CODE=$(curl_direct "http://host.docker.internal:$HOST_PORT_ALLOWED/")
+if [ "$CODE" = "200" ]; then
+  echo "  ✔ host.docker.internal:$HOST_PORT_ALLOWED HTTP=200 (per-port ACCEPT for `host:` alias works)"
+else
+  fail "host.docker.internal:$HOST_PORT_ALLOWED HTTP=$CODE (expected 200 — direct-tcp-allow host: seed didn't punch through)"
+fi
 
 echo
 echo "═══ FULL VALIDATION COMPLETE ═══"
