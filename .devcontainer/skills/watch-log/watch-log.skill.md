@@ -104,6 +104,17 @@ token economy.
    # <body — the actual commands>
    ```
    `chmod +x` it.
+
+   **Reusing the same `<task-id>` across iterations?** Delete the stale
+   `.log` before rewriting the script (`rm -f
+   /workspace/.devcontainer/pending/<task-id>.log`). `tail -F` starts
+   reading from EOF, so if the previous run's `__END__` (and last
+   dozens of lines) are still in the file when Monitor arms, they get
+   emitted as fake "V2 completion" events before the user has even
+   launched the new run — leading to false conclusions about a test
+   that never ran. Applies especially when iterating on the same
+   script: V1 → analyze → edit → V2 relaunch. Always `rm -f <log>`
+   before the Write/Edit that produces the new script version.
 3. Display the launch to the user as FOUR required pieces, in this order :
 
    **(a) A clickable markdown link to the script** so the user opens it in
@@ -227,6 +238,7 @@ intermediate events.
 | Fallback's `tail -50` truncates a long run | Script too verbose | Prefer the Monitor path (you `Read` exactly the slice you need). If you're stuck on the fallback, switch to Pattern B with task-specific markers (e.g. `echo "test: $name PASS"`) so notifications carry the signal. |
 | Monitor keeps idling after `__END__` | Forgot the `TaskStop` cleanup | After the completion notification fires, always call `TaskStop` on the Monitor task. The task otherwise sits until the 600 s timeout — harmless but wasteful. |
 | Files accumulate | User runs many `/watch-log` scripts | `host-helpers/watch-log-cleanup` removes anything > 60 min at every container start. |
+| Fake "V2 completed" events fire right after Monitor arms, before user relaunched | `tail -F` starts at EOF, sees the previous run's `__END__` still in the log | Delete the stale `.log` (`rm -f <log>`) BEFORE writing/editing the new script version when reusing the same `<task-id>`. Applies to iterative loops (V1 fails → edit → V2 relaunch) where the same `.log` path is reused. |
 
 ## Example — Pattern A diagnostic
 
