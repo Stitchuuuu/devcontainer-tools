@@ -27,6 +27,7 @@ without re-reading the full mitmdump request log.
 """
 
 import json
+import os
 import re
 import sys
 import time
@@ -44,17 +45,7 @@ POLICY_PATH = "/var/run/devcontainer-firewall/policy.compiled.yaml"
 BLOCKS_LOG = "/var/log/mitmproxy-blocks.log"
 ADDON_NAME = "policy_enforce"
 
-try:
-    with open(POLICY_PATH) as _f:
-        POLICY = _YAML.load(_f) or {}
-except Exception as _exc:
-    print(f"[policy_enforce] FATAL loading {POLICY_PATH}: {_exc}", file=sys.stderr)
-    POLICY = {"defaults": {}, "domains": {}, "runtime": {"policy_enforce_enabled": True}}
-
-DEFAULTS = POLICY.get("defaults", {}) or {}
-DOMAINS = POLICY.get("domains", {}) or {}
-RUNTIME = POLICY.get("runtime", {}) or {}
-
+# Policy-independent constants — never touched by reload.
 BASE64_RE = re.compile(rb"[A-Za-z0-9+/=]{50,}")
 HEX_RE = re.compile(rb"[0-9a-f]{100,}")
 # Per-PATH-SEGMENT detection. We use SEARCH (not fullmatch) so an embedded
@@ -70,9 +61,17 @@ HEX_RE = re.compile(rb"[0-9a-f]{100,}")
 SEGMENT_BASE64_RE = re.compile(rb"[A-Za-z0-9+=]{50,}")
 SEGMENT_HEX_RE = re.compile(rb"[0-9a-f]{100,}")
 INTERNAL_PATH_RE = re.compile(rb"/(workspace|home|var/lib|etc)/[a-zA-Z0-9_./-]+")
+
+# Policy-derived globals — populated by _load_policy() at import and refreshed
+# by _reload_if_stale() when policy.compiled.yaml mtime changes.
+POLICY = {}
+DEFAULTS = {}
+DOMAINS = {}
+RUNTIME = {}
 # Headers are case-insensitive on the wire — apply IGNORECASE so `x-Custom`
 # is treated the same as `X-Custom` for the allowlist negative-lookahead.
-BLOCKED_HEADER_RES = [re.compile(p, re.IGNORECASE) for p in DEFAULTS.get("blocked_header_patterns") or []]
+BLOCKED_HEADER_RES = []
+_POLICY_MTIME_NS = None
 
 
 def _glob_to_regex(pat: str):
@@ -82,33 +81,92 @@ def _glob_to_regex(pat: str):
     return re.compile("^" + re.escape(pat) + "$")
 
 
-for _host, _hp in DOMAINS.items():
-    _methods = _hp.get("allowed_methods") or DEFAULTS.get("allowed_methods", ["GET"])
-    _hp["_methods_set"] = {m.upper() for m in _methods}
-    _hp["_path_regexes"] = [_glob_to_regex(p) for p in _hp.get("paths") or []]
-    _hp["_blocked_regexes"] = [re.compile(p) for p in _hp.get("blocked_paths") or []]
-    # Per-host header allowlist that EXEMPTS matching headers from the
-    # global blocked_header_patterns. Use this in policy.d/<host>.yaml to
-    # declare vendor-specific prefixes (X-Vss-, X-GitHub-, X-Anthropic-)
-    # that are only legitimate on this vendor's hosts.
-    _hp["_allowed_header_regexes"] = [
-        re.compile(p, re.IGNORECASE) for p in _hp.get("allowed_header_patterns") or []
-    ]
-    _eps = []
-    for _ep in _hp.get("endpoints") or []:
-        _eps.append({
-            "regex": re.compile(_ep["path"]),
-            "methods": {m.upper() for m in (_ep.get("methods") or _methods)},
-            "max_body_kb": _ep.get("max_body_kb"),
-            "query_params": _ep.get("query_params") or {},
-            "reject_unknown": bool(_ep.get("reject_unknown_params")),
-            # Per-endpoint defaults_override : merges on top of host's
-            # effective defaults at request time so you can relax (or
-            # tighten) e.g. max_path_segment_length for ONE URL only
-            # without affecting siblings.
-            "defaults_override": _ep.get("defaults_override") or {},
-        })
-    _hp["_endpoints"] = _eps
+def _load_policy() -> None:
+    """Reload policy.compiled.yaml + re-run the regex pre-compile pass.
+    Called at module import and by _reload_if_stale() when the file changes.
+
+    Fail-safe semantics :
+      - Initial load fails (POLICY still empty) ⇒ deny-all fallback (safe closed).
+      - Reload fails (POLICY already populated) ⇒ keep last known good globals
+        + log the exception. A mid-session corrupt YAML must NOT wipe a
+        working policy — that would 403-storm the container exactly when
+        we're trying to hot-reload.
+    """
+    global POLICY, DEFAULTS, DOMAINS, RUNTIME, BLOCKED_HEADER_RES
+    try:
+        with open(POLICY_PATH) as _f:
+            _new = _YAML.load(_f) or {}
+        _new_defaults = _new.get("defaults", {}) or {}
+        _new_domains = _new.get("domains", {}) or {}
+        _new_runtime = _new.get("runtime", {}) or {}
+        _new_blocked_hdrs = [re.compile(p, re.IGNORECASE) for p in _new_defaults.get("blocked_header_patterns") or []]
+        for _host, _hp in _new_domains.items():
+            _methods = _hp.get("allowed_methods") or _new_defaults.get("allowed_methods", ["GET"])
+            _hp["_methods_set"] = {m.upper() for m in _methods}
+            _hp["_path_regexes"] = [_glob_to_regex(p) for p in _hp.get("paths") or []]
+            _hp["_blocked_regexes"] = [re.compile(p) for p in _hp.get("blocked_paths") or []]
+            # Per-host header allowlist that EXEMPTS matching headers from the
+            # global blocked_header_patterns. Use this in policy.d/<host>.yaml to
+            # declare vendor-specific prefixes (X-Vss-, X-GitHub-, X-Anthropic-)
+            # that are only legitimate on this vendor's hosts.
+            _hp["_allowed_header_regexes"] = [
+                re.compile(p, re.IGNORECASE) for p in _hp.get("allowed_header_patterns") or []
+            ]
+            _eps = []
+            for _ep in _hp.get("endpoints") or []:
+                _eps.append({
+                    "regex": re.compile(_ep["path"]),
+                    "methods": {m.upper() for m in (_ep.get("methods") or _methods)},
+                    "max_body_kb": _ep.get("max_body_kb"),
+                    "query_params": _ep.get("query_params") or {},
+                    "reject_unknown": bool(_ep.get("reject_unknown_params")),
+                    # Per-endpoint defaults_override : merges on top of host's
+                    # effective defaults at request time so you can relax (or
+                    # tighten) e.g. max_path_segment_length for ONE URL only
+                    # without affecting siblings.
+                    "defaults_override": _ep.get("defaults_override") or {},
+                })
+            _hp["_endpoints"] = _eps
+    except Exception as exc:
+        # Any failure during load OR rebuild (parse, schema mismatch, regex
+        # compile) — keep last-good globals on reload, deny-all on very first
+        # load. All-or-nothing commit : if we can't build the FULL new state
+        # cleanly, don't mutate any global (avoids half-updated state where
+        # e.g. DOMAINS is new but BLOCKED_HEADER_RES is old).
+        print(f"[policy_enforce] load {POLICY_PATH} failed: {exc}", file=sys.stderr)
+        if POLICY:
+            return
+        POLICY = {"defaults": {}, "domains": {}, "runtime": {"policy_enforce_enabled": True}}
+        DEFAULTS, DOMAINS, RUNTIME, BLOCKED_HEADER_RES = {}, {}, POLICY["runtime"], []
+        return
+
+    POLICY = _new
+    DEFAULTS = _new_defaults
+    DOMAINS = _new_domains
+    RUNTIME = _new_runtime
+    BLOCKED_HEADER_RES = _new_blocked_hdrs
+
+
+def _reload_if_stale() -> None:
+    """Cheap per-request mtime check. Reloads policy globals when
+    policy.compiled.yaml has changed on disk. Safe against concurrent writers
+    because compile-policy.py uses atomic_write() (rename bumps mtime
+    atomically ; readers see either old-full or new-full, never partial)."""
+    global _POLICY_MTIME_NS
+    try:
+        mt = os.stat(POLICY_PATH).st_mtime_ns
+    except OSError:
+        return
+    if _POLICY_MTIME_NS != mt:
+        _load_policy()
+        _POLICY_MTIME_NS = mt
+
+
+_load_policy()
+try:
+    _POLICY_MTIME_NS = os.stat(POLICY_PATH).st_mtime_ns
+except OSError:
+    _POLICY_MTIME_NS = None
 
 
 def _find_host_policy(host: str):
@@ -205,6 +263,7 @@ def _validate_query_params(flow: http.HTTPFlow, schema: dict, reject_unknown: bo
 
 
 def request(flow: http.HTTPFlow) -> None:
+    _reload_if_stale()
     if not RUNTIME.get("policy_enforce_enabled", True):
         return
     try:

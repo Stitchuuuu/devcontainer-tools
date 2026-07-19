@@ -13,6 +13,7 @@ first 64 KB of body to bound CPU on large uploads.
 
 import base64
 import json
+import os
 import re
 import sys
 import time
@@ -27,20 +28,54 @@ POLICY_PATH = "/var/run/devcontainer-firewall/policy.compiled.yaml"
 BLOCKS_LOG = "/var/log/mitmproxy-blocks.log"
 ADDON_NAME = "format_detect"
 
-try:
-    with open(POLICY_PATH) as _f:
-        _POLICY = _YAML.load(_f) or {}
-except Exception as _exc:
-    print(f"[format_detect] FATAL loading {POLICY_PATH}: {_exc}", file=sys.stderr)
-    _POLICY = {}
-
-_DEFAULTS = _POLICY.get("defaults", {}) or {}
-BLOCK_MAGIC = bool(_DEFAULTS.get("block_archive_magic", True))
-BLOCK_B64 = bool(_DEFAULTS.get("block_archive_in_base64", True))
+# Policy-derived globals — repopulated by _load_policy() at import and refreshed
+# by _reload_if_stale() when policy.compiled.yaml mtime changes. Init defaults
+# below are fail-safe (block everything archive-y) in case the very first load
+# fails ; subsequent reload failures preserve the last-known-good values.
+BLOCK_MAGIC = True
+BLOCK_B64 = True
 # Fallback if policy_enforce.py didn't run first (or wasn't loaded). Normally
 # policy_enforce sets flow._enforcement_mode per-request based on host/endpoint
 # override resolution — we honour that when present.
-_DEFAULT_MODE = _DEFAULTS.get("enforcement_mode", "block")
+_DEFAULT_MODE = "block"
+_POLICY_MTIME_NS = None
+
+
+def _load_policy():
+    """Reload block flags from policy.compiled.yaml. Called at import and by
+    _reload_if_stale() when the file mtime changes. On failure, keep the
+    current globals (module-init defaults on first load, last-good on
+    reload) and log the exception."""
+    global BLOCK_MAGIC, BLOCK_B64, _DEFAULT_MODE
+    try:
+        with open(POLICY_PATH) as _f:
+            _pol = _YAML.load(_f) or {}
+    except Exception as exc:
+        print(f"[format_detect] load {POLICY_PATH} failed: {exc}", file=sys.stderr)
+        return
+    _defaults = _pol.get("defaults", {}) or {}
+    BLOCK_MAGIC = bool(_defaults.get("block_archive_magic", True))
+    BLOCK_B64 = bool(_defaults.get("block_archive_in_base64", True))
+    _DEFAULT_MODE = _defaults.get("enforcement_mode", "block")
+
+
+def _reload_if_stale():
+    """Cheap per-request mtime check — mirror of policy_enforce."""
+    global _POLICY_MTIME_NS
+    try:
+        mt = os.stat(POLICY_PATH).st_mtime_ns
+    except OSError:
+        return
+    if _POLICY_MTIME_NS != mt:
+        _load_policy()
+        _POLICY_MTIME_NS = mt
+
+
+_load_policy()
+try:
+    _POLICY_MTIME_NS = os.stat(POLICY_PATH).st_mtime_ns
+except OSError:
+    _POLICY_MTIME_NS = None
 
 ARCHIVE_MAGIC = {
     b"PK\x03\x04": "zip",
@@ -115,6 +150,7 @@ def _block(flow: http.HTTPFlow, reason: str) -> None:
 
 
 def request(flow: http.HTTPFlow) -> None:
+    _reload_if_stale()
     try:
         if flow.request.method not in WRITE_METHODS:
             return
