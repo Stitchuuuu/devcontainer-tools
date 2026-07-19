@@ -207,7 +207,7 @@ pub fn parse_target(raw: &str) -> Result<CallbackTarget, CallbackParseError> {
         return Ok(CallbackTarget { kind: CallbackKind::Url, payload: rest.to_string() });
     }
     if let Some(rest) = raw.strip_prefix("file:") {
-        if !rest.starts_with('/') {
+        if !is_absolute_path(rest) {
             return Err(CallbackParseError::FileNotAbsolute(rest.to_string()));
         }
         return Ok(CallbackTarget { kind: CallbackKind::File, payload: rest.to_string() });
@@ -252,12 +252,41 @@ pub fn parse_target(raw: &str) -> Result<CallbackTarget, CallbackParseError> {
 
     let kind = if raw.starts_with("http://") || raw.starts_with("https://") {
         CallbackKind::Url
-    } else if raw.starts_with('/') {
+    } else if is_absolute_path(raw) {
         CallbackKind::File
     } else {
         CallbackKind::Hook
     };
     Ok(CallbackTarget { kind, payload: raw.to_string() })
+}
+
+/// Absolute-path check for the `file:` DSL, accepting both POSIX and Windows
+/// forms so the same wire format works on every backend :
+///
+/// - POSIX : leading `/`.
+/// - Windows drive-anchored : `X:\...` or `X:/...` (X = ASCII letter).
+/// - Windows UNC / device : leading `\\` (covers `\\server\share`,
+///   `\\?\C:\...`, `\\.\pipe\...`).
+///
+/// Drive-relative paths like `C:foo` (no separator after the colon) are
+/// deliberately *not* absolute — they depend on the current directory of the
+/// drive, which is a footgun in a callback context.
+fn is_absolute_path(s: &str) -> bool {
+    if s.starts_with('/') {
+        return true;
+    }
+    if s.starts_with(r"\\") {
+        return true;
+    }
+    let bytes = s.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    false
 }
 
 /// Which event fired a callback. Serialized to the [`CallbackPayload::event`]
@@ -620,6 +649,45 @@ mod tests {
             parse_target("file:relative/path"),
             Err(CallbackParseError::FileNotAbsolute(_)),
         ));
+    }
+
+    #[test]
+    fn parse_file_windows_drive_backslash_accepted() {
+        let t = parse_target(r"file:C:\Users\me\out.jsonl").unwrap();
+        assert_eq!(t.kind, CallbackKind::File);
+        assert_eq!(t.payload, r"C:\Users\me\out.jsonl");
+    }
+
+    #[test]
+    fn parse_file_windows_drive_forwardslash_accepted() {
+        let t = parse_target("file:C:/Users/me/out.jsonl").unwrap();
+        assert_eq!(t.kind, CallbackKind::File);
+        assert_eq!(t.payload, "C:/Users/me/out.jsonl");
+    }
+
+    #[test]
+    fn parse_file_windows_unc_accepted() {
+        let t = parse_target(r"file:\\server\share\out.jsonl").unwrap();
+        assert_eq!(t.kind, CallbackKind::File);
+        assert_eq!(t.payload, r"\\server\share\out.jsonl");
+    }
+
+    #[test]
+    fn parse_file_drive_relative_rejected() {
+        // `C:foo` (no separator after colon) is drive-relative on Windows and
+        // depends on the current working directory of that drive — refuse it
+        // since a callback should have a stable, portable location.
+        assert!(matches!(
+            parse_target(r"file:C:foo"),
+            Err(CallbackParseError::FileNotAbsolute(_)),
+        ));
+    }
+
+    #[test]
+    fn auto_detect_file_from_windows_path() {
+        let t = parse_target(r"C:\Users\me\out.jsonl").unwrap();
+        assert_eq!(t.kind, CallbackKind::File);
+        assert_eq!(t.to_wire(), r"file:C:\Users\me\out.jsonl");
     }
 
     #[test]
