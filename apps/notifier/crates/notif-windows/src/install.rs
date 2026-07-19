@@ -320,7 +320,7 @@ fn warmup_toast() -> Result<(), WindowsError> {
     let resolved = aumid::resolve_for_sender("default");
     match &resolved {
         ResolvedIdentity::Registered { aumid, .. } => {
-            match dispatch_send(&notif, aumid) {
+            match dispatch_send(&notif, aumid, &notif_core::callback::CallbackConfig::default()) {
                 Ok(()) => info!(target: "notif::install", "warmup toast fired"),
                 Err(e) => warn!(target: "notif::install", err = %e, "warmup toast failed (non-fatal)"),
             }

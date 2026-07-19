@@ -259,6 +259,17 @@ enum Command {
     /// in-use file can't be deleted from itself. The log line points at the
     /// path for manual cleanup.
     Uninstall,
+    /// Windows-only. Long-running COM local server invoked by Explorer via
+    /// the CLSID's `LocalServer32` registry key whenever the user clicks a
+    /// toast body or action button. Registers an
+    /// `INotificationActivationCallback` class factory per registered sender,
+    /// then blocks on a message loop; each activation reads the sidecar
+    /// under `%LOCALAPPDATA%\notif\callbacks\<id>.json`, fires the mapped
+    /// callback, appends the event to `%LOCALAPPDATA%\notif\actions-inbox\<sender>.jsonl`,
+    /// and deletes the sidecar. Not meant to be launched by humans in
+    /// steady state — Explorer spawns it as needed.
+    #[command(name = "activator-serve")]
+    ActivatorServe,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1134,12 +1145,22 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
             sender,
             priority,
             id,
+            on_click,
+            on_action,
+            on_dismiss,
+            on_timeout,
             ..
         } => {
             let sender_key = sender.unwrap_or_else(|| "default".to_string());
             let sender_obj = notif_core::Sender::new(sender_key)
                 .map_err(|e| anyhow::anyhow!("invalid --sender: {e}"))?;
             let resolved = notif_windows::aumid::resolve_for_sender(sender_obj.key.as_str());
+            let callbacks = notif_core::callback::CallbackConfig {
+                on_click,
+                on_actions: on_action,
+                on_dismiss,
+                on_timeout,
+            };
             let notif = notif_core::Notification {
                 title,
                 body,
@@ -1151,7 +1172,7 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
                 image: None,
                 on_timeout: None,
             };
-            notif_windows::dispatch_send(&notif, resolved.aumid())
+            notif_windows::dispatch_send(&notif, resolved.aumid(), &callbacks)
                 .map_err(|e| anyhow::anyhow!("send failed: {e}"))?;
             Ok(())
         }
@@ -1183,6 +1204,8 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("install failed: {e}")),
         Command::Uninstall => notif_windows::uninstall_self()
             .map_err(|e| anyhow::anyhow!("uninstall failed: {e}")),
+        Command::ActivatorServe => notif_windows::run_activator_serve()
+            .map_err(|e| anyhow::anyhow!("activator-serve failed: {e}")),
         other => run_stub(other),
     }
 }
@@ -1282,8 +1305,10 @@ fn run_stub(cmd: Command) -> Result<()> {
         Command::Remove { sender, id } => {
             println!("[stub] would remove: sender={sender}, id={id}, host={HOST}");
         }
-        Command::Install | Command::Uninstall => {
-            anyhow::bail!("`install` / `uninstall` are Windows-only subcommands");
+        Command::Install | Command::Uninstall | Command::ActivatorServe => {
+            anyhow::bail!(
+                "`install` / `uninstall` / `activator-serve` are Windows-only subcommands"
+            );
         }
     }
     Ok(())

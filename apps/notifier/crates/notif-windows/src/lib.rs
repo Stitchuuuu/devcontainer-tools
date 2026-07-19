@@ -14,7 +14,11 @@
 pub mod aumid;
 
 #[cfg(target_os = "windows")]
+mod activator;
+#[cfg(target_os = "windows")]
 mod backend;
+#[cfg(target_os = "windows")]
+mod callbacks;
 #[cfg(target_os = "windows")]
 mod dispatch;
 #[cfg(target_os = "windows")]
@@ -28,6 +32,8 @@ mod register;
 #[cfg(target_os = "windows")]
 mod remove;
 
+#[cfg(target_os = "windows")]
+pub use activator::run_activator_serve;
 #[cfg(target_os = "windows")]
 pub use backend::{WindowsBackend, WindowsError};
 #[cfg(target_os = "windows")]

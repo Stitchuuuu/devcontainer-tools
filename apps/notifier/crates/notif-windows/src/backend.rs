@@ -20,7 +20,11 @@ impl Backend for WindowsBackend {
     type Error = WindowsError;
 
     fn dispatch(&self, notif: &Notification) -> Result<(), Self::Error> {
-        crate::dispatch::dispatch_send(notif, &self.aumid)
+        crate::dispatch::dispatch_send(
+            notif,
+            &self.aumid,
+            &notif_core::callback::CallbackConfig::default(),
+        )
     }
 }
 

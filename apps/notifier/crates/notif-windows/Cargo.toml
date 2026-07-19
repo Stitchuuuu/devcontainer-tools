@@ -10,12 +10,15 @@ notif-core = { path = "../notif-core" }
 # invokes it before dispatching to the Windows backend, so it must compile on
 # every host, not just under `cfg(windows)`.
 sha2 = "0.11"
-uuid = { version = "1.24", features = ["v5"] }
+uuid = { version = "1.24", features = ["v4", "v5"] }
 hex = "0.4"
 
 # The rest of the Windows-only deps stay target-gated. On non-Windows targets
 # the backend impl is compiled out entirely.
 [target.'cfg(windows)'.dependencies]
+# `windows-core` re-declared as a direct dep so the `windows::core::implement`
+# proc-macro can resolve `::windows_core::*` items in its expansion.
+windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Data_Xml_Dom",
     "Foundation",
@@ -27,10 +30,14 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_System_Variant",
     "Win32_Security",
+    "Win32_UI_Notifications",
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
 ] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+time = { version = "0.3.53", features = ["formatting"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
