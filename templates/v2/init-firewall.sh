@@ -236,9 +236,11 @@ fi
 # See firewall/compile-policy.py for syntax + merge precedence.
 echo "📝 Compiling firewall policy from $FIREWALL_CONFIG_DIR..."
 mkdir -p "$(dirname "$GENERATED_DNSMASQ_CONF")"
-if [ "$FIREWALL_MODE" = "basic" ]; then
+if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
   # Split base/local so reload-local.sh can flush only the local layer
-  # without dropping baseline connections.
+  # without dropping baseline connections. In strict, the local flush
+  # spares baseline mitmproxy connections; the addons pick up the new
+  # policy.compiled.yaml via mtime check on their next request.
   python3 /usr/local/bin/compile-policy.py \
     --config-dir "$FIREWALL_CONFIG_DIR" \
     --split-local \
@@ -257,10 +259,10 @@ else
 fi
 
 # Route baseline dnsmasq injections (ollama alias, claude-bridge sibling,
-# direct-tcp-allow) to the base conf in basic split-mode, or to the legacy
-# combined conf in strict/off. These injections are all infrastructure
-# baseline (never user-managed local overrides), hence base group in basic.
-if [ "$FIREWALL_MODE" = "basic" ]; then
+# direct-tcp-allow) to the base conf in split-mode (basic + strict), or to
+# the legacy combined conf in off. These injections are all infrastructure
+# baseline (never user-managed local overrides), hence the base group.
+if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
   INJECT_DNSMASQ_CONF="$GENERATED_DNSMASQ_BASE_CONF"
 else
   INJECT_DNSMASQ_CONF="$GENERATED_DNSMASQ_CONF"
@@ -358,9 +360,11 @@ fi
 echo "🛰  Starting dnsmasq (local resolver on 127.0.0.53)..."
 
 # Empty ipset first — dnsmasq populates it on each successful resolution.
-# In basic mode we split into base + local so reload-local.sh can flush
-# only the local layer without touching baseline (see reload-local.sh).
-if [ "$FIREWALL_MODE" = "basic" ]; then
+# In split-mode (basic + strict) we split into base + local so
+# reload-local.sh can flush only the local layer without touching baseline
+# (see reload-local.sh). In strict, the base group also spares in-flight
+# mitmproxy connections to baseline hosts during the flush.
+if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
   ipset create allowed-domains-base  hash:ip family inet timeout 3600
   ipset create allowed-domains-local hash:ip family inet timeout 3600
 else
@@ -385,7 +389,7 @@ fi
 # chain (in the generated dnsmasq.conf above) still routes client queries
 # transparently ; this just ensures the firewall accepts the resulting packet.
 if [ -n "$HOST_DOCKER_IP" ]; then
-  if [ "$FIREWALL_MODE" = "basic" ]; then
+  if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
     # Host gateway is infrastructure baseline — always in the base group.
     ipset add allowed-domains-base "$HOST_DOCKER_IP" timeout 0 2>/dev/null || true
     dbg "  ipset add allowed-domains-base $HOST_DOCKER_IP timeout 0  (host gateway — dnsmasq doesn't notify on local synth)"
@@ -411,7 +415,7 @@ fi
 
 if [ -n "$DNSMASQ_USER" ]; then
   DNSMASQ_UID=$(id -u "$DNSMASQ_USER")
-  if [ "$FIREWALL_MODE" = "basic" ]; then
+  if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
@@ -425,7 +429,7 @@ if [ -n "$DNSMASQ_USER" ]; then
   fi
 else
   DNSMASQ_UID=""
-  if [ "$FIREWALL_MODE" = "basic" ]; then
+  if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
@@ -594,8 +598,11 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 if [ "$MODE" = "strict" ] && [ -n "$MITMPROXY_UID" ]; then
   # Force-proxy : only mitmproxy can reach allowlisted hosts directly. Other
   # UIDs (node) must go through 127.0.0.1:8080 (loopback ACCEPTed above) where
-  # mitmproxy proxies the request and re-emits it from its own UID.
-  iptables -A OUTPUT -m owner --uid-owner "$MITMPROXY_UID" -m set --match-set allowed-domains dst -j ACCEPT
+  # mitmproxy proxies the request and re-emits it from its own UID. Split
+  # into base + local so reload-local.sh can flush only the local group
+  # without dropping in-flight mitmproxy connections to baseline hosts.
+  iptables -A OUTPUT -m owner --uid-owner "$MITMPROXY_UID" -m set --match-set allowed-domains-base  dst -j ACCEPT
+  iptables -A OUTPUT -m owner --uid-owner "$MITMPROXY_UID" -m set --match-set allowed-domains-local dst -j ACCEPT
 elif [ "$MODE" = "basic" ]; then
   # Basic mode : any UID can reach allowlisted hosts directly. Split into
   # base + local so reload-local.sh can flush only the local group.
@@ -659,7 +666,7 @@ fi
   echo "=== nat ==="
   iptables -t nat -L -n -v --line-numbers
   echo
-  if [ "$MODE" = "basic" ]; then
+  if [ "$MODE" = "basic" ] || [ "$MODE" = "strict" ]; then
     echo "=== ipset allowed-domains-base ==="
     ipset list allowed-domains-base 2>/dev/null | head -30
     echo

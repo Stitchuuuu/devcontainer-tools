@@ -748,6 +748,82 @@ except Exception as e:
     print(f"      parse error: {e}; raw: {content!r}")
 case("POST appended one JSON line with expected fields", line_ok)
 
+# --- mtime-based reload tests ------------------------------------------------
+# Guards the zero-downtime reload mechanism : addons detect policy.compiled.yaml
+# changes via os.stat().st_mtime_ns at the start of every request() and re-run
+# _load_policy() when the mtime bumps.
+#
+# Run LAST so previous tests exercise the pristine POLICY loaded at import.
+# Reset the mtime tracking to the tmpdir path so subsequent _reload_if_stale()
+# calls stat the real fixture file instead of the production /var/run/... path
+# (which doesn't exist in the test env — os.stat there fails and returns early).
+print("mtime reload")
+
+policy_enforce.POLICY_PATH = policy_path
+policy_enforce._POLICY_MTIME_NS = os.stat(policy_path).st_mtime_ns
+format_detect.POLICY_PATH = policy_path
+format_detect._POLICY_MTIME_NS = os.stat(policy_path).st_mtime_ns
+
+# Test C — perf guard : two requests without touching the file must not reload.
+_load_calls = [0]
+_orig_load = policy_enforce._load_policy
+def _spy():
+    _load_calls[0] += 1
+    _orig_load()
+policy_enforce._load_policy = _spy
+
+f = mkflow("api.anthropic.com", "GET", "/v1/messages")
+policy_enforce.request(f)
+f = mkflow("api.anthropic.com", "GET", "/v1/messages")
+policy_enforce.request(f)
+case(f"no policy reload when mtime unchanged (perf guard) — spy count={_load_calls[0]}",
+     _load_calls[0] == 0)
+
+# Test A — mtime bump triggers reload : add a new domain to the YAML on disk,
+# next request() must recognize it (proving _reload_if_stale ran + _load_policy
+# rebuilt DOMAINS). Insert BEFORE `runtime:` so the new key stays under
+# `domains:` (appending after `runtime:` would nest under runtime instead).
+# open("w") rewrites → mtime bumps (nsec resolution on ext4).
+_new_domain_yaml = """  test-reload-domain.example.com:
+    allowed_methods: [GET]
+    paths: []
+
+runtime:"""
+new_yaml = POLICY_YAML.replace("runtime:", _new_domain_yaml, 1)
+with open(policy_path, "w") as fh:
+    fh.write(new_yaml)
+
+f = mkflow("test-reload-domain.example.com", "GET", "/")
+policy_enforce.request(f)
+case("mtime bump triggers reload — new domain now honored", f.response is None)
+case(f"reload was actually invoked (spy fired) — count={_load_calls[0]}",
+     _load_calls[0] == 1)
+
+# Test B — corrupt YAML on reload preserves last-known-good globals.
+# The domain we added in Test A must still be recognized (POLICY not wiped).
+# Use unclosed bracket : PyYAML raises ParserError (unlike "garbage text"
+# which is parsed as a plain scalar → schema mismatch, different path).
+with open(policy_path, "w") as fh:
+    fh.write("[unclosed")
+
+f = mkflow("test-reload-domain.example.com", "GET", "/")
+policy_enforce.request(f)
+case("corrupt YAML on reload : old globals preserved (domain still known)",
+     f.response is None)
+
+policy_enforce._load_policy = _orig_load
+
+# Test D — format_detect mtime bump : toggling block_archive_magic in the YAML
+# must flip BLOCK_MAGIC on next request(). Verifies the symmetric refactor
+# actually rewires format_detect's globals (not just policy_enforce's).
+with open(policy_path, "w") as fh:
+    fh.write(POLICY_YAML.replace("block_archive_magic: true", "block_archive_magic: false"))
+
+f = mkflow("api.anthropic.com", "POST", "/v1/files", content=b"PK\x03\x04rest-of-zip")
+format_detect.request(f)
+case("format_detect mtime bump : BLOCK_MAGIC=false → zip magic passes",
+     f.response is None)
+
 # --- Summary -----------------------------------------------------------------
 print()
 print(f"{PASS} passed, {FAIL} failed")

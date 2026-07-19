@@ -190,6 +190,74 @@ expect_eq "G2. policy.local.d host NOT in base" "$(has_host "$base_out" extra.lo
 
 rm -rf "$cfg" "$base_out" "$local_out"
 
+# --- H. Compiled policy YAML surfaces local hosts ---
+echo "▌ H. Compiled policy YAML surfaces local hosts"
+
+cfg=$(mktemp -d)
+mkdir -p "$cfg/domains.d" "$cfg/policy.d" "$cfg/policy.local.d"
+echo 'baseline.only.com' > "$cfg/domains.txt"
+echo '[GET, POST] extra.local.com' > "$cfg/domains.local.txt"
+
+base_out=$(mktemp); local_out=$(mktemp); pol_out=$(mktemp)
+python3 "$COMPILE" --config-dir "$cfg" \
+  --split-local \
+  --out-dnsmasq-base  "$base_out" \
+  --out-dnsmasq-local "$local_out" \
+  --out-policy        "$pol_out" >/dev/null 2>&1
+
+yaml_ok=$(python3 -c "import yaml; yaml.safe_load(open('$pol_out')); print('ok')" 2>/dev/null || echo "fail")
+expect_eq "H1. compiled YAML parses"                        "$yaml_ok"    "ok"
+
+has_local=$(python3 -c "import yaml; d=yaml.safe_load(open('$pol_out')); print('yes' if 'extra.local.com' in (d.get('domains') or {}) else 'no')" 2>/dev/null || echo "no")
+expect_eq "H2. compiled domains contains local host"        "$has_local"  "yes"
+
+has_base=$(python3 -c "import yaml; d=yaml.safe_load(open('$pol_out')); print('yes' if 'baseline.only.com' in (d.get('domains') or {}) else 'no')" 2>/dev/null || echo "no")
+expect_eq "H3. compiled domains contains baseline host"     "$has_base"   "yes"
+
+methods_ok=$(python3 -c "import yaml; d=yaml.safe_load(open('$pol_out')); m=(d.get('domains') or {}).get('extra.local.com', {}).get('allowed_methods') or []; print('yes' if ('GET' in m and 'POST' in m) else 'no')" 2>/dev/null || echo "no")
+expect_eq "H4. local allowed_methods contain GET+POST"      "$methods_ok" "yes"
+
+rm -rf "$cfg" "$base_out" "$local_out" "$pol_out"
+
+# --- I. Atomic mtime bump on recompile ---
+echo "▌ I. Atomic mtime bump on recompile"
+
+cfg=$(mktemp -d)
+mkdir -p "$cfg/domains.d" "$cfg/policy.d" "$cfg/policy.local.d"
+echo 'baseline.only.com' > "$cfg/domains.txt"
+echo 'extra.local.com' > "$cfg/domains.local.txt"
+
+out_dir=$(mktemp -d)
+pol_out="$out_dir/policy.compiled.yaml"
+i_base_out="$out_dir/dnsmasq-domains-base.conf"
+i_local_out="$out_dir/dnsmasq-domains-local.conf"
+
+run_compile() {
+  python3 "$COMPILE" --config-dir "$cfg" \
+    --split-local \
+    --out-dnsmasq-base  "$i_base_out" \
+    --out-dnsmasq-local "$i_local_out" \
+    --out-policy        "$pol_out" >/dev/null 2>&1
+}
+
+run_compile
+mtime1=$(python3 -c "import os; print(os.stat('$pol_out').st_mtime_ns)")
+sha1=$(grep -v '^# Generated-at:' "$pol_out" | sha256sum | awk '{print $1}')
+sleep 0.01
+run_compile
+mtime2=$(python3 -c "import os; print(os.stat('$pol_out').st_mtime_ns)")
+sha2=$(grep -v '^# Generated-at:' "$pol_out" | sha256sum | awk '{print $1}')
+
+if [ "$mtime2" -gt "$mtime1" ]; then bump="yes"; else bump="no"; fi
+expect_eq "I1. mtime_ns bumps on recompile"            "$bump" "yes"
+
+tmp_leftovers=$(ls "$out_dir"/*.tmp 2>/dev/null | wc -l | tr -d ' ')
+expect_eq "I2. no leftover .tmp in output dir"         "$tmp_leftovers" "0"
+
+expect_eq "I3. two runs produce identical bytes (sans timestamp)" "$sha2" "$sha1"
+
+rm -rf "$cfg" "$out_dir"
+
 echo
 echo "═══════════════════════════════════════════════════════"
 echo "  Tests : $((PASS+FAIL)) | ✔ $PASS | ❌ $FAIL"
