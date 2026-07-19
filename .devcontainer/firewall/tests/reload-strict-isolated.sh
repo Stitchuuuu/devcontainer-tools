@@ -10,24 +10,33 @@
 # NOT invoked from inside the running devcontainer — it needs docker to spawn
 # a peer container next to the caller.
 #
+# Builds a DEDICATED, non-cached base + project image pair per run to test
+# A→Z from Dockerfile.base + templates/v2/Dockerfile. Does not touch the
+# developer's live claude-devcontainer-base tag. Cleaned up on exit.
+#
 # Usage (workspace root):
 #   bash .devcontainer/firewall/tests/reload-strict-isolated.sh
 #
-# Success: exit 0, zero "❌" lines, "__END__" sentinel, PID_BEFORE=PID_AFTER,
-# 10 "✔" assertions.
+# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 11 "✔"
+# assertions. Any failed assertion increments a FAIL counter and the script
+# exits 1 at the end — silence is not success.
 
 set -uo pipefail
 
 WORKSPACE_HOST_ROOT="${WORKSPACE_HOST_ROOT:-$(pwd)}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.145}"
-DC_PROJECT="${DC_PROJECT:-devcontainer-tools}"
-BASE_TAG="claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}"
+
+FRESH_VERSION="e2e-$$-$(date +%s)"
+FRESH_PROJECT="fw-strict-test"
+BASE_TAG="claude-devcontainer-base:${FRESH_VERSION}-${FRESH_PROJECT}"
 IMG_TAG="fw-reload-strict-test:$(date +%s)"
 NET_NAME="fw-reload-strict-net-$$"
 CONTAINER="firewall-reload-strict-$$"
 
 DOMAINS_LOCAL_HOST="$WORKSPACE_HOST_ROOT/.devcontainer/firewall/domains.local.txt"
 DOMAINS_LOCAL_SNAPSHOT=""
+
+FAIL=0
+fail() { echo "  ❌ $*"; FAIL=$((FAIL + 1)); }
 
 if [ ! -d "$WORKSPACE_HOST_ROOT/.devcontainer" ]; then
   echo "❌ FATAL: no .devcontainer/ at $WORKSPACE_HOST_ROOT" >&2
@@ -37,54 +46,71 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "❌ FATAL: docker CLI not found" >&2
   exit 1
 fi
+if [ ! -f "$WORKSPACE_HOST_ROOT/.devcontainer/Dockerfile.base" ]; then
+  echo "❌ FATAL: .devcontainer/Dockerfile.base missing — cannot A→Z build" >&2
+  exit 1
+fi
+if [ ! -f "$WORKSPACE_HOST_ROOT/templates/v2/Dockerfile" ]; then
+  echo "❌ FATAL: templates/v2/Dockerfile missing — cannot build project layer" >&2
+  exit 1
+fi
 
-# Trap early so a preflight failure below still triggers cleanup of the
-# snapshot even though nothing else exists yet.
 cleanup() {
   echo
   echo "═══ Cleanup ═══"
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker network rm "$NET_NAME" >/dev/null 2>&1 || true
-  docker rmi "$IMG_TAG" >/dev/null 2>&1 || true
-  # Restore workspace domains.local.txt from the pre-test snapshot. This
-  # protects the developer's own uncommitted allowlist entries.
+  docker rmi "$IMG_TAG"  >/dev/null 2>&1 || true
+  docker rmi "$BASE_TAG" >/dev/null 2>&1 || true
   if [ -n "$DOMAINS_LOCAL_SNAPSHOT" ] && [ -f "$DOMAINS_LOCAL_SNAPSHOT" ]; then
     cp -a "$DOMAINS_LOCAL_SNAPSHOT" "$DOMAINS_LOCAL_HOST" 2>/dev/null || true
     rm -f "$DOMAINS_LOCAL_SNAPSHOT"
   fi
-  echo "  ✔ container + network + image removed, domains.local.txt restored"
+  echo "  ✔ container + network + images removed, domains.local.txt restored"
 }
 trap 'cleanup; echo "__END__"' EXIT
 
-# Snapshot BEFORE any mutation so trap EXIT always has a clean restore point.
 if [ -f "$DOMAINS_LOCAL_HOST" ]; then
   DOMAINS_LOCAL_SNAPSHOT="$(mktemp -t domains.local.txt.snap.XXXXXX)"
   cp -a "$DOMAINS_LOCAL_HOST" "$DOMAINS_LOCAL_SNAPSHOT"
   echo "  ✔ domains.local.txt snapshot: $DOMAINS_LOCAL_SNAPSHOT"
 fi
 
-echo "═══ [Setup 1/3] Verify base image + build project layer ═══"
+echo "═══ [Setup 1/4] Build dedicated non-cached base image ═══"
+echo "  base tag: $BASE_TAG  (--no-cache, ~5-10 min on cold apt)"
+docker build --no-cache --progress=plain \
+  -t "$BASE_TAG" \
+  -f "$WORKSPACE_HOST_ROOT/.devcontainer/Dockerfile.base" \
+  --build-arg CLAUDE_CODE_VERSION="$FRESH_VERSION" \
+  --build-arg TZ="${TZ:-UTC}" \
+  "$WORKSPACE_HOST_ROOT/.devcontainer/" 2>&1 | tail -25 | sed 's/^/    /'
 if ! docker image inspect "$BASE_TAG" >/dev/null 2>&1; then
-  echo "  ❌ base image '$BASE_TAG' not found — run bash .devcontainer/initialize.sh first" >&2
+  echo "  ❌ dedicated base build FAILED — see output above" >&2
   exit 1
 fi
-echo "  ✔ base cached: $BASE_TAG"
+echo "  ✔ dedicated base built: $BASE_TAG"
 
-docker build --progress=plain \
-  --build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION" \
-  --build-arg "DC_PROJECT=$DC_PROJECT" \
+echo
+echo "═══ [Setup 2/4] Build project layer (non-cached) ═══"
+docker build --no-cache --progress=plain \
   -t "$IMG_TAG" \
   -f "$WORKSPACE_HOST_ROOT/templates/v2/Dockerfile" \
-  "$WORKSPACE_HOST_ROOT/.devcontainer/" 2>&1 | sed 's/^/    /'
+  --build-arg CLAUDE_CODE_VERSION="$FRESH_VERSION" \
+  --build-arg DC_PROJECT="$FRESH_PROJECT" \
+  "$WORKSPACE_HOST_ROOT/.devcontainer/" 2>&1 | tail -20 | sed 's/^/    /'
+if ! docker image inspect "$IMG_TAG" >/dev/null 2>&1; then
+  echo "  ❌ project layer build FAILED — see output above" >&2
+  exit 1
+fi
 echo "  ✔ project layer built: $IMG_TAG"
 
 echo
-echo "═══ [Setup 2/3] Create isolated Docker network ═══"
+echo "═══ [Setup 3/4] Create isolated Docker network ═══"
 docker network create "$NET_NAME" >/dev/null
 echo "  ✔ network created: $NET_NAME"
 
 echo
-echo "═══ [Setup 3/3] Start container in strict mode ═══"
+echo "═══ [Setup 4/4] Start container in strict mode ═══"
 docker run -d \
   --name "$CONTAINER" \
   --network "$NET_NAME" \
@@ -124,9 +150,8 @@ fi
 if echo "$INIT_OUT" | grep -q 'Firewall ready (strict'; then
   echo "  ✔ strict marker present in init-firewall output"
 else
-  echo "  ❌ strict marker MISSING — init-firewall did not complete"
+  fail "strict marker MISSING — init-firewall did not complete"
 fi
-# Let dnsmasq settle after mitm-init.sh's own bind poll.
 sleep 1
 
 echo
@@ -135,12 +160,9 @@ PID_BEFORE=$(dex pgrep -x mitmdump | head -1 | tr -d '[:space:]')
 if [ -n "$PID_BEFORE" ]; then
   echo "  ✔ mitmdump PID=$PID_BEFORE"
 else
-  echo "  ❌ mitmdump not running — strict boot failed"
+  fail "mitmdump not running — strict boot failed"
 fi
 
-# Small helper: curl once with a retry to swallow transient DNS/mitm hiccups
-# on the very first request after boot. Prints "HTTP=<code>" and returns 0
-# always (assertions read the printed code).
 curl_code() {
   local method="$1"; shift
   local url="$1"; shift
@@ -159,17 +181,13 @@ echo
 echo "═══ [4] Baseline curl through mitmproxy — api.anthropic.com must PASS ═══"
 CODE=$(curl_code GET "https://api.anthropic.com/v1/models")
 if [ "$CODE" = "200" ] || [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
-  # 200 / 401 (no key) / 403 (rate-limit) all mean the request REACHED
-  # Anthropic — the L3+L7 stack cleared it. A DNS/policy block would
-  # surface as 000, 403+X-Block-Reason from mitmproxy, or 502.
-  # We treat any of these as baseline-OK.
   if [ "$CODE" = "200" ]; then
     echo "  ✔ baseline HTTP=200"
   else
     echo "  ✔ baseline reached upstream (HTTP=$CODE, treated as OK)"
   fi
 else
-  echo "  ❌ baseline HTTP=$CODE (expected 200/401/403 upstream response)"
+  fail "baseline HTTP=$CODE (expected 200/401/403 upstream response)"
 fi
 
 echo
@@ -179,13 +197,11 @@ CODE=$(dex curl -sS -m 15 -x http://127.0.0.1:8080 -o /dev/null \
 if [ "$CODE" = "403" ]; then
   echo "  ✔ example.org HTTP=403 (strict L7 rejected as expected)"
 else
-  echo "  ❌ example.org HTTP=$CODE (expected 403 from strict L7 addon)"
+  fail "example.org HTTP=$CODE (expected 403 from strict L7 addon)"
 fi
 
 echo
 echo "═══ [6] Append example.org to domains.local.txt + trigger reload ═══"
-# Write via the container so the mounted volume propagates back to host;
-# trap EXIT restores the snapshot regardless.
 dex sh -c 'printf "\n[GET,HEAD] example.org\n" >> /workspace/.devcontainer/firewall/domains.local.txt'
 echo "  ✔ domains.local.txt appended"
 
@@ -195,7 +211,7 @@ echo "$RELOAD_OUT" | sed 's/^/    /'
 if [ $RELOAD_RC -eq 0 ]; then
   echo "  ✔ reload-local.sh exited 0"
 else
-  echo "  ❌ reload-local.sh exit=$RELOAD_RC"
+  fail "reload-local.sh exit=$RELOAD_RC"
 fi
 
 echo
@@ -204,9 +220,9 @@ ELAPSED=$(echo "$RELOAD_OUT" | grep -oE 'elapsed: [0-9]+ms' | grep -oE '[0-9]+' 
 if [ -n "$ELAPSED" ] && [ "$ELAPSED" -lt 500 ]; then
   echo "  ✔ elapsed=${ELAPSED}ms (< 500ms budget)"
 elif [ -n "$ELAPSED" ]; then
-  echo "  ❌ elapsed=${ELAPSED}ms (over 500ms budget)"
+  fail "elapsed=${ELAPSED}ms (over 500ms budget)"
 else
-  echo "  ❌ elapsed line not parseable from reload output"
+  fail "elapsed line not parseable from reload output"
 fi
 
 echo
@@ -215,7 +231,7 @@ CODE=$(curl_code GET "https://example.org")
 if [ "$CODE" = "200" ]; then
   echo "  ✔ example.org GET HTTP=200 (DNS + ipset + addon mtime-reload cooperated)"
 else
-  echo "  ❌ example.org GET HTTP=$CODE (expected 200 after reload)"
+  fail "example.org GET HTTP=$CODE (expected 200 after reload)"
 fi
 
 echo
@@ -225,7 +241,7 @@ CODE=$(dex curl -sS -m 15 -x http://127.0.0.1:8080 -o /dev/null \
 if [ "$CODE" = "403" ]; then
   echo "  ✔ example.org POST HTTP=403 (strict L7 method-policing fired)"
 else
-  echo "  ❌ example.org POST HTTP=$CODE (expected 403 method:POST)"
+  fail "example.org POST HTTP=$CODE (expected 403 method:POST)"
 fi
 
 echo
@@ -234,7 +250,7 @@ CODE=$(curl_code GET "https://api.anthropic.com/v1/models")
 if [ "$CODE" = "200" ] || [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
   echo "  ✔ baseline still reachable (HTTP=$CODE) — no regression"
 else
-  echo "  ❌ baseline regressed after reload (HTTP=$CODE)"
+  fail "baseline regressed after reload (HTTP=$CODE)"
 fi
 
 echo
@@ -243,8 +259,14 @@ PID_AFTER=$(dex pgrep -x mitmdump | head -1 | tr -d '[:space:]')
 if [ -n "$PID_AFTER" ] && [ "$PID_BEFORE" = "$PID_AFTER" ]; then
   echo "  ✔ mitmdump PID=$PID_AFTER (unchanged — addon mtime-reload in-place)"
 else
-  echo "  ❌ mitmdump PID_BEFORE=$PID_BEFORE PID_AFTER=$PID_AFTER (process restarted)"
+  fail "mitmdump PID_BEFORE=$PID_BEFORE PID_AFTER=$PID_AFTER (process restarted)"
 fi
 
 echo
 echo "═══ FULL VALIDATION COMPLETE ═══"
+if [ "$FAIL" -gt 0 ]; then
+  echo "❌ VALIDATION FAILED — $FAIL assertion(s) failed"
+  exit 1
+fi
+echo "✔ VALIDATION PASSED"
+exit 0
