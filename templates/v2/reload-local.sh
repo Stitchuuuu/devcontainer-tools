@@ -6,6 +6,11 @@
 # it doesn't re-parse --conf-file). Baseline (`allowed-domains-base`) and
 # its iptables ACCEPT rule stay untouched — active connections keep flowing.
 #
+# Root-only by design. Sudo passwordless is intentionally NOT baked into
+# /etc/sudoers.d because it would let any node-uid process mutate the
+# firewall allowlist. Elevation goes through docker exec -u 0 from the
+# host (or `wtf firewall reload` which auto-detects the app container).
+#
 # Usage:  sudo .devcontainer/reload-local.sh
 #
 # In strict mode this script refuses to run — the mitmproxy L7 layer
@@ -45,9 +50,15 @@ if [ "$MODE" != "basic" ]; then
 fi
 
 # 2. Root required for /etc/, /var/run/, ipset, and dnsmasq restart.
+# Sudo passwordless is intentionally NOT configured — that would let any
+# node-uid process mutate the allowlist. Elevation MUST go through
+# docker exec -u 0 from the host (or `wtf firewall reload` which wraps
+# the same call — see .devcontainer/.wtfcmd.yaml).
 if [ "$(id -u)" -ne 0 ]; then
   echo "❌ reload-local.sh must run as root (touches ipset + dnsmasq + $SYSTEM_FW_DIR)" >&2
-  echo "   Use: sudo $0" >&2
+  echo "   From the host:   docker exec -u 0 <container> $0" >&2
+  echo "   From the host:   wtf firewall reload  (auto-detects the container)" >&2
+  echo "   (sudo passwordless refused by design — see script header)" >&2
   exit 1
 fi
 

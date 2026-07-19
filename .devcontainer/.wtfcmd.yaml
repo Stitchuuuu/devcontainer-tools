@@ -1,0 +1,37 @@
+# Devcontainer-scoped wtf commands.
+# Discovered by wtf when the caller's cwd is inside .devcontainer/ or a
+# subdir ; walks up 10 parents but does NOT descend, so callers in
+# /workspace/ (root) only see the top-level .wtfcmd.yaml.
+
+# ---- firewall — hot-reload the local layer without rebuild --------------
+# Basic mode only. Wall-guard refuses strict (mitmproxy L7 reload TBD).
+# Root-only by design : sudo passwordless is intentionally NOT baked (that
+# would let any node-uid process mutate the allowlist). Elevation happens
+# via `docker exec -u 0` which requires host-side docker socket access.
+#
+# Runs from the HOST : auto-detects the "app" service container of the
+# compose project rooted at .devcontainer/docker-compose.yml. Inside the
+# container (as node) the docker CLI + socket are usually not available,
+# so the fallback errors out with a clear instruction.
+
+- group: firewall
+  name: reload
+  desc: |
+    Hot-reload the local firewall layer (basic mode only, sub-500ms).
+    Auto-detects the compose "app" container, elevates via
+    docker exec -u 0. Run from a shell with docker access (host).
+  cwd: ./
+  cmd: |
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "wtf firewall reload: docker CLI not available in this shell." >&2
+      echo "  Root elevation requires docker exec -u 0 from the host." >&2
+      exit 1
+    fi
+    container=$(docker compose ps -q app 2>/dev/null | head -1)
+    if [ -z "$container" ]; then
+      echo "wtf firewall reload: no running 'app' service found." >&2
+      echo "  Expected via: docker compose -f .devcontainer/docker-compose.yml ps app" >&2
+      exit 1
+    fi
+    echo "-> docker exec -u 0 into $container"
+    docker exec -u 0 "$container" /workspace/.devcontainer/reload-local.sh

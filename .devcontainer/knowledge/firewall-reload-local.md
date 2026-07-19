@@ -23,11 +23,33 @@ hetzner.com
 [GET] example.internal.io/api/*
 ```
 
-Then, inside the container as root :
+Root-only by design (see security note below). Invoke via one of :
 
 ```
-sudo .devcontainer/reload-local.sh
+wtf firewall reload
 ```
+
+Runs from the host, auto-detects the compose `app` container, elevates
+via `docker exec -u 0`. Convenience wrapper for the direct form :
+
+```
+docker exec -u 0 <container> /workspace/.devcontainer/reload-local.sh
+```
+
+## Why root-only via docker exec (no sudo)
+
+Sudo passwordless is intentionally NOT configured for `reload-local.sh`
+(unlike `init-firewall.sh` and `test-firewall.sh`, which are baked into
+`/etc/sudoers.d/node-firewall`). Reason: `reload-local.sh` MUTATES the
+allowlist based on files in `.devcontainer/firewall/` (which node writes
+during normal editing). Allowing node-uid to trigger it passwordless
+would let any process running as node inject arbitrary hosts into the
+firewall allowlist — a supply-chain / lateral-movement risk.
+
+Root elevation via `docker exec -u 0` requires host-side docker socket
+access (which is a trust boundary controlled by the host user), so the
+attack surface is scoped to whoever already controls the host docker
+daemon.
 
 Expected output — sub-500 ms :
 
