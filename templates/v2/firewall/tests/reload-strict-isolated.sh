@@ -191,14 +191,26 @@ else
 fi
 
 echo
-echo "═══ [5] Pre-reload — example.org must 403 (host_not_in_policy) ═══"
+echo "═══ [5] Pre-reload — example.org must be blocked (L3 DNS or L7 403) ═══"
+# In strict, dnsmasq NXDOMAINs non-allowlisted hosts, so mitmproxy fails
+# upstream resolution → curl reports "000" (L3 block) before the addon's
+# host_not_in_policy path can fire. If mitmproxy's connection_strategy is
+# lazy on a given platform, the L7 addon returns 403 instead. Either
+# outcome proves the pre-reload blocked state.
 CODE=$(dex curl -sS -m 15 -x http://127.0.0.1:8080 -o /dev/null \
   -w "%{http_code}" -X GET https://example.org 2>/dev/null || echo "000")
-if [ "$CODE" = "403" ]; then
-  echo "  ✔ example.org HTTP=403 (strict L7 rejected as expected)"
-else
-  fail "example.org HTTP=$CODE (expected 403 from strict L7 addon)"
-fi
+CODE="${CODE:0:3}"
+case "$CODE" in
+  403)
+    echo "  ✔ example.org HTTP=403 (L7 addon rejected)"
+    ;;
+  000|502|504)
+    echo "  ✔ example.org HTTP=$CODE (L3 DNS/gateway blocked)"
+    ;;
+  *)
+    fail "example.org HTTP=$CODE (expected 000 L3, 403 L7, or 502/504 gateway)"
+    ;;
+esac
 
 echo
 echo "═══ [6] Append example.org to domains.local.txt + trigger reload ═══"
