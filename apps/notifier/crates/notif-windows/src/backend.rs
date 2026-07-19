@@ -28,7 +28,7 @@ impl Backend for WindowsBackend {
 /// or a precondition check that failed before we even reached the WinRT layer.
 #[derive(Debug)]
 pub struct WindowsError {
-    context: &'static str,
+    context: std::borrow::Cow<'static, str>,
     source: Option<windows::core::Error>,
 }
 
@@ -37,7 +37,13 @@ impl WindowsError {
     /// (e.g. `"ToastNotificationManager::CreateToastNotifierWithId"`) so the
     /// resulting log line points at the exact frame.
     pub fn with_context(context: &'static str, source: windows::core::Error) -> Self {
-        Self { context, source: Some(source) }
+        Self { context: std::borrow::Cow::Borrowed(context), source: Some(source) }
+    }
+
+    /// Build from a non-WinRT precondition failure (missing env var, I/O
+    /// error, etc.). Displays as the message alone — no HRESULT frame.
+    pub fn plain(msg: impl Into<String>) -> Self {
+        Self { context: std::borrow::Cow::Owned(msg.into()), source: None }
     }
 }
 
@@ -51,7 +57,7 @@ impl std::fmt::Display for WindowsError {
                 e.code().0 as u32,
                 e.message(),
             ),
-            None => f.write_str(self.context),
+            None => f.write_str(&self.context),
         }
     }
 }

@@ -246,6 +246,19 @@ enum Command {
         #[arg(long)]
         id: String,
     },
+    /// Windows-only zero-installer flow. Copy the running binary into
+    /// `%LOCALAPPDATA%\notif\`, add that dir to the user `Path` (broadcasts
+    /// `WM_SETTINGCHANGE` so new shells pick it up without logoff), register
+    /// the reserved `default` sender, then fire a warmup toast to prove the
+    /// pipeline works under the freshly minted AUMID. Idempotent — safe to
+    /// re-run.
+    Install,
+    /// Windows-only. Reverse `install` : remove the PATH entry, purge every
+    /// registered sender (`.lnk` + CLSID + manifest), delete the icon cache.
+    /// The binary at `%LOCALAPPDATA%\notif\notif.exe` is left in place — an
+    /// in-use file can't be deleted from itself. The log line points at the
+    /// path for manual cleanup.
+    Uninstall,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -684,6 +697,9 @@ fn run_macos(cmd: Command) -> Result<()> {
                 Ok(())
             }
         }
+        Command::Install | Command::Uninstall => {
+            bail!("`install` / `uninstall` are Windows-only subcommands")
+        }
     }
 }
 
@@ -1109,11 +1125,6 @@ fn format_dry_run(
 #[cfg(target_os = "windows")]
 fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
     notif_windows::init_logging(verbose, quiet);
-    // Tier 1 spoof AUMID until session 2 materializes our own via `.lnk` +
-    // CLSID registration. `Microsoft.VisualStudioCode` is universally present
-    // on any host that has VS Code installed ; the toast appears under the
-    // "Visual Studio Code" attribution in Action Center.
-    const AUMID: &str = "Microsoft.VisualStudioCode";
 
     match cmd {
         Command::Send {
@@ -1128,6 +1139,7 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
             let sender_key = sender.unwrap_or_else(|| "default".to_string());
             let sender_obj = notif_core::Sender::new(sender_key)
                 .map_err(|e| anyhow::anyhow!("invalid --sender: {e}"))?;
+            let resolved = notif_windows::aumid::resolve_for_sender(sender_obj.key.as_str());
             let notif = notif_core::Notification {
                 title,
                 body,
@@ -1139,15 +1151,38 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
                 image: None,
                 on_timeout: None,
             };
-            notif_windows::dispatch_send(&notif, AUMID)
+            notif_windows::dispatch_send(&notif, resolved.aumid())
                 .map_err(|e| anyhow::anyhow!("send failed: {e}"))?;
             Ok(())
         }
         Command::Remove { sender, id } => {
-            notif_windows::dispatch_remove(&sender, &id, AUMID)
+            let resolved = notif_windows::aumid::resolve_for_sender(&sender);
+            notif_windows::dispatch_remove(&sender, &id, resolved.aumid())
                 .map(|_| ())
                 .map_err(|e| anyhow::anyhow!("remove failed: {e}"))
         }
+        Command::Register { sender, name, icon, identifier: _ } => {
+            let sender_obj = notif_core::Sender::new(sender)
+                .map_err(|e| anyhow::anyhow!("invalid --sender: {e}"))?;
+            let reg = notif_windows::register_sender(
+                sender_obj.key.as_str(),
+                &name,
+                icon.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!("register failed: {e}"))?;
+            println!(
+                "registered: sender={} aumid={} clsid={} lnk={}",
+                reg.sender_key,
+                reg.aumid,
+                notif_windows::aumid::clsid_string(&reg.clsid),
+                reg.lnk_path.display(),
+            );
+            Ok(())
+        }
+        Command::Install => notif_windows::install_self()
+            .map_err(|e| anyhow::anyhow!("install failed: {e}")),
+        Command::Uninstall => notif_windows::uninstall_self()
+            .map_err(|e| anyhow::anyhow!("uninstall failed: {e}")),
         other => run_stub(other),
     }
 }
@@ -1246,6 +1281,9 @@ fn run_stub(cmd: Command) -> Result<()> {
         }
         Command::Remove { sender, id } => {
             println!("[stub] would remove: sender={sender}, id={id}, host={HOST}");
+        }
+        Command::Install | Command::Uninstall => {
+            anyhow::bail!("`install` / `uninstall` are Windows-only subcommands");
         }
     }
     Ok(())

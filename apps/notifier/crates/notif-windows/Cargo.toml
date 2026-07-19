@@ -6,16 +6,31 @@ license.workspace = true
 
 [dependencies]
 notif-core = { path = "../notif-core" }
+# `aumid::derive_*` (SHA-256 + UUID v5) is cross-platform pure Rust — the CLI
+# invokes it before dispatching to the Windows backend, so it must compile on
+# every host, not just under `cfg(windows)`.
+sha2 = "0.11"
+uuid = { version = "1.24", features = ["v5"] }
+hex = "0.4"
 
-# All real Windows deps are target-gated. On non-Windows targets the crate is
-# essentially empty (Backend impl compiled out), so pulling `windows` /
-# `tracing` into the Linux/macOS build tree would just add work for nothing.
+# The rest of the Windows-only deps stay target-gated. On non-Windows targets
+# the backend impl is compiled out entirely.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Data_Xml_Dom",
     "Foundation",
     "Foundation_Collections",
     "UI_Notifications",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Environment",
+    "Win32_System_Registry",
+    "Win32_System_Variant",
+    "Win32_Security",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
