@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# reload-strict-isolated.sh — E2E: strict-mode hot-reload preserves mitmdump
+# reload-strict-isolated.sh — E2E: strict-mode hot-reload + port-gate contract
 #
-# HOST-RUNNABLE ONLY. Spawns a scoped Docker container from the host (docker
-# CLI on the outside), runs init-firewall.sh in strict, drives curl through
-# the live mitmproxy, triggers reload-local.sh, and asserts the zero-downtime
-# contract: same mitmdump PID before/after, sub-500ms reload, no baseline
-# regression, and L7 method-policing still fires on the newly added host.
+# HOST-RUNNABLE ONLY. Spawns a scoped Docker container from the host, runs
+# init-firewall.sh in strict, drives curl through the live mitmproxy, triggers
+# reload-local.sh, and asserts the zero-downtime contract PLUS the sibling
+# port-gate + host.docker.internal isolation contract.
 #
-# NOT invoked from inside the running devcontainer — it needs docker to spawn
-# a peer container next to the caller.
+# Setup builds a DEDICATED, non-cached base + project image pair per run to
+# test A→Z from Dockerfile.base + templates/v2/Dockerfile. Also spawns a
+# busybox portal-test sibling (httpd on :4242 + :4241) on the same docker
+# network, and a Node mini-server on the host port 8765 (via host.docker.
+# internal). Does not touch the developer's live claude-devcontainer-base
+# tag. Cleaned up on exit.
 #
-# Builds a DEDICATED, non-cached base + project image pair per run to test
-# A→Z from Dockerfile.base + templates/v2/Dockerfile. Does not touch the
-# developer's live claude-devcontainer-base tag. Cleaned up on exit.
+# NOT invoked from inside the running devcontainer — needs docker on host
+# and node on host.
 #
 # Usage (workspace root):
 #   bash .devcontainer/firewall/tests/reload-strict-isolated.sh
 #
-# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 11 "✔"
+# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 14 "✔"
 # assertions. Any failed assertion increments a FAIL counter and the script
 # exits 1 at the end — silence is not success.
 
@@ -31,6 +33,9 @@ BASE_TAG="claude-devcontainer-base:${FRESH_VERSION}-${FRESH_PROJECT}"
 IMG_TAG="fw-reload-strict-test:$(date +%s)"
 NET_NAME="fw-reload-strict-net-$$"
 CONTAINER="firewall-reload-strict-$$"
+PORTAL="portal-test-$$"
+HOST_PORT="8765"
+HOST_SRV_PID=""
 
 DOMAINS_LOCAL_HOST="$WORKSPACE_HOST_ROOT/.devcontainer/firewall/domains.local.txt"
 DOMAINS_LOCAL_SNAPSHOT=""
@@ -46,6 +51,10 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "❌ FATAL: docker CLI not found" >&2
   exit 1
 fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "❌ FATAL: node not found on host — needed for host.docker.internal mini-server" >&2
+  exit 1
+fi
 if [ ! -f "$WORKSPACE_HOST_ROOT/.devcontainer/Dockerfile.base" ]; then
   echo "❌ FATAL: .devcontainer/Dockerfile.base missing — cannot A→Z build" >&2
   exit 1
@@ -58,7 +67,9 @@ fi
 cleanup() {
   echo
   echo "═══ Cleanup ═══"
+  [ -n "$HOST_SRV_PID" ] && kill "$HOST_SRV_PID" 2>/dev/null || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$PORTAL"    >/dev/null 2>&1 || true
   docker network rm "$NET_NAME" >/dev/null 2>&1 || true
   docker rmi "$IMG_TAG"  >/dev/null 2>&1 || true
   docker rmi "$BASE_TAG" >/dev/null 2>&1 || true
@@ -66,7 +77,7 @@ cleanup() {
     cp -a "$DOMAINS_LOCAL_SNAPSHOT" "$DOMAINS_LOCAL_HOST" 2>/dev/null || true
     rm -f "$DOMAINS_LOCAL_SNAPSHOT"
   fi
-  echo "  ✔ container + network + images removed, domains.local.txt restored"
+  echo "  ✔ host mini-server + containers + network + images removed, domains.local.txt restored"
 }
 trap 'cleanup; echo "__END__"' EXIT
 
@@ -76,7 +87,7 @@ if [ -f "$DOMAINS_LOCAL_HOST" ]; then
   echo "  ✔ domains.local.txt snapshot: $DOMAINS_LOCAL_SNAPSHOT"
 fi
 
-echo "═══ [Setup 1/4] Build dedicated non-cached base image ═══"
+echo "═══ [Setup 1/6] Build dedicated non-cached base image ═══"
 echo "  base tag: $BASE_TAG  (--no-cache, ~5-10 min on cold apt)"
 docker build --no-cache --progress=plain \
   -t "$BASE_TAG" \
@@ -91,7 +102,7 @@ fi
 echo "  ✔ dedicated base built: $BASE_TAG"
 
 echo
-echo "═══ [Setup 2/4] Build project layer (non-cached) ═══"
+echo "═══ [Setup 2/6] Build project layer (non-cached) ═══"
 docker build --no-cache --progress=plain \
   -t "$IMG_TAG" \
   -f "$WORKSPACE_HOST_ROOT/templates/v2/Dockerfile" \
@@ -105,12 +116,46 @@ fi
 echo "  ✔ project layer built: $IMG_TAG"
 
 echo
-echo "═══ [Setup 3/4] Create isolated Docker network ═══"
+echo "═══ [Setup 3/6] Create isolated Docker network ═══"
 docker network create "$NET_NAME" >/dev/null
 echo "  ✔ network created: $NET_NAME"
 
 echo
-echo "═══ [Setup 4/4] Start container in strict mode ═══"
+echo "═══ [Setup 4/6] Start portal-test sibling (busybox httpd :4242 + :4241) ═══"
+docker run -d --name "$PORTAL" \
+  --network "$NET_NAME" \
+  --network-alias portal-test \
+  --entrypoint sh \
+  busybox -c '
+    mkdir -p /w4242 /w4241
+    echo "portal 4242 OK" > /w4242/index.html
+    echo "portal 4241 OK" > /w4241/index.html
+    httpd -f -p 0.0.0.0:4242 -h /w4242 &
+    httpd -f -p 0.0.0.0:4241 -h /w4241 &
+    wait
+  ' >/dev/null
+sleep 0.5
+if docker ps -q -f "name=$PORTAL" | grep -q .; then
+  echo "  ✔ portal-test sibling running (aliases: portal-test:4242 + portal-test:4241)"
+else
+  echo "  ❌ portal-test sibling failed to start" >&2
+  exit 1
+fi
+
+echo
+echo "═══ [Setup 5/6] Spawn host mini-server on 0.0.0.0:$HOST_PORT (Node) ═══"
+node -e "require('http').createServer((_,res)=>res.end('host mini-server\n')).listen($HOST_PORT,'0.0.0.0',()=>console.error('listening'))" >/dev/null 2>&1 &
+HOST_SRV_PID=$!
+sleep 0.5
+if kill -0 "$HOST_SRV_PID" 2>/dev/null; then
+  echo "  ✔ host mini-server up (PID=$HOST_SRV_PID) — reachable via host.docker.internal:$HOST_PORT"
+else
+  echo "  ❌ host mini-server failed to start (PID=$HOST_SRV_PID died — port $HOST_PORT already bound?)" >&2
+  exit 1
+fi
+
+echo
+echo "═══ [Setup 6/6] Start test container in strict mode ═══"
 docker run -d \
   --name "$CONTAINER" \
   --network "$NET_NAME" \
@@ -124,20 +169,23 @@ echo "  ✔ container running: $CONTAINER"
 dex() { docker exec -u 0 "$CONTAINER" "$@"; }
 
 # ══════════════════════════════════════════════════════════════════════════
-# Test — strict-mode hot-reload contract
+# Test — strict-mode hot-reload contract + port-gate contract
 # ══════════════════════════════════════════════════════════════════════════
 
 echo
-echo "═══ [1] Install scripts + force strict mode ═══"
+echo "═══ [1] Install scripts + force strict mode + seed portal-test:4242 ═══"
 dex cp /workspace/.devcontainer/init-firewall.sh              /usr/local/bin/init-firewall.sh
 dex cp /workspace/.devcontainer/firewall/compile-policy.py    /usr/local/bin/compile-policy.py
 dex cp /workspace/.devcontainer/reload-local.sh               /usr/local/bin/reload-local.sh
 dex chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/compile-policy.py /usr/local/bin/reload-local.sh
 dex sh -c 'echo strict > /etc/devcontainer-firewall/default-mode'
+# Seed portal-test:4242 in the CONTAINER's direct-tcp-allow.txt (transient —
+# container-scoped, no workspace mutation, no snapshot needed).
+dex sh -c 'echo portal-test:4242 >> /etc/devcontainer-firewall/direct-tcp-allow.txt'
 # Precedent workaround for a `set -e` fragility in init-firewall's pgrep
 # pipeline when nothing matches. Carried verbatim.
 dex sed -i 's#| head -1)$#| head -1 || true)#' /usr/local/bin/init-firewall.sh
-echo "  ✔ strict mode + scripts installed"
+echo "  ✔ strict mode + scripts installed, portal-test:4242 seeded"
 
 echo
 echo "═══ [2] Boot strict-mode firewall (init-firewall.sh) ═══"
@@ -174,7 +222,16 @@ curl_code() {
     code=$(dex curl -sS -m 15 -x http://127.0.0.1:8080 -o /dev/null \
       -w "%{http_code}" -X "$method" "$url" 2>/dev/null || echo "000")
   fi
-  echo "$code"
+  echo "${code:0:3}"
+}
+
+# Direct curl (no proxy) — 3-char code normalization. For port-gate tests
+# where mitmproxy is not in the path (direct-tcp-allow bypasses L7).
+curl_direct() {
+  local url="$1"
+  local code
+  code=$(dex curl -sS -m 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  echo "${code:0:3}"
 }
 
 echo
@@ -195,8 +252,7 @@ echo "═══ [5] Pre-reload — example.org must be blocked (L3 DNS or L7 403
 # In strict, dnsmasq NXDOMAINs non-allowlisted hosts, so mitmproxy fails
 # upstream resolution → curl reports "000" (L3 block) before the addon's
 # host_not_in_policy path can fire. If mitmproxy's connection_strategy is
-# lazy on a given platform, the L7 addon returns 403 instead. Either
-# outcome proves the pre-reload blocked state.
+# lazy on a given platform, the L7 addon returns 403 instead.
 CODE=$(dex curl -sS -m 15 -x http://127.0.0.1:8080 -o /dev/null \
   -w "%{http_code}" -X GET https://example.org 2>/dev/null || echo "000")
 CODE="${CODE:0:3}"
@@ -250,6 +306,7 @@ echo
 echo "═══ [9] Post-reload strict L7 — example.org POST must 403 (method) ═══"
 CODE=$(dex curl -sS -m 15 -x http://127.0.0.1:8080 -o /dev/null \
   -w "%{http_code}" -X POST https://example.org 2>/dev/null || echo "000")
+CODE="${CODE:0:3}"
 if [ "$CODE" = "403" ]; then
   echo "  ✔ example.org POST HTTP=403 (strict L7 method-policing fired)"
 else
@@ -273,6 +330,49 @@ if [ -n "$PID_AFTER" ] && [ "$PID_BEFORE" = "$PID_AFTER" ]; then
 else
   fail "mitmdump PID_BEFORE=$PID_BEFORE PID_AFTER=$PID_AFTER (process restarted)"
 fi
+
+# ── Port-gate + host isolation contract ────────────────────────────────────
+
+echo
+echo "═══ [12] Port-gate — portal-test:4242 must PASS (per-port ACCEPT) ═══"
+CODE=$(curl_direct "http://portal-test:4242/")
+if [ "$CODE" = "200" ]; then
+  echo "  ✔ portal-test:4242 HTTP=200 (direct-tcp-allow ACCEPT before RFC1918 REJECT)"
+else
+  fail "portal-test:4242 HTTP=$CODE (expected 200 from direct-tcp-allow seed)"
+fi
+
+echo
+echo "═══ [13] Port-gate — portal-test:4241 must be BLOCKED (RFC1918 REJECT) ═══"
+CODE=$(curl_direct "http://portal-test:4241/")
+case "$CODE" in
+  000)
+    echo "  ✔ portal-test:4241 HTTP=000 (RFC1918 REJECT catches non-seeded ports)"
+    ;;
+  *)
+    fail "portal-test:4241 HTTP=$CODE (expected 000 — RFC1918 REJECT should catch)"
+    ;;
+esac
+
+echo
+echo "═══ [14] Host isolation — host.docker.internal:$HOST_PORT must be BLOCKED ═══"
+# Node mini-server on host binds 0.0.0.0:$HOST_PORT — reachable via
+# host.docker.internal from the container. Since host:$HOST_PORT is NOT in
+# direct-tcp-allow.txt, RFC1918 REJECT fires (host.docker.internal IP is
+# in a private range). The ipset ACCEPT for allowed-domains never gets
+# to trigger (would come after the REJECT anyway).
+CODE=$(curl_direct "http://host.docker.internal:$HOST_PORT/")
+case "$CODE" in
+  000)
+    echo "  ✔ host.docker.internal:$HOST_PORT HTTP=000 (RFC1918 REJECT — host isolated)"
+    ;;
+  200)
+    fail "host.docker.internal:$HOST_PORT HTTP=200 — host mini-server REACHED, isolation broken!"
+    ;;
+  *)
+    fail "host.docker.internal:$HOST_PORT HTTP=$CODE (expected 000 — RFC1918 REJECT should catch)"
+    ;;
+esac
 
 echo
 echo "═══ FULL VALIDATION COMPLETE ═══"

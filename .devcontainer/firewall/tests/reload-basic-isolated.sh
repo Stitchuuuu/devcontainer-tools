@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
-# reload-basic-isolated.sh — E2E: basic-mode hot-reload preserves baseline
+# reload-basic-isolated.sh — E2E: basic-mode hot-reload + port-gate contract
 #
-# HOST-RUNNABLE ONLY. Spawns a scoped Docker container from the host (docker
-# CLI on the outside), boots init-firewall.sh in basic mode (DNS + ipset only,
-# no mitmproxy L7), then drives direct curl through the firewall, triggers
-# reload-local.sh, and asserts:
+# HOST-RUNNABLE ONLY. Spawns a scoped Docker container from the host, boots
+# init-firewall.sh in basic mode (DNS + ipset only, no mitmproxy L7), drives
+# direct curl through the firewall, triggers reload-local.sh, and asserts:
 #   - baseline (allowlisted host) reaches upstream directly (no L7 proxy)
 #   - non-allowlisted host is blocked (dnsmasq NXDOMAIN → curl 000)
-#   - reload adds a new host in < 500 ms (matches strict-mode contract)
+#   - reload adds a new host in < 500 ms
 #   - allowed-domains-base ipset preserved across reload (baseline stays)
-#   - baseline still reachable post-reload (no regression)
+#   - baseline still reachable post-reload
+#   - portal-test:4242 direct TCP allowed (per-port ACCEPT works in basic too)
+#   - portal-test:4241 blocked (RFC1918 REJECT catches non-seeded ports)
+#   - host.docker.internal:HOST_PORT blocked (host isolation via RFC1918 REJECT)
+#
+# Setup also spawns a busybox portal-test sibling on the same network and a
+# Node mini-server on host port 8765 for the host isolation check.
 #
 # Sibling of reload-strict-isolated.sh — same base + project image build
 # pattern, same non-cached A→Z guarantee, different runtime assertions
-# because basic has NO L7 layer (no mitmproxy method-policing, no
-# host_not_in_policy 403 from an addon).
+# because basic has NO L7 layer (no method-policing, no host_not_in_policy
+# 403 from an addon).
 #
-# NOT invoked from inside the running devcontainer — needs docker on host.
-#
-# Builds a DEDICATED, non-cached base + project image pair per run.
-# Cleaned up on exit.
+# NOT invoked from inside the running devcontainer — needs docker on host
+# and node on host.
 #
 # Usage (workspace root):
 #   bash .devcontainer/firewall/tests/reload-basic-isolated.sh
 #
-# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 8 "✔"
+# Success: exit 0 (VALIDATION PASSED marker), "__END__" sentinel, 11 "✔"
 # assertions. Any failed assertion increments a FAIL counter and the script
 # exits 1 at the end — silence is not success.
 
@@ -38,6 +41,9 @@ BASE_TAG="claude-devcontainer-base:${FRESH_VERSION}-${FRESH_PROJECT}"
 IMG_TAG="fw-reload-basic-test:$(date +%s)"
 NET_NAME="fw-reload-basic-net-$$"
 CONTAINER="firewall-reload-basic-$$"
+PORTAL="portal-test-basic-$$"
+HOST_PORT="8766"
+HOST_SRV_PID=""
 
 DOMAINS_LOCAL_HOST="$WORKSPACE_HOST_ROOT/.devcontainer/firewall/domains.local.txt"
 DOMAINS_LOCAL_SNAPSHOT=""
@@ -53,6 +59,10 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "❌ FATAL: docker CLI not found" >&2
   exit 1
 fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "❌ FATAL: node not found on host — needed for host.docker.internal mini-server" >&2
+  exit 1
+fi
 if [ ! -f "$WORKSPACE_HOST_ROOT/.devcontainer/Dockerfile.base" ]; then
   echo "❌ FATAL: .devcontainer/Dockerfile.base missing — cannot A→Z build" >&2
   exit 1
@@ -65,7 +75,9 @@ fi
 cleanup() {
   echo
   echo "═══ Cleanup ═══"
+  [ -n "$HOST_SRV_PID" ] && kill "$HOST_SRV_PID" 2>/dev/null || true
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$PORTAL"    >/dev/null 2>&1 || true
   docker network rm "$NET_NAME" >/dev/null 2>&1 || true
   docker rmi "$IMG_TAG"  >/dev/null 2>&1 || true
   docker rmi "$BASE_TAG" >/dev/null 2>&1 || true
@@ -73,7 +85,7 @@ cleanup() {
     cp -a "$DOMAINS_LOCAL_SNAPSHOT" "$DOMAINS_LOCAL_HOST" 2>/dev/null || true
     rm -f "$DOMAINS_LOCAL_SNAPSHOT"
   fi
-  echo "  ✔ container + network + images removed, domains.local.txt restored"
+  echo "  ✔ host mini-server + containers + network + images removed, domains.local.txt restored"
 }
 trap 'cleanup; echo "__END__"' EXIT
 
@@ -83,7 +95,7 @@ if [ -f "$DOMAINS_LOCAL_HOST" ]; then
   echo "  ✔ domains.local.txt snapshot: $DOMAINS_LOCAL_SNAPSHOT"
 fi
 
-echo "═══ [Setup 1/4] Build dedicated non-cached base image ═══"
+echo "═══ [Setup 1/6] Build dedicated non-cached base image ═══"
 echo "  base tag: $BASE_TAG  (--no-cache, ~5-10 min on cold apt)"
 docker build --no-cache --progress=plain \
   -t "$BASE_TAG" \
@@ -98,7 +110,7 @@ fi
 echo "  ✔ dedicated base built: $BASE_TAG"
 
 echo
-echo "═══ [Setup 2/4] Build project layer (non-cached) ═══"
+echo "═══ [Setup 2/6] Build project layer (non-cached) ═══"
 docker build --no-cache --progress=plain \
   -t "$IMG_TAG" \
   -f "$WORKSPACE_HOST_ROOT/templates/v2/Dockerfile" \
@@ -112,12 +124,46 @@ fi
 echo "  ✔ project layer built: $IMG_TAG"
 
 echo
-echo "═══ [Setup 3/4] Create isolated Docker network ═══"
+echo "═══ [Setup 3/6] Create isolated Docker network ═══"
 docker network create "$NET_NAME" >/dev/null
 echo "  ✔ network created: $NET_NAME"
 
 echo
-echo "═══ [Setup 4/4] Start container in basic mode ═══"
+echo "═══ [Setup 4/6] Start portal-test sibling (busybox httpd :4242 + :4241) ═══"
+docker run -d --name "$PORTAL" \
+  --network "$NET_NAME" \
+  --network-alias portal-test \
+  --entrypoint sh \
+  busybox -c '
+    mkdir -p /w4242 /w4241
+    echo "portal 4242 OK" > /w4242/index.html
+    echo "portal 4241 OK" > /w4241/index.html
+    httpd -f -p 0.0.0.0:4242 -h /w4242 &
+    httpd -f -p 0.0.0.0:4241 -h /w4241 &
+    wait
+  ' >/dev/null
+sleep 0.5
+if docker ps -q -f "name=$PORTAL" | grep -q .; then
+  echo "  ✔ portal-test sibling running (aliases: portal-test:4242 + portal-test:4241)"
+else
+  echo "  ❌ portal-test sibling failed to start" >&2
+  exit 1
+fi
+
+echo
+echo "═══ [Setup 5/6] Spawn host mini-server on 0.0.0.0:$HOST_PORT (Node) ═══"
+node -e "require('http').createServer((_,res)=>res.end('host mini-server\n')).listen($HOST_PORT,'0.0.0.0',()=>console.error('listening'))" >/dev/null 2>&1 &
+HOST_SRV_PID=$!
+sleep 0.5
+if kill -0 "$HOST_SRV_PID" 2>/dev/null; then
+  echo "  ✔ host mini-server up (PID=$HOST_SRV_PID) — reachable via host.docker.internal:$HOST_PORT"
+else
+  echo "  ❌ host mini-server failed to start (PID=$HOST_SRV_PID died — port $HOST_PORT already bound?)" >&2
+  exit 1
+fi
+
+echo
+echo "═══ [Setup 6/6] Start test container in basic mode ═══"
 docker run -d \
   --name "$CONTAINER" \
   --network "$NET_NAME" \
@@ -131,20 +177,22 @@ echo "  ✔ container running: $CONTAINER"
 dex() { docker exec -u 0 "$CONTAINER" "$@"; }
 
 # ══════════════════════════════════════════════════════════════════════════
-# Test — basic-mode hot-reload contract
+# Test — basic-mode hot-reload contract + port-gate contract
 # ══════════════════════════════════════════════════════════════════════════
 
 echo
-echo "═══ [1] Install scripts + force basic mode ═══"
+echo "═══ [1] Install scripts + force basic mode + seed portal-test:4242 ═══"
 dex cp /workspace/.devcontainer/init-firewall.sh              /usr/local/bin/init-firewall.sh
 dex cp /workspace/.devcontainer/firewall/compile-policy.py    /usr/local/bin/compile-policy.py
 dex cp /workspace/.devcontainer/reload-local.sh               /usr/local/bin/reload-local.sh
 dex chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/compile-policy.py /usr/local/bin/reload-local.sh
 dex sh -c 'echo basic > /etc/devcontainer-firewall/default-mode'
-# Same set -e / pgrep fragility workaround carried from the precedent /
-# strict sibling.
+# Seed portal-test:4242 in the CONTAINER's direct-tcp-allow.txt (transient —
+# container-scoped, no workspace mutation, no snapshot needed).
+dex sh -c 'echo portal-test:4242 >> /etc/devcontainer-firewall/direct-tcp-allow.txt'
+# Same set -e / pgrep fragility workaround carried from the strict sibling.
 dex sed -i 's#| head -1)$#| head -1 || true)#' /usr/local/bin/init-firewall.sh
-echo "  ✔ basic mode + scripts installed"
+echo "  ✔ basic mode + scripts installed, portal-test:4242 seeded"
 
 echo
 echo "═══ [2] Boot basic-mode firewall (init-firewall.sh) ═══"
@@ -238,6 +286,49 @@ if [ "$CODE" = "200" ] || [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
 else
   fail "baseline regressed after reload (HTTP=$CODE) — allowed-domains-base flushed?"
 fi
+
+# ── Port-gate + host isolation contract ────────────────────────────────────
+
+echo
+echo "═══ [9] Port-gate — portal-test:4242 must PASS (per-port ACCEPT) ═══"
+CODE=$(curl_direct "http://portal-test:4242/")
+if [ "$CODE" = "200" ]; then
+  echo "  ✔ portal-test:4242 HTTP=200 (direct-tcp-allow ACCEPT before RFC1918 REJECT)"
+else
+  fail "portal-test:4242 HTTP=$CODE (expected 200 from direct-tcp-allow seed)"
+fi
+
+echo
+echo "═══ [10] Port-gate — portal-test:4241 must be BLOCKED (RFC1918 REJECT) ═══"
+CODE=$(curl_direct "http://portal-test:4241/")
+case "$CODE" in
+  000)
+    echo "  ✔ portal-test:4241 HTTP=000 (RFC1918 REJECT catches non-seeded ports)"
+    ;;
+  *)
+    fail "portal-test:4241 HTTP=$CODE (expected 000 — RFC1918 REJECT should catch)"
+    ;;
+esac
+
+echo
+echo "═══ [11] Host isolation — host.docker.internal:$HOST_PORT must be BLOCKED ═══"
+# Node mini-server on host binds 0.0.0.0:$HOST_PORT — reachable via
+# host.docker.internal from the container. Since host:$HOST_PORT is NOT in
+# direct-tcp-allow.txt, RFC1918 REJECT fires (host.docker.internal IP is
+# in a private range). The ipset ACCEPT for allowed-domains never gets
+# to trigger (would come after the REJECT anyway).
+CODE=$(curl_direct "http://host.docker.internal:$HOST_PORT/")
+case "$CODE" in
+  000)
+    echo "  ✔ host.docker.internal:$HOST_PORT HTTP=000 (RFC1918 REJECT — host isolated)"
+    ;;
+  200)
+    fail "host.docker.internal:$HOST_PORT HTTP=200 — host mini-server REACHED, isolation broken!"
+    ;;
+  *)
+    fail "host.docker.internal:$HOST_PORT HTTP=$CODE (expected 000 — RFC1918 REJECT should catch)"
+    ;;
+esac
 
 echo
 echo "═══ FULL VALIDATION COMPLETE ═══"
