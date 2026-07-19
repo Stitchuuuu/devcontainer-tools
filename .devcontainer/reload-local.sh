@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # reload-local.sh — Hot-reload the local firewall layer without rebuild.
 #
-# Runs in `basic` mode only (see wall-guard below). Flushes only the
-# `allowed-domains-local` ipset + restarts dnsmasq (SIGHUP is NOT enough,
-# it doesn't re-parse --conf-file). Baseline (`allowed-domains-base`) and
-# its iptables ACCEPT rule stay untouched — active connections keep flowing.
+# Runs in `basic` and `strict` modes (see wall-guard below). Flushes only
+# the `allowed-domains-local` ipset + restarts dnsmasq (SIGHUP is NOT
+# enough, it doesn't re-parse --conf-file). Baseline (`allowed-domains-base`)
+# and its iptables ACCEPT rule stay untouched — active connections keep
+# flowing.
+#
+# In strict, zero-downtime is a dual mechanism:
+#   1. This script recompiles policy.compiled.yaml via atomic_write() and
+#      flushes only the local ipset — baseline mitmproxy connections stay
+#      alive across the reload.
+#   2. mitmproxy addons (policy_enforce.py, format_detect.py) mtime-check
+#      policy.compiled.yaml on every request and reload it in-place when
+#      the file changes — no process restart, no SIGHUP.
 #
 # Root-only by design. Sudo passwordless is intentionally NOT baked into
 # /etc/sudoers.d because it would let any node-uid process mutate the
@@ -12,10 +21,6 @@
 # host (or `wtf firewall reload` which auto-detects the app container).
 #
 # Usage:  sudo .devcontainer/reload-local.sh
-#
-# In strict mode this script refuses to run — the mitmproxy L7 layer
-# requires a `policy.compiled.yaml` reload which isn't yet supported
-# out-of-rebuild. Fall back to `sudo devcontainer rebuild` for strict.
 
 set -uo pipefail
 
@@ -34,15 +39,16 @@ BASE_CONF="$RUNTIME_DIR/dnsmasq-domains-base.conf"
 LOCAL_CONF="$RUNTIME_DIR/dnsmasq-domains-local.conf"
 SYSTEM_DNSMASQ_CONF="$SYSTEM_FW_DIR/dnsmasq.conf"
 
-# 1. Wall-guard — refuse anything other than the literal string "basic".
+# 1. Wall-guard — accept 'basic' and 'strict', refuse everything else.
 MODE=""
 if [ -r "$DEFAULT_MODE_FILE" ]; then
   MODE=$(tr -d '[:space:]' < "$DEFAULT_MODE_FILE")
 fi
-if [ "$MODE" != "basic" ]; then
-  echo "❌ reload-local.sh runs in 'basic' firewall mode only. Current: '$MODE'" >&2
-  echo "   In strict mode, the mitmproxy L7 layer requires policy.compiled.yaml" >&2
-  echo "   reload — not yet supported. Rebuild the devcontainer instead." >&2
+if [ "$MODE" != "basic" ] && [ "$MODE" != "strict" ]; then
+  echo "❌ reload-local.sh runs in 'basic' or 'strict' firewall mode only. Current: '$MODE'" >&2
+  if [ "$MODE" = "off" ]; then
+    echo "   In 'off' mode there is no firewall to reload — nothing to do." >&2
+  fi
   if [ "$MODE" = "okeish" ]; then
     echo "   'okeish' is a removed legacy alias — update $DEFAULT_MODE_FILE to 'basic'." >&2
   fi
@@ -130,3 +136,6 @@ base_ips=$(ipset list allowed-domains-base  2>/dev/null | grep -cE '^([0-9]{1,3}
 local_ips=$(ipset list allowed-domains-local 2>/dev/null | grep -cE '^([0-9]{1,3}\.){3}[0-9]{1,3}'; true)
 
 echo "  elapsed: ${elapsed_ms}ms  |  hosts: base=${base_count} local=${local_count}  |  ipset IPs: base=${base_ips} local=${local_ips}"
+if [ "$MODE" = "strict" ]; then
+  echo "  ✔ mitmproxy addons reload policy.compiled.yaml via mtime-check (zero-downtime)"
+fi
