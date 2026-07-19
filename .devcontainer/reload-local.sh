@@ -37,6 +37,11 @@ DEFAULT_MODE_FILE="$SYSTEM_FW_DIR/default-mode"
 RUNTIME_DIR="/var/run/devcontainer-firewall"
 BASE_CONF="$RUNTIME_DIR/dnsmasq-domains-base.conf"
 LOCAL_CONF="$RUNTIME_DIR/dnsmasq-domains-local.conf"
+# Injections conf (ollama + claude-bridge + direct-tcp-allow DNS forwarders)
+# is written by init-firewall.sh once at boot and NOT regenerated here — so
+# reload preserves those DNS forwarders. Load it as an additional conf-file
+# on dnsmasq restart so name→IP mapping survives the reload.
+INJECTIONS_CONF="$RUNTIME_DIR/dnsmasq-injections.conf"
 SYSTEM_DNSMASQ_CONF="$SYSTEM_FW_DIR/dnsmasq.conf"
 
 # 1. Wall-guard — accept 'basic' and 'strict', refuse everything else.
@@ -118,12 +123,14 @@ if [ -n "$DNSMASQ_USER" ]; then
     --conf-file="$SYSTEM_DNSMASQ_CONF" \
     --conf-file="$BASE_CONF" \
     --conf-file="$LOCAL_CONF" \
+    --conf-file="$INJECTIONS_CONF" \
     --user="$DNSMASQ_USER"
 else
   dnsmasq \
     --conf-file="$SYSTEM_DNSMASQ_CONF" \
     --conf-file="$BASE_CONF" \
-    --conf-file="$LOCAL_CONF"
+    --conf-file="$LOCAL_CONF" \
+    --conf-file="$INJECTIONS_CONF"
 fi
 echo "  ✔ dnsmasq restarted (SIGHUP does NOT re-parse --conf-file)"
 

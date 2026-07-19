@@ -29,6 +29,10 @@ BLOCKED_TESTS="$FIREWALL_CONFIG_DIR/tests/blocked.txt"
 GENERATED_DNSMASQ_CONF="/var/run/devcontainer-firewall/dnsmasq-domains.conf"
 GENERATED_DNSMASQ_BASE_CONF="/var/run/devcontainer-firewall/dnsmasq-domains-base.conf"
 GENERATED_DNSMASQ_LOCAL_CONF="/var/run/devcontainer-firewall/dnsmasq-domains-local.conf"
+# Injections conf — init-firewall writes ollama, claude-bridge, and
+# direct-tcp-allow DNS forwarders here. Kept in its own file so
+# reload-local.sh's recompile of {base,local}.conf doesn't wipe them.
+GENERATED_DNSMASQ_INJECTIONS_CONF="/var/run/devcontainer-firewall/dnsmasq-injections.conf"
 GENERATED_POLICY_COMPILED="/var/run/devcontainer-firewall/policy.compiled.yaml"
 
 # -------------------------------
@@ -277,13 +281,22 @@ fi
 # `server=/ollama.{internal,local}/8.8.8.8` lines emitted by compile-policy.py
 # are stripped first : the cname directives handle resolution locally, so
 # upstream forwarding would only race and return NXDOMAIN.
+#
+# All injection blocks below write to GENERATED_DNSMASQ_INJECTIONS_CONF (a
+# separate file that reload-local.sh does NOT regenerate) rather than
+# INJECT_DNSMASQ_CONF (which gets rewritten by every recompile). The sed
+# strips still target INJECT_DNSMASQ_CONF because the compile-policy
+# output lives there.
+: > "$GENERATED_DNSMASQ_INJECTIONS_CONF"
+chmod 644 "$GENERATED_DNSMASQ_INJECTIONS_CONF"
+
 HOST_DOCKER_IP=$(dig +short +time=2 +tries=2 @127.0.0.11 host.docker.internal A 2>/dev/null \
                   | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | head -1)
 if [ -n "$HOST_DOCKER_IP" ]; then
   # Drop the auto-emitted `server=` lines for the two aliases — cname wins
   # locally but the duplicate forward rule clutters the conf.
   sed -i -E '/^server=\/ollama\.(internal|local)\//d' "$INJECT_DNSMASQ_CONF"
-  cat >> "$INJECT_DNSMASQ_CONF" <<EOF
+  cat >> "$GENERATED_DNSMASQ_INJECTIONS_CONF" <<EOF
 
 # Injected by init-firewall.sh — Ollama local backend (see knowledge/ollama-local.md).
 # local-ttl=3600 is REQUIRED for the ipset pipeline to work : without it,
@@ -311,7 +324,7 @@ fi
 # substitute Docker's embedded resolver (127.0.0.11) which DOES resolve the
 # service name from the compose graph. The auto-emitted ipset directive stays.
 sed -i -E '/^server=\/claude-bridge\//d' "$INJECT_DNSMASQ_CONF"
-cat >> "$INJECT_DNSMASQ_CONF" <<EOF
+cat >> "$GENERATED_DNSMASQ_INJECTIONS_CONF" <<EOF
 
 # Injected by init-firewall.sh — claude-bridge sidecar (UniClaudeProxy).
 server=/claude-bridge/127.0.0.11
@@ -343,7 +356,7 @@ if [ -f "$DIRECT_TCP_ALLOW" ]; then
     [ "$host" = "claude-bridge" ] && continue         # hardcoded above
     escaped="${host//./\\.}"             # escape dots for sed ERE
     sed -i -E "/^server=\\/${escaped}\\//d" "$INJECT_DNSMASQ_CONF"
-    cat >> "$INJECT_DNSMASQ_CONF" <<EOF
+    cat >> "$GENERATED_DNSMASQ_INJECTIONS_CONF" <<EOF
 
 # Injected by init-firewall.sh — sibling-resolve from direct-tcp-allow.txt.
 server=/${host}/127.0.0.11
@@ -420,11 +433,13 @@ if [ -n "$DNSMASQ_USER" ]; then
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
       --conf-file="$GENERATED_DNSMASQ_LOCAL_CONF" \
+      --conf-file="$GENERATED_DNSMASQ_INJECTIONS_CONF" \
       --user="$DNSMASQ_USER"
   else
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_CONF" \
+      --conf-file="$GENERATED_DNSMASQ_INJECTIONS_CONF" \
       --user="$DNSMASQ_USER"
   fi
 else
@@ -433,11 +448,13 @@ else
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
       --conf-file="$GENERATED_DNSMASQ_BASE_CONF" \
-      --conf-file="$GENERATED_DNSMASQ_LOCAL_CONF"
+      --conf-file="$GENERATED_DNSMASQ_LOCAL_CONF" \
+      --conf-file="$GENERATED_DNSMASQ_INJECTIONS_CONF"
   else
     dnsmasq \
       --conf-file="$FIREWALL_CONFIG_DIR/dnsmasq.conf" \
-      --conf-file="$GENERATED_DNSMASQ_CONF"
+      --conf-file="$GENERATED_DNSMASQ_CONF" \
+      --conf-file="$GENERATED_DNSMASQ_INJECTIONS_CONF"
   fi
   echo "⚠️  No dnsmasq/nobody user available — UDP/53 UID filter disabled"
 fi
