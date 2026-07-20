@@ -1,7 +1,11 @@
 use notif_core::{Backend, Notification};
 
-/// WinRT toast backend. Session 1 : dispatch only. Session 2+ will extend with
-/// callback IPC + focus solver via helper types stored on this struct.
+use crate::aumid::ResolvedIdentity;
+
+/// WinRT toast backend. Session 1 : dispatch only. Session 2+ extend via
+/// callback IPC + focus solver in `dispatch_send` directly ; this backend
+/// stays the minimal `Backend`-trait entry point for consumers that only
+/// need fire-and-forget dispatch with no click routing.
 pub struct WindowsBackend {
     /// AUMID under which toasts are dispatched. Session 1 uses a Tier 1 spoof
     /// like `Microsoft.VisualStudioCode` ; session 2 replaces it with a
@@ -20,9 +24,15 @@ impl Backend for WindowsBackend {
     type Error = WindowsError;
 
     fn dispatch(&self, notif: &Notification) -> Result<(), Self::Error> {
+        // Trait dispatch has no `CallbackConfig` in scope and no manifest
+        // lookup — treat every send as Fallback (no sidecar, no wait) so
+        // the pipeline stays fire-and-forget. Callers that need callback
+        // wiring should use [`crate::dispatch_send`] with a real
+        // [`ResolvedIdentity`] from [`crate::aumid::resolve_for_sender`].
+        let resolved = ResolvedIdentity::Fallback { aumid: self.aumid.clone() };
         crate::dispatch::dispatch_send(
             notif,
-            &self.aumid,
+            &resolved,
             &notif_core::callback::CallbackConfig::default(),
         )
     }

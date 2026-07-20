@@ -113,6 +113,14 @@ pub fn read_sidecar(notif_id: &str) -> Result<Option<Sidecar>, WindowsError> {
     }
 }
 
+/// Cheap `Path::exists()` check without parsing the sidecar. Used by the
+/// send-side `on_timeout` wait to skip firing when the activator already
+/// processed a click and removed the sidecar in the meantime.
+#[must_use]
+pub fn sidecar_exists(notif_id: &str) -> bool {
+    sidecar_path(notif_id).is_ok_and(|p| p.exists())
+}
+
 /// Best-effort sidecar delete after fire. Missing file is fine; other IO
 /// errors are logged and swallowed so the activator's exit path stays
 /// clean.

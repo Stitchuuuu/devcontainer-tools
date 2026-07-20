@@ -20,6 +20,8 @@ mod backend;
 #[cfg(target_os = "windows")]
 mod callbacks;
 #[cfg(target_os = "windows")]
+mod console;
+#[cfg(target_os = "windows")]
 mod dispatch;
 #[cfg(target_os = "windows")]
 mod install;
@@ -36,6 +38,8 @@ mod remove;
 pub use activator::run_activator_serve;
 #[cfg(target_os = "windows")]
 pub use backend::{WindowsBackend, WindowsError};
+#[cfg(target_os = "windows")]
+pub use console::attach_parent_console;
 #[cfg(target_os = "windows")]
 pub use dispatch::dispatch_send;
 #[cfg(target_os = "windows")]

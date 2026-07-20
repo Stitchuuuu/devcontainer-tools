@@ -15,25 +15,48 @@
 //! [`crate::register::write_lnk`] and required for the `GetMessageW` +
 //! `DispatchMessageW` loop that keeps class factories alive.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use notif_core::callback::{fire, CallbackEvent, CallbackPayload};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tracing::{debug, error, info, warn};
-use windows::core::{implement, IUnknown, Interface, Ref, GUID, PCWSTR};
-use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_OK};
+use windows::core::{implement, IUnknown, Interface, Ref, BOOL, GUID, PCWSTR};
+use windows::Win32::Foundation::{LPARAM, RPC_E_CHANGED_MODE, S_OK, WPARAM};
 use windows::Win32::System::Com::{
     CoInitializeEx, CoRegisterClassObject, CoResumeClassObjects, CoRevokeClassObject,
     CoUninitialize, IClassFactory, IClassFactory_Impl, CLSCTX_LOCAL_SERVER,
     COINIT_APARTMENTTHREADED, REGCLS_MULTIPLEUSE, REGCLS_SUSPENDED,
 };
-use windows::Win32::System::Console::{FreeConsole, GetConsoleWindow};
+use windows::Win32::System::Console::{
+    SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT,
+};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Notifications::{
     INotificationActivationCallback, INotificationActivationCallback_Impl,
     NOTIFICATION_USER_INPUT_DATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, ShowWindow, TranslateMessage, MSG, SW_HIDE,
+    DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MSG, WM_QUIT,
 };
+
+/// Main thread id stashed at server startup so the console-Ctrl handler
+/// (which runs on a Windows-owned worker thread) can post `WM_QUIT` back
+/// to the STA message loop for a clean `CoRevokeClassObject` teardown.
+static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> BOOL {
+    if ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT || ctrl_type == CTRL_CLOSE_EVENT
+    {
+        let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
+        if tid != 0 {
+            let _ = unsafe { PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        }
+        BOOL(1)
+    } else {
+        BOOL(0)
+    }
+}
 
 use crate::aumid;
 use crate::backend::WindowsError;
@@ -99,28 +122,12 @@ impl IClassFactory_Impl for NotifActivatorFactory_Impl {
 /// then revoke + uninitialize. Blocks until the message loop exits (Explorer
 /// sending `WM_QUIT`, the user killing the process, or a shutdown signal).
 pub fn run_activator_serve() -> Result<(), WindowsError> {
-    // When Windows launches us as a COM server via LocalServer32, it appends
-    // `-Embedding` to argv ; the CLI's `main` filters that flag out before
-    // clap sees it and sets `NOTIF_COM_EMBEDDED=1` as a side-channel. If
-    // that marker is present we hide + detach the console window Windows
-    // created for us — `notif.exe` is a console-subsystem binary, so
-    // without this the console flashes on the user's screen for the full
-    // lifetime of the message loop.
-    //
-    // We deliberately do NOT hide the console when the operator ran
-    // `notif activator-serve` manually from their own PowerShell / cmd —
-    // in that case `GetConsoleWindow` returns their terminal and we'd hide
-    // the shell out from under them.
-    if std::env::var("NOTIF_COM_EMBEDDED").ok().as_deref() == Some("1") {
-        unsafe {
-            let hwnd = GetConsoleWindow();
-            if !hwnd.is_invalid() {
-                let _ = ShowWindow(hwnd, SW_HIDE);
-            }
-            let _ = FreeConsole();
-        }
-    }
-
+    // `notif.exe` is compiled with `windows_subsystem = "windows"` so
+    // Explorer's `LocalServer32` cold-spawn never materializes a console
+    // for us in the first place — no `ShowWindow` / `FreeConsole` dance
+    // needed here. CLI subcommands that DO need stderr re-attach the
+    // parent shell's console at the `main` entry point via
+    // `attach_parent_console`.
     let senders = enumerate_senders();
     if senders.is_empty() {
         warn!(
@@ -183,6 +190,18 @@ pub fn run_activator_serve() -> Result<(), WindowsError> {
 
     unsafe { CoResumeClassObjects() }
         .map_err(|e| WindowsError::with_context("CoResumeClassObjects", e))?;
+
+    // Stash the STA thread id + install a console-Ctrl handler so
+    // Ctrl+C on a manual `activator-serve` posts `WM_QUIT` back here
+    // and the loop tears down cleanly (revoke each class-object cookie
+    // + `CoUninitialize`). Windows-spawned LocalServer32 processes have
+    // no console under the windows subsystem, so the handler is inert
+    // there — installed unconditionally for simplicity.
+    MAIN_THREAD_ID.store(unsafe { GetCurrentThreadId() }, Ordering::SeqCst);
+    if let Err(e) = unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), true) } {
+        warn!(target: "notif::activator", error = %e, "SetConsoleCtrlHandler failed; Ctrl+C teardown may be abrupt");
+    }
+
     info!(
         target: "notif::activator",
         registered = cookies.len(),
@@ -207,6 +226,12 @@ pub fn run_activator_serve() -> Result<(), WindowsError> {
             DispatchMessageW(&msg);
         }
     }
+
+    // Deregister the Ctrl handler before class-object revocation so a
+    // late Ctrl+C during teardown doesn't re-post `WM_QUIT` into the
+    // exiting message pump.
+    let _ = unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), false) };
+    MAIN_THREAD_ID.store(0, Ordering::SeqCst);
 
     for cookie in cookies {
         if let Err(e) = unsafe { CoRevokeClassObject(cookie) } {

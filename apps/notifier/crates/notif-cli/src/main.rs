@@ -3,6 +3,8 @@
 //! v0.1 delivers the macOS backend (Tier 0 + Tier 2). Windows and Linux ship
 //! stubs that will be filled in v0.3 and v0.4 respectively.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -143,7 +145,8 @@ enum Command {
         #[arg(long, value_parser = parse_callback_action)]
         on_action: Vec<(String, notif_core::callback::CallbackTarget)>,
         /// Fire when the user dismisses the banner. Same target shape as
-        /// `--on-click`.
+        /// `--on-click`. [Windows: accepted for schema parity but does not
+        /// fire — no long-lived subscription path yet, see rollout docs.]
         #[arg(long, value_parser = parse_callback_target)]
         on_dismiss: Option<notif_core::callback::CallbackTarget>,
         /// Fire when the OS auto-dismisses the banner. Callback target
@@ -286,22 +289,29 @@ fn main() -> Result<()> {
     // historical COM convention) to signal the process is running as a COM
     // server rather than a standalone app. Our clap CLI would reject it as
     // an unknown top-level flag and exit before `activator-serve` reaches
-    // `run_activator_serve` — filter it out here before clap sees argv, and
-    // stash a marker env var so the activator can distinguish an
-    // OS-initiated launch (needs its console hidden) from an operator
-    // running `notif activator-serve` manually (wants the logs).
+    // `run_activator_serve` — filter it out here before clap sees argv.
     // `/Embedding` (forward-slash form) is accepted too since some COM
     // stacks emit that instead. Harmless no-op on non-Windows hosts.
+    //
+    // We're compiled with `windows_subsystem = "windows"` so no console is
+    // ever created for us. CLI subcommands invoked from a terminal need
+    // stderr back — `AttachConsole(ATTACH_PARENT_PROCESS)` reconnects to
+    // the parent shell when there is one. Skip for `-Embedding` launches
+    // (COM server, no useful parent console).
     let raw_argv: Vec<String> = std::env::args().collect();
-    if raw_argv.iter().any(|a| a == "-Embedding" || a == "/Embedding") {
-        // SAFETY: single-threaded (pre-main setup), no other code observes
-        // the env yet.
-        unsafe { std::env::set_var("NOTIF_COM_EMBEDDED", "1"); }
+    let is_embedding = raw_argv
+        .iter()
+        .any(|a| a == "-Embedding" || a == "/Embedding");
+    #[cfg(target_os = "windows")]
+    if !is_embedding {
+        notif_windows::attach_parent_console();
     }
     let filtered_argv = raw_argv
         .into_iter()
         .filter(|a| a != "-Embedding" && a != "/Embedding");
     let cli = Cli::parse_from(filtered_argv);
+    #[cfg(not(target_os = "windows"))]
+    let _ = is_embedding;
 
     let env_quiet = std::env::var("NOTIF_QUIET").ok().as_deref() == Some("1");
     // NOTIF_LOG=<absolute-path> duplicates every stderr line into an
@@ -1191,7 +1201,7 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
                 image: None,
                 on_timeout: None,
             };
-            notif_windows::dispatch_send(&notif, resolved.aumid(), &callbacks)
+            notif_windows::dispatch_send(&notif, &resolved, &callbacks)
                 .map_err(|e| anyhow::anyhow!("send failed: {e}"))?;
             Ok(())
         }

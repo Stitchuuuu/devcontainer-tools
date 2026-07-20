@@ -1,44 +1,88 @@
-use notif_core::callback::CallbackConfig;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use notif_core::callback::{fire, CallbackConfig, CallbackEvent, CallbackPayload};
 use notif_core::Notification;
-use tracing::{debug, info};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+use tracing::{debug, info, warn};
 use windows::{
-    core::HSTRING,
+    core::{Ref, HSTRING},
     Data::Xml::Dom::XmlDocument,
-    UI::Notifications::{ToastNotification, ToastNotificationManager},
+    Foundation::TypedEventHandler,
+    UI::Notifications::{
+        ToastDismissalReason, ToastDismissedEventArgs, ToastFailedEventArgs, ToastNotification,
+        ToastNotificationManager,
+    },
 };
 
+use crate::aumid::ResolvedIdentity;
 use crate::backend::WindowsError;
-use crate::callbacks::{action_arguments, click_launch_attr, write_sidecar};
+use crate::callbacks::{
+    action_arguments, append_inbox, click_launch_attr, delete_sidecar, sidecar_exists,
+    write_sidecar,
+};
 use crate::priority::resolve_scenario;
+
+// Upper bound on how long `notif send` blocks after `Show` waiting for a
+// Dismissed / Failed event. Windows banner-timeout typically fires within
+// ~7 s (`ToastDismissalReason::TimedOut`), so 10 s is a comfortable margin.
+// Late dismisses (Action Center X after the banner leaves screen) can fire
+// at any point during the toast's lifetime and are NOT captured here —
+// see the session-3.5 scope note on `--on-dismiss`.
+const EVENT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Internal shuttle between the WinRT event-handler closures and the send
+/// thread's `recv_timeout` loop.
+#[derive(Debug, Clone, Copy)]
+enum WaitEvent {
+    Dismissed(ToastDismissalReason),
+    Failed,
+}
 
 pub fn dispatch_send(
     notif: &Notification,
-    aumid: &str,
+    resolved: &ResolvedIdentity,
     callbacks: &CallbackConfig,
 ) -> Result<(), WindowsError> {
     let start = std::time::Instant::now();
+    let aumid = resolved.aumid();
     let scenario = resolve_scenario(notif.priority);
     debug!(target: "notif::send", ?scenario, "resolved scenario");
 
+    // Callback wiring only works when the sender has a real CLSID registered
+    // (activator routes through it). On a Fallback identity the toast fires
+    // under the Tier 1 spoof AUMID and Windows never contacts us on click —
+    // any sidecar we write would be orphaned. Warn once, then treat the send
+    // as callback-less for the sidecar + wait paths.
+    let can_wire_callbacks = matches!(resolved, ResolvedIdentity::Registered { .. });
+    if !callbacks.is_empty() && !can_wire_callbacks {
+        warn!(
+            target: "notif::send",
+            sender = %notif.sender.key,
+            "callbacks disabled — sender not registered, toast fires under Tier 1 spoof AUMID",
+        );
+    }
+
     // Mint an id when the caller left it blank AND at least one callback is
-    // registered — the activator needs the id as the correlation key back to
-    // the sidecar. Without callbacks, id-less sends stay id-less (matches
-    // pre-session-3 behaviour).
+    // registered on a wire-capable identity — the activator needs the id as
+    // the correlation key back to the sidecar. Without callbacks, id-less
+    // sends stay id-less (matches pre-session-3 behaviour).
     let effective_id = notif
         .id
         .clone()
         .unwrap_or_else(|| {
-            if callbacks.is_empty() {
+            if callbacks.is_empty() || !can_wire_callbacks {
                 String::new()
             } else {
                 uuid::Uuid::new_v4().to_string()
             }
         });
 
-    let xml = build_toast_xml(notif, scenario, callbacks, &effective_id);
+    let xml = build_toast_xml(notif, scenario, callbacks, &effective_id, can_wire_callbacks);
     debug!(target: "notif::send", xml = %xml, "toast xml built");
 
-    if !callbacks.is_empty() {
+    if !callbacks.is_empty() && can_wire_callbacks {
         write_sidecar(&effective_id, notif.sender.key.as_str(), notif, callbacks)?;
     }
 
@@ -61,6 +105,41 @@ pub fn dispatch_send(
     toast
         .SetGroup(&hgroup)
         .map_err(|e| WindowsError::with_context("ToastNotification::SetGroup", e))?;
+
+    // Wire Dismissed + Failed handlers when we plan to wait — the only firing
+    // path in 3.5 is `on_timeout` (banner auto-dismiss). `on_dismiss`
+    // (user-driven UserCanceled) is deliberately skipped ; see scope note.
+    let wants_wait = can_wire_callbacks && callbacks.on_timeout.is_some();
+    let rx = if wants_wait {
+        let (tx, rx) = mpsc::sync_channel::<WaitEvent>(2);
+        let dismissed_tx = tx.clone();
+        let dismissed_handler: TypedEventHandler<ToastNotification, ToastDismissedEventArgs> =
+            TypedEventHandler::new(move |_sender, args: Ref<'_, ToastDismissedEventArgs>| {
+                if let Some(args) = args.as_ref() {
+                    let reason = args
+                        .Reason()
+                        .unwrap_or(ToastDismissalReason::ApplicationHidden);
+                    let _ = dismissed_tx.try_send(WaitEvent::Dismissed(reason));
+                }
+                Ok(())
+            });
+        toast
+            .Dismissed(&dismissed_handler)
+            .map_err(|e| WindowsError::with_context("ToastNotification::Dismissed subscribe", e))?;
+
+        let failed_tx = tx;
+        let failed_handler: TypedEventHandler<ToastNotification, ToastFailedEventArgs> =
+            TypedEventHandler::new(move |_sender, _args: Ref<'_, ToastFailedEventArgs>| {
+                let _ = failed_tx.try_send(WaitEvent::Failed);
+                Ok(())
+            });
+        toast
+            .Failed(&failed_handler)
+            .map_err(|e| WindowsError::with_context("ToastNotification::Failed subscribe", e))?;
+        Some(rx)
+    } else {
+        None
+    };
 
     let id_for_log = if effective_id.is_empty() {
         "<none>"
@@ -90,7 +169,81 @@ pub fn dispatch_send(
         elapsed_ms = start.elapsed().as_millis() as u64,
         "dispatched",
     );
+
+    if let Some(rx) = rx {
+        wait_for_lifecycle_event(&rx, notif, callbacks, &effective_id);
+    }
+
     Ok(())
+}
+
+/// Block up to [`EVENT_WAIT_TIMEOUT`] for a Dismissed or Failed event.
+/// Fires `on_timeout` when Windows reports `TimedOut`. Skips all other
+/// paths silently (see scope note on `--on-dismiss`).
+fn wait_for_lifecycle_event(
+    rx: &mpsc::Receiver<WaitEvent>,
+    notif: &Notification,
+    callbacks: &CallbackConfig,
+    notif_id: &str,
+) {
+    match rx.recv_timeout(EVENT_WAIT_TIMEOUT) {
+        Ok(WaitEvent::Dismissed(ToastDismissalReason::TimedOut)) => {
+            let Some(target) = &callbacks.on_timeout else { return };
+            if !sidecar_exists(notif_id) {
+                debug!(
+                    target: "notif::send",
+                    notif_id,
+                    "sidecar already gone (activator raced) — skip firing on_timeout",
+                );
+                return;
+            }
+            let payload = build_timeout_payload(notif, notif_id);
+            info!(
+                target: "notif::send",
+                notif_id,
+                "firing on_timeout",
+            );
+            let _ = fire(target, &payload);
+            if let Err(e) = append_inbox(&payload.sender, &payload) {
+                warn!(target: "notif::send", error = %e, "append_inbox failed");
+            }
+            delete_sidecar(notif_id);
+        }
+        Ok(WaitEvent::Dismissed(reason)) => {
+            debug!(
+                target: "notif::send",
+                ?reason,
+                "Dismissed event fired but not wired (only TimedOut fires callbacks in 3.5)",
+            );
+        }
+        Ok(WaitEvent::Failed) => {
+            warn!(target: "notif::send", "ToastNotification::Failed event fired");
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            debug!(
+                target: "notif::send",
+                notif_id,
+                "no lifecycle event within timeout; exiting normally",
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            debug!(target: "notif::send", "wait channel disconnected");
+        }
+    }
+}
+
+fn build_timeout_payload(notif: &Notification, notif_id: &str) -> CallbackPayload {
+    let ts = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| String::from("1970-01-01T00:00:00Z"));
+    CallbackPayload {
+        notif_id: notif_id.to_string(),
+        event: CallbackEvent::Timeout.to_wire(),
+        sender: notif.sender.key.as_str().to_string(),
+        title: notif.title.clone(),
+        body: notif.body.clone(),
+        ts,
+    }
 }
 
 fn build_toast_xml(
@@ -98,6 +251,7 @@ fn build_toast_xml(
     scenario: Option<&str>,
     callbacks: &CallbackConfig,
     notif_id: &str,
+    can_wire_callbacks: bool,
 ) -> String {
     let title = escape_xml_text(&notif.title);
     let body = escape_xml_text(&notif.body);
@@ -110,7 +264,8 @@ fn build_toast_xml(
     let scenario_attr = scenario
         .map(|s| format!(r#" scenario="{s}""#))
         .unwrap_or_default();
-    let launch_attr = if callbacks.on_click.is_some() && !notif_id.is_empty() {
+    let launch_attr = if can_wire_callbacks && callbacks.on_click.is_some() && !notif_id.is_empty()
+    {
         format!(
             r#" launch="{}" activationType="foreground""#,
             escape_xml_text(&click_launch_attr(notif_id)),
@@ -118,7 +273,10 @@ fn build_toast_xml(
     } else {
         String::new()
     };
-    let actions_block = if callbacks.on_actions.is_empty() || notif_id.is_empty() {
+    let actions_block = if !can_wire_callbacks
+        || callbacks.on_actions.is_empty()
+        || notif_id.is_empty()
+    {
         String::new()
     } else {
         let mut inner = String::new();
@@ -183,7 +341,7 @@ mod tests {
     #[test]
     fn basic_toast_shape() {
         let n = notif("hello", "world", None);
-        let xml = build_toast_xml(&n, None, &empty_callbacks(), "");
+        let xml = build_toast_xml(&n, None, &empty_callbacks(), "", true);
         assert!(xml.starts_with("<toast>"));
         assert!(xml.contains("<text>hello</text>"));
         assert!(xml.contains("<text>world</text>"));
@@ -196,7 +354,7 @@ mod tests {
     #[test]
     fn subtitle_inserted_between_title_and_body() {
         let n = notif("T", "B", Some("S"));
-        let xml = build_toast_xml(&n, None, &empty_callbacks(), "");
+        let xml = build_toast_xml(&n, None, &empty_callbacks(), "", true);
         let t_idx = xml.find("<text>T</text>").unwrap();
         let s_idx = xml.find("<text>S</text>").unwrap();
         let b_idx = xml.find("<text>B</text>").unwrap();
@@ -206,14 +364,14 @@ mod tests {
     #[test]
     fn scenario_attribute_when_set() {
         let n = notif("t", "b", None);
-        let xml = build_toast_xml(&n, Some("urgent"), &empty_callbacks(), "");
+        let xml = build_toast_xml(&n, Some("urgent"), &empty_callbacks(), "", true);
         assert!(xml.starts_with("<toast scenario=\"urgent\">"));
     }
 
     #[test]
     fn xml_escapes_special_chars() {
         let n = notif("A & B", "<script>", None);
-        let xml = build_toast_xml(&n, None, &empty_callbacks(), "");
+        let xml = build_toast_xml(&n, None, &empty_callbacks(), "", true);
         assert!(xml.contains("A &amp; B"));
         assert!(xml.contains("&lt;script&gt;"));
         assert!(!xml.contains("<script>"));
@@ -222,7 +380,7 @@ mod tests {
     #[test]
     fn empty_subtitle_omitted() {
         let n = notif("T", "B", Some(""));
-        let xml = build_toast_xml(&n, None, &empty_callbacks(), "");
+        let xml = build_toast_xml(&n, None, &empty_callbacks(), "", true);
         assert!(!xml.contains("<text></text>"));
     }
 
@@ -233,7 +391,7 @@ mod tests {
             on_click: Some(file_target("/tmp/x")),
             ..CallbackConfig::default()
         };
-        let xml = build_toast_xml(&n, None, &cb, "abc-123");
+        let xml = build_toast_xml(&n, None, &cb, "abc-123", true);
         assert!(
             xml.contains(r#"launch="body::abc-123""#),
             "expected launch attr, got {xml}",
@@ -252,7 +410,7 @@ mod tests {
             on_click: Some(file_target("/tmp/x")),
             ..CallbackConfig::default()
         };
-        let xml = build_toast_xml(&n, None, &cb, "");
+        let xml = build_toast_xml(&n, None, &cb, "", true);
         assert!(!xml.contains("launch="));
     }
 
@@ -266,7 +424,7 @@ mod tests {
             ],
             ..CallbackConfig::default()
         };
-        let xml = build_toast_xml(&n, None, &cb, "id-1");
+        let xml = build_toast_xml(&n, None, &cb, "id-1", true);
         let allow_idx = xml.find(r#"content="Allow""#).unwrap();
         let deny_idx = xml.find(r#"content="Deny""#).unwrap();
         assert!(allow_idx < deny_idx, "expected registration order preserved");
@@ -277,13 +435,26 @@ mod tests {
     }
 
     #[test]
+    fn no_callback_wiring_when_identity_is_fallback() {
+        let n = notif("T", "B", None);
+        let cb = CallbackConfig {
+            on_click: Some(file_target("/tmp/x")),
+            on_actions: vec![("Allow".into(), file_target("/tmp/a"))],
+            ..CallbackConfig::default()
+        };
+        let xml = build_toast_xml(&n, None, &cb, "id-1", false);
+        assert!(!xml.contains("launch="), "launch attr must not appear on Fallback");
+        assert!(!xml.contains("<actions>"), "actions block must not appear on Fallback");
+    }
+
+    #[test]
     fn action_labels_are_xml_escaped() {
         let n = notif("T", "B", None);
         let cb = CallbackConfig {
             on_actions: vec![("Yes & No".into(), file_target("/tmp/x"))],
             ..CallbackConfig::default()
         };
-        let xml = build_toast_xml(&n, None, &cb, "id-1");
+        let xml = build_toast_xml(&n, None, &cb, "id-1", true);
         assert!(xml.contains(r#"content="Yes &amp; No""#));
     }
 }
