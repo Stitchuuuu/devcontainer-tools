@@ -1189,6 +1189,7 @@ fn run_windows(cmd: Command, verbose: bool, quiet: bool) -> Result<()> {
                 sender_obj.key.as_str(),
                 &name,
                 icon.as_deref(),
+                None,
             )
             .map_err(|e| anyhow::anyhow!("register failed: {e}"))?;
             println!(

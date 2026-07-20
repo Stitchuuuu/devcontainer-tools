@@ -40,7 +40,13 @@ pub fn install_self() -> Result<(), WindowsError> {
     ensure_path_entry(&install_dir)?;
     broadcast_environment_change();
 
-    let reg = register::register_sender("default", "Notif", None)?;
+    // Pass `dest_exe` as the CLSID target — `register_sender`'s default
+    // fallback of `current_exe()` would point at the source location the
+    // user ran `notif install` from (e.g. `C:\TT\notif.exe`), which would
+    // still work as long as that file stayed put but is fragile the moment
+    // the user tidies up the source dir. LocalServer32 should track the
+    // canonical install-dir copy.
+    let reg = register::register_sender("default", "Notif", None, Some(&dest_exe))?;
     if reg.already_registered {
         info!(target: "notif::install", "default sender already registered");
     } else {

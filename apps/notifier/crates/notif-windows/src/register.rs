@@ -42,17 +42,24 @@ pub struct Registration {
 ///   with `AppUserModel.ID = derive_aumid(sender_key)` +
 ///   `AppUserModel.ToastActivatorCLSID = derive_clsid(sender_key)`.
 /// - Graves `HKCU\Software\Classes\CLSID\{clsid}\LocalServer32` pointing at
-///   the currently running executable (typically `%LOCALAPPDATA%\notif\notif.exe`
-///   after `--install`).
+///   `exe_override` when supplied, else `current_exe()`. `install_self` passes
+///   the destination path (`%LOCALAPPDATA%\notif\notif.exe`) so the CLSID
+///   doesn't outlive the source-directory location the user launched from.
 /// - Writes the manifest at `HKCU\Software\Notif\Senders\<sender-key>` so
 ///   `dispatch` and `uninstall` can resolve back to these values.
 ///
-/// Idempotent — a matching manifest + on-disk `.lnk` short-circuits the
-/// side effects.
+/// The CLSID `LocalServer32` value is **always rewritten** on every call —
+/// it's a single `REG_SZ` write, cheap, and it self-heals two classes of
+/// drift : a `notif` binary upgrade that landed at a different path, and a
+/// stale value from a prior `register_sender` build that hard-coded the
+/// wrong subcommand string. The `.lnk` + icon + manifest writes still
+/// short-circuit on manifest match to avoid the expensive
+/// `IShellLink::Save` round-trip.
 pub fn register_sender(
     sender_key: &str,
     display_name: &str,
     icon: Option<&Path>,
+    exe_override: Option<&Path>,
 ) -> Result<Registration, WindowsError> {
     // Local var is deliberately not called `display` — the tracing macros
     // import `tracing::field::display` unhygienically, and a `%display`
@@ -71,6 +78,19 @@ pub fn register_sender(
         lnk_path = %lnk_disp,
         "resolved identity",
     );
+
+    let exe: PathBuf = match exe_override {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_exe()
+            .map_err(|e| WindowsError::plain(format!("current_exe: {e}")))?,
+    };
+
+    // Rewrite the CLSID key on every call — cheap, idempotent, self-heals
+    // stale values (see fn doc). Runs BEFORE the manifest short-circuit so a
+    // returning caller with a matching manifest still gets a fresh
+    // LocalServer32 entry.
+    write_clsid_key(&clsid, &exe)?;
+    info!(target: "notif::register", clsid = %clsid_disp, exe = %exe.display(), "CLSID refreshed");
 
     if let Ok(Some(existing)) = aumid::win::read_manifest(sender_key) {
         if existing.aumid == aumid
@@ -96,13 +116,8 @@ pub fn register_sender(
     let icon_path = materialize_icon(sender_key, icon)?;
     debug!(target: "notif::register", icon = %icon_path.display(), "icon ready");
 
-    let exe = std::env::current_exe()
-        .map_err(|e| WindowsError::plain(format!("current_exe: {e}")))?;
     write_lnk(&lnk_path, &exe, &icon_path, &aumid, &clsid)?;
     info!(target: "notif::register", lnk = %lnk_path.display(), "lnk written");
-
-    write_clsid_key(&clsid, &exe)?;
-    info!(target: "notif::register", clsid = %clsid_string(&clsid), "CLSID graved");
 
     let manifest = Manifest {
         display: display_name.to_string(),
@@ -306,7 +321,11 @@ fn write_lnk(
 
 fn write_clsid_key(clsid: &uuid::Uuid, exe: &Path) -> Result<(), WindowsError> {
     let subkey = format!(r"Software\Classes\CLSID\{}\LocalServer32", clsid_string(clsid));
-    let cmdline = format!("\"{}\" --activator-serve", exe.display());
+    // Kebab-case subcommand — matches the clap `#[command(name = "activator-serve")]`
+    // declaration in notif-cli. `--activator-serve` (double-dash) would be
+    // parsed as an unknown top-level flag and the process would exit before
+    // registering any COM class factory.
+    let cmdline = format!("\"{}\" activator-serve", exe.display());
     reg::write_default_sz_hkcu(&subkey, &cmdline)
         .map_err(|e| WindowsError::with_context("RegSetValueEx(CLSID/LocalServer32)", e))?;
     Ok(())
