@@ -282,7 +282,26 @@ const HOST: &str = if cfg!(target_os = "windows") {
 };
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Windows LocalServer32 launches append `-Embedding` (Microsoft's
+    // historical COM convention) to signal the process is running as a COM
+    // server rather than a standalone app. Our clap CLI would reject it as
+    // an unknown top-level flag and exit before `activator-serve` reaches
+    // `run_activator_serve` — filter it out here before clap sees argv, and
+    // stash a marker env var so the activator can distinguish an
+    // OS-initiated launch (needs its console hidden) from an operator
+    // running `notif activator-serve` manually (wants the logs).
+    // `/Embedding` (forward-slash form) is accepted too since some COM
+    // stacks emit that instead. Harmless no-op on non-Windows hosts.
+    let raw_argv: Vec<String> = std::env::args().collect();
+    if raw_argv.iter().any(|a| a == "-Embedding" || a == "/Embedding") {
+        // SAFETY: single-threaded (pre-main setup), no other code observes
+        // the env yet.
+        unsafe { std::env::set_var("NOTIF_COM_EMBEDDED", "1"); }
+    }
+    let filtered_argv = raw_argv
+        .into_iter()
+        .filter(|a| a != "-Embedding" && a != "/Embedding");
+    let cli = Cli::parse_from(filtered_argv);
 
     let env_quiet = std::env::var("NOTIF_QUIET").ok().as_deref() == Some("1");
     // NOTIF_LOG=<absolute-path> duplicates every stderr line into an

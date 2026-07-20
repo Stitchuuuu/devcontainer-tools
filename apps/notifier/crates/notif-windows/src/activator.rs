@@ -26,12 +26,13 @@ use windows::Win32::System::Com::{
     CoUninitialize, IClassFactory, IClassFactory_Impl, CLSCTX_LOCAL_SERVER,
     COINIT_APARTMENTTHREADED, REGCLS_MULTIPLEUSE, REGCLS_SUSPENDED,
 };
+use windows::Win32::System::Console::{FreeConsole, GetConsoleWindow};
 use windows::Win32::UI::Notifications::{
     INotificationActivationCallback, INotificationActivationCallback_Impl,
     NOTIFICATION_USER_INPUT_DATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+    DispatchMessageW, GetMessageW, ShowWindow, TranslateMessage, MSG, SW_HIDE,
 };
 
 use crate::aumid;
@@ -98,6 +99,28 @@ impl IClassFactory_Impl for NotifActivatorFactory_Impl {
 /// then revoke + uninitialize. Blocks until the message loop exits (Explorer
 /// sending `WM_QUIT`, the user killing the process, or a shutdown signal).
 pub fn run_activator_serve() -> Result<(), WindowsError> {
+    // When Windows launches us as a COM server via LocalServer32, it appends
+    // `-Embedding` to argv ; the CLI's `main` filters that flag out before
+    // clap sees it and sets `NOTIF_COM_EMBEDDED=1` as a side-channel. If
+    // that marker is present we hide + detach the console window Windows
+    // created for us — `notif.exe` is a console-subsystem binary, so
+    // without this the console flashes on the user's screen for the full
+    // lifetime of the message loop.
+    //
+    // We deliberately do NOT hide the console when the operator ran
+    // `notif activator-serve` manually from their own PowerShell / cmd —
+    // in that case `GetConsoleWindow` returns their terminal and we'd hide
+    // the shell out from under them.
+    if std::env::var("NOTIF_COM_EMBEDDED").ok().as_deref() == Some("1") {
+        unsafe {
+            let hwnd = GetConsoleWindow();
+            if !hwnd.is_invalid() {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            let _ = FreeConsole();
+        }
+    }
+
     let senders = enumerate_senders();
     if senders.is_empty() {
         warn!(
