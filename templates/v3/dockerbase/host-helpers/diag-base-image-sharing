@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Diag — claude-devcontainer-base image sharing across projects
+# Goal : confirm whether multiple projects share the same base image
+# (one build, many projects) or each project rebuilt its own (waste).
+#
+# Run from the HOST. Refuses to run inside the devcontainer.
+set -euo pipefail
+
+if [ -f /.dockerenv ] || (grep -q docker /proc/1/cgroup 2>/dev/null); then
+    echo "✗ Run this from the HOST, not inside the devcontainer." >&2
+    exit 2
+fi
+command -v docker >/dev/null || { echo "✗ docker CLI not found." >&2; exit 2; }
+
+bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
+hdr()   { echo; bold "── $* ──"; }
+info()  { printf '  %s\n' "$*"; }
+
+# ---- 1. All claude-devcontainer-base tags + digests ----
+hdr "Base image inventory"
+docker images claude-devcontainer-base --format '{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}' \
+    | sort -V | column -t -s $'\t' || info "(no claude-devcontainer-base image yet)"
+
+# ---- 2. Image digests (to confirm sharing) ----
+hdr "Image digest sharing"
+COUNT=$(docker images claude-devcontainer-base -q | sort -u | wc -l | tr -d ' ')
+info "Distinct image IDs : $COUNT"
+if [ "$COUNT" -gt 1 ]; then
+    echo "  ⚠ More than one base image — projects don't share."
+    echo "    Likely cause : some project rebuilt with a different CLAUDE_CODE_VERSION"
+    echo "    or a Dockerfile.base content change invalidated the cache."
+else
+    echo "  ✓ Single base image — all projects share it."
+fi
+
+# ---- 3. Running containers using a claude-devcontainer-base image ----
+hdr "Running containers from a claude-devcontainer-base"
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' \
+    | grep -E 'claude-devcontainer-base|-claude-code-' \
+    || info "(no running containers)"
+
+# ---- 4. ALL containers (incl. stopped) using a base ----
+hdr "All containers (incl. stopped) from claude-devcontainer-base"
+docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' \
+    | grep -E 'claude-devcontainer-base|-claude-code-' \
+    || info "(no containers reference the base)"
+
+# ---- 5. Volume reuse — claude-creds-* + shared volumes ----
+hdr "Claude credentials volume sharing"
+docker volume ls --format '{{.Name}}' | grep -E '^claude-creds-' | sort -u \
+    | awk '{print "  " $0}' || info "(no claude-creds-* volumes)"
+
+# ---- 6. Build context size estimate ----
+hdr "Estimated build context size per project (.devcontainer/)"
+for d in $(find . -maxdepth 3 -type d -name '.devcontainer' 2>/dev/null | head -10); do
+    size=$(du -sh "$d" 2>/dev/null | awk '{print $1}')
+    printf '  %-12s %s\n' "$size" "$d"
+done
+
+# ---- 7. Cache state (when did the last build run, what was invalidated) ----
+hdr "Most recent build log (across all projects in cwd subtree)"
+LATEST=$(find . -maxdepth 4 -type f -name 'build-base-*.log' 2>/dev/null \
+    | xargs -r ls -t 2>/dev/null | head -1)
+if [ -n "$LATEST" ]; then
+    info "Log : $LATEST"
+    info "First CACHED → DONE transition (what invalidated the cache) :"
+    grep -nE '^#[0-9]+ (CACHED|DONE)' "$LATEST" \
+        | awk -F' ' '
+            /CACHED/ { last_cached = $0 }
+            /DONE/ && !done_first {
+                if (last_cached) print "    last CACHED  : " last_cached
+                print "    first DONE   : " $0
+                done_first = 1
+            }
+        '
+else
+    info "(no build-base-*.log found in this subtree)"
+fi
+
+# ---- 8. CLAUDE_CODE_VERSION pin ----
+hdr "CLAUDE_CODE_VERSION pin (per .env file found)"
+for env in $(find . -maxdepth 4 -name '.env' -path '*/.devcontainer/.env' 2>/dev/null | head -5); do
+    pinned=$(grep -E '^CLAUDE_CODE_VERSION=' "$env" | head -1 | cut -d= -f2)
+    printf '  %-12s %s\n' "${pinned:-(default)}" "$env"
+done
+
+echo
+bold "Done"

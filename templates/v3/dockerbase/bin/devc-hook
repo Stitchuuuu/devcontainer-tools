@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# devc-hook <phase> [--dry-run]
+#
+# Lightweight dispatcher for devcontainer lifecycle hooks. Enumerates
+# fragments from a base dir (image-baked or dogfood) + an overlay dir
+# (project-local), dedups by filename (overlay wins), sorts by numeric
+# prefix, and executes each. Honors a `disabledHooks` list read from
+# devcontainer.json's `customizations.stitchu-devc.disabledHooks`.
+#
+# Fragment header keys parsed :
+#   # @required true|false   — if true, fragment exit != 0 aborts the phase.
+#
+# Path resolution (portable across dogfood + image install) :
+#   DEVC_BASE_HOOKS      — default: <script>/../hooks, fallback /opt/devcontainer/base/hooks
+#   DEVC_OVERLAY_HOOKS   — default: /workspace/.devcontainer/hooks
+#   DEVC_CONFIG_DIR      — default: /workspace/.devcontainer  (for devcontainer.json + logs)
+
+set -eEuo pipefail
+
+# --- Args ------------------------------------------------------------------
+PHASE="${1:?usage: devc-hook <phase> [--dry-run]}"
+DRY_RUN=false
+[[ "${2:-}" == "--dry-run" ]] && DRY_RUN=true
+
+case "$PHASE" in
+  on-create|post-create|post-start|initialize) ;;
+  *) echo "devc-hook: unknown phase '$PHASE'" >&2; exit 2 ;;
+esac
+
+# --- Path resolution -------------------------------------------------------
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${DEVC_BASE_HOOKS:-}" ]; then
+  if [ -d "$SELF_DIR/../hooks" ]; then
+    DEVC_BASE_HOOKS="$(cd "$SELF_DIR/../hooks" && pwd)"
+  else
+    DEVC_BASE_HOOKS=/opt/devcontainer/base/hooks
+  fi
+fi
+DEVC_OVERLAY_HOOKS="${DEVC_OVERLAY_HOOKS:-/workspace/.devcontainer/hooks}"
+DEVC_CONFIG_DIR="${DEVC_CONFIG_DIR:-/workspace/.devcontainer}"
+
+BASE_D="$DEVC_BASE_HOOKS/${PHASE}.d"
+OVL_D="$DEVC_OVERLAY_HOOKS/${PHASE}.d"
+FLAT="$DEVC_OVERLAY_HOOKS/${PHASE}.sh"
+
+# --- Lifecycle logging (dispatcher owns tee + xtrace + ERR trap) -----------
+# In --dry-run we keep stdout pristine on the caller's terminal.
+if ! $DRY_RUN; then
+  mkdir -p "$DEVC_CONFIG_DIR/logs" 2>/dev/null || true
+  TS=$(date +%Y%m%d-%H%M%S)
+  LOG="$DEVC_CONFIG_DIR/logs/${PHASE}-${TS}.log"
+  TRACE="$DEVC_CONFIG_DIR/logs/${PHASE}-${TS}.trace"
+  exec > >(tee -a "$LOG") 2>&1
+  if [ "${DEBUG:-0}" = "1" ]; then
+    exec 19>>"$TRACE"
+    export BASH_XTRACEFD=19
+    PS4='+ ${BASH_SOURCE##*/}:${LINENO}: '
+    set -x
+    TRACE_LOC="${TRACE#/workspace/}"
+  else
+    rm -f "$TRACE"
+    TRACE_LOC="(disabled — set DEBUG=1 in .env to enable xtrace)"
+  fi
+  trap 'rc=$?; [ $rc -ne 0 ] && echo "✗ FAIL at ${BASH_SOURCE##*/}:${LINENO} (exit $rc): $BASH_COMMAND" >&2' ERR
+  echo "=== $PHASE $(date) ==="
+  echo "  log:   ${LOG#/workspace/}"
+  echo "  trace: $TRACE_LOC"
+  echo "  base:  ${DEVC_BASE_HOOKS}"
+  echo "  ovl:   ${DEVC_OVERLAY_HOOKS}"
+else
+  echo "=== $PHASE (dry-run) ==="
+  echo "  base:  ${DEVC_BASE_HOOKS}"
+  echo "  ovl:   ${DEVC_OVERLAY_HOOKS}"
+fi
+
+# --- Load disabledHooks list (jq) ------------------------------------------
+# Union of devcontainer.local.json + devcontainer.json (local overrides team).
+DISABLED_LIST=""
+for CONF in "$DEVC_CONFIG_DIR/devcontainer.local.json" "$DEVC_CONFIG_DIR/devcontainer.json"; do
+  [ -f "$CONF" ] || continue
+  if command -v jq >/dev/null 2>&1; then
+    # devcontainer.json may contain // comments — strip them for jq.
+    STRIPPED=$(sed -E 's://.*$::' "$CONF")
+    D=$(printf '%s' "$STRIPPED" | jq -r --arg p "$PHASE" \
+      '(.customizations["stitchu-devc"].disabledHooks // []) | .[] | select(startswith($p + ".d/"))' \
+      2>/dev/null || true)
+    [ -n "$D" ] && DISABLED_LIST="$DISABLED_LIST"$'\n'"$D"
+  fi
+done
+
+is_disabled() {
+  local key="$1"
+  printf '%s\n' "$DISABLED_LIST" | grep -Fxq "$key"
+}
+
+# --- Enumerate + dedup by basename (overlay wins) --------------------------
+declare -A SEEN
+for DIR in "$BASE_D" "$OVL_D"; do
+  [ -d "$DIR" ] || continue
+  while IFS= read -r -d '' F; do
+    NAME="$(basename "$F")"
+    SEEN[$NAME]="$F"
+  done < <(find "$DIR" -maxdepth 1 -mindepth 1 \( -type f -o -type l \) -name '*.sh' -print0 2>/dev/null)
+done
+
+# --- Sort by name (numeric prefix ordering: 05 < 10 < 20 < 90) -------------
+if [ "${#SEEN[@]}" -gt 0 ]; then
+  mapfile -t SORTED < <(printf '%s\n' "${!SEEN[@]}" | sort)
+else
+  SORTED=()
+fi
+
+# --- Execute ---------------------------------------------------------------
+run_frag() {
+  local name="$1" frag="$2"
+  local key="${PHASE}.d/${name}"
+  if is_disabled "$key"; then
+    echo "→ skip ${key} (disabled by config)"
+    return 0
+  fi
+  local req
+  req=$(awk '/^# @required/ { print $NF; exit }' "$frag" 2>/dev/null || true)
+  req="${req:-false}"
+  if $DRY_RUN; then
+    echo "→ WOULD RUN ${key} (required=${req})"
+    return 0
+  fi
+  echo "→ run ${key} (required=${req})"
+  local rc=0
+  bash "$frag" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$req" = "true" ]; then
+      echo "✗ FAIL ${key} (rc=$rc) — required, aborting phase" >&2
+      exit "$rc"
+    else
+      echo "⚠ WARN ${key} (rc=$rc) — optional, continuing" >&2
+    fi
+  else
+    echo "✓ ${name}"
+  fi
+}
+
+for NAME in "${SORTED[@]}"; do
+  run_frag "$NAME" "${SEEN[$NAME]}"
+done
+
+# --- Flat fallback (Debian run-parts pattern) ------------------------------
+# If the overlay dir also has a flat <phase>.sh, run it LAST. Lets user
+# projects mix .d/ fragments and a single script.
+if [ -x "$FLAT" ]; then
+  echo "→ run flat overlay ${PHASE}.sh"
+  if ! $DRY_RUN; then
+    bash "$FLAT" || echo "⚠ WARN flat ${PHASE}.sh (rc=$?)" >&2
+  fi
+fi
+
+echo "=== $PHASE done ==="

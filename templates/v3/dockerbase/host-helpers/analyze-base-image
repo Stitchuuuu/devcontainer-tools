@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Break down where the weight of claude-devcontainer-base goes : per Docker
+# layer, per top-level directory, per apt package (top 30), per Claude-related
+# chunk. Useful for figuring out "I expected X MB but the image is Y MB —
+# where did the extra Z come from?".
+#
+# Usage:
+#   [host]      bash .devcontainer/host-helpers/analyze-base-image [TAG]
+#   default tag    = claude-devcontainer-base:${CLAUDE_CODE_VERSION:-2.1.145}
+#   default output = .devcontainer/logs/analyze-base-<tag>-<ts>.log
+#                    (tee'd to stdout, accessible from inside container via
+#                    the /workspace bind mount so Claude can read it)
+#
+# Refuses to run from inside the container (needs docker daemon access).
+set -euo pipefail
+
+if [ -f /.dockerenv ] || [ -n "${REMOTE_CONTAINERS:-}" ]; then
+  echo "ERROR: This script must run on the host (needs docker daemon)." >&2
+  echo "       Open a terminal on your Mac/Linux host, cd to the project, and run :" >&2
+  echo "       bash .devcontainer/host-helpers/analyze-base-image" >&2
+  exit 2
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: docker CLI not found in PATH." >&2
+  exit 2
+fi
+
+# Find the version. Priority : argv[1], CLAUDE_CODE_VERSION env, .env file, default.
+TAG="${1:-}"
+if [ -z "$TAG" ]; then
+  VERSION="${CLAUDE_CODE_VERSION:-}"
+  if [ -z "$VERSION" ] && [ -f .devcontainer/.env ]; then
+    VERSION=$(grep -E '^CLAUDE_CODE_VERSION=' .devcontainer/.env 2>/dev/null | head -1 | cut -d= -f2-)
+  fi
+  VERSION="${VERSION:-2.1.145}"
+  TAG="claude-devcontainer-base:${VERSION}"
+fi
+
+# Locate project root and prepare output log path so the report is readable
+# from inside the container (via /workspace bind mount). PROJECT_ROOT is the
+# directory containing .devcontainer/ — derived from this script's location.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOG_DIR="$PROJECT_ROOT/.devcontainer/logs"
+mkdir -p "$LOG_DIR"
+TS=$(date +%Y%m%d-%H%M%S)
+SAFE_TAG=$(echo "$TAG" | tr ':/' '__')
+LOG_FILE="$LOG_DIR/analyze-base-${SAFE_TAG}-${TS}.log"
+
+# Tee everything below to both stdout AND the log file. exec redirects keep
+# stderr inline with stdout for a single coherent report.
+exec > >(tee "$LOG_FILE") 2>&1
+
+echo "═════════════════════════════════════════════════════════════════"
+echo "  Analyzing : $TAG"
+echo "  Log       : $LOG_FILE"
+echo "  Host time : $(date)"
+echo "═════════════════════════════════════════════════════════════════"
+
+if ! docker image inspect "$TAG" >/dev/null 2>&1; then
+  echo "ERROR: image $TAG not found. Run :" >&2
+  echo "       bash .devcontainer/initialize.sh" >&2
+  echo "       (or pass an explicit tag : bash $0 <other-tag>)" >&2
+  exit 1
+fi
+
+# Portable bytes-to-human (no numfmt on macOS by default).
+human() {
+  local b="${1:-0}"
+  awk -v b="$b" 'BEGIN{
+    s="B KB MB GB TB"; n=split(s,u," ");
+    i=1; while (b>=1024 && i<n) { b/=1024; i++ }
+    printf("%.1f %s", b, u[i])
+  }'
+}
+
+TOTAL=$(docker image inspect "$TAG" --format '{{.Size}}')
+echo "Total size : $(human $TOTAL)"
+echo
+
+# ─── 1. Per-layer breakdown (build-step view) ─────────────────────
+echo "─── 1. Per-layer breakdown ─────────────────────────────────────"
+echo "  (each line = one Dockerfile RUN/COPY/etc. Look for the biggest layers.)"
+echo
+docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' "$TAG" \
+  | awk -F'\t' '
+      BEGIN{cnt=0}
+      $1 != "0B" && $1 != "" {
+        cnt++
+        cmd=$2
+        gsub(/\\\\n/, " ", cmd)
+        gsub(/ +/, " ", cmd)
+        # Truncate to keep readable
+        if (length(cmd) > 90) cmd = substr(cmd, 1, 87) "..."
+        printf("  %3d. %12s  %s\n", cnt, $1, cmd)
+      }
+    '
+
+echo
+
+# ─── 2. Per-directory size (top-level, inside the image fs) ───────
+echo "─── 2. Per-directory size (top-level inside the image) ────────"
+docker run --rm --entrypoint "" "$TAG" sh -c '
+  for d in /usr/local /usr /opt /home /var /etc /lib /sbin /bin /tmp /root; do
+    [ -d "$d" ] && du -sh "$d" 2>/dev/null
+  done | sort -hr
+' || echo "  (docker run failed — image may not be runnable)"
+
+echo
+
+# ─── 3. Claude / VS Code / mitmproxy specific chunks ──────────────
+echo "─── 3. Notable chunks (Claude / VS Code / mitmproxy / build tools) ──"
+docker run --rm --entrypoint "" "$TAG" sh -c '
+  printf "  Claude :\n"
+  if [ -d /home/node/.vscode-server/extensions ]; then
+    du -sh /home/node/.vscode-server/extensions 2>/dev/null | sed "s/^/    /"
+    for d in /home/node/.vscode-server/extensions/*/; do
+      [ -d "$d" ] && du -sh "$d" 2>/dev/null | sed "s/^/      /"
+    done
+  else
+    printf "    (no VSCode extension dir baked)\n"
+  fi
+  if [ -d /usr/local/lib/node_modules/@anthropic-ai ]; then
+    du -sh /usr/local/lib/node_modules/@anthropic-ai 2>/dev/null | sed "s|^|    npm CLI : |"
+  else
+    printf "    npm CLI : (absent — Phase B success)\n"
+  fi
+
+  printf "\n  mitmproxy :\n"
+  [ -d /opt/mitmproxy ] && du -sh /opt/mitmproxy 2>/dev/null | sed "s/^/    /"
+
+  printf "\n  build tools (potential trim candidates) :\n"
+  for pkg in build-essential gcc g++ libc6-dev libssl-dev python3-yaml python3 \
+             dpkg-dev libstdc++-12-dev linux-libc-dev; do
+    dpkg-query -W -f="${Installed-Size}\t${Package}\n" "$pkg" 2>/dev/null \
+      | awk -F"\t" "{ printf \"    %6.1f MB  %s\\n\", \$1/1024, \$2 }"
+  done
+
+  printf "\n  Node.js runtime :\n"
+  du -sh /usr/local/lib/node_modules 2>/dev/null | sed "s/^/    /"
+  command -v node >/dev/null && node --version | sed "s/^/    node /"
+' || echo "  (docker run failed)"
+
+echo
+
+# ─── 4. Top 30 apt packages by installed size ─────────────────────
+echo "─── 4. Top 30 apt packages (by Installed-Size) ─────────────────"
+echo "  Lines like 'libllvm14 175 MB' mean : if you don't need it, that's"
+echo "  175 MB you could shave by removing the parent package."
+docker run --rm --entrypoint "" "$TAG" sh -c '
+  dpkg-query -W -f="${Installed-Size}\t${Package}\n" 2>/dev/null \
+    | sort -rn | head -30 \
+    | awk -F"\t" "{ printf \"  %8.1f MB  %s\\n\", \$1/1024, \$2 }"
+' || echo "  (dpkg-query failed)"
+
+echo
+
+# ─── 5. /usr/share/{locale,doc,man} (purge candidates) ────────────
+echo "─── 5. /usr/share/{locale,doc,man} (purged in v2.1-1, should be small) ─"
+docker run --rm --entrypoint "" "$TAG" sh -c '
+  for d in /usr/share/locale /usr/share/doc /usr/share/man; do
+    [ -d "$d" ] && du -sh "$d" 2>/dev/null
+  done
+' || true
+
+echo
+echo "═════════════════════════════════════════════════════════════════"
+echo "  Done. Log : $LOG_FILE"
+echo "  To diff against another build :"
+echo "     bash $0 claude-devcontainer-base:OTHER_VERSION"
+echo "     diff -u .devcontainer/logs/analyze-base-claude-devcontainer-base__*.log"
+echo "═════════════════════════════════════════════════════════════════"
+# Sentinel marker so watchers (e.g. Claude monitoring the log) can detect
+# completion deterministically without polling timestamps.
+echo "__END__"

@@ -1,0 +1,55 @@
+# =============================================================================
+# Capacitor Android plugin dev — starter allowlist (opt-in, MANUAL)
+# =============================================================================
+# This file is NOT auto-loaded. Copy the sections you need into your
+# `domains.local.txt` (gitignored) or `domains.txt` (team-committed).
+#
+# Supersets `domains.android.txt` with Capacitor-specific hosts (docs
+# for the framework + npm registry for the plugin's JS side).
+#
+# In `basic` mode, only the host matters (paths ignored). In `strict`,
+# the [GET,HEAD] scopes and per-path narrowing apply.
+# =============================================================================
+
+
+# --- Android + Kotlin base (same as domains.android.txt) ---------------------
+
+[GET,HEAD] developer.android.com    # Android SDK reference + guides
+[GET,HEAD] source.android.com       # AOSP source browser
+[GET,HEAD] kotlinlang.org           # Kotlin language + stdlib docs
+[GET,HEAD] docs.oracle.com          # Java 17 stdlib javadoc
+
+[GET,HEAD] dl.google.com            # Google Maven (AndroidX, Compose, Play Services) + android.jar stubs
+[GET,HEAD] maven.google.com         # Alias for dl.google.com/android/maven2
+[GET,HEAD] repo.maven.apache.org    # Maven Central (canonical)
+[GET,HEAD] repo1.maven.org          # Maven Central (mirror)
+[GET,HEAD] oss.sonatype.org         # Sonatype snapshots (SNAPSHOT deps)
+[GET,HEAD] plugins.gradle.org       # Gradle Plugin Portal
+[GET,HEAD] services.gradle.org      # Gradle distributions (wrapper downloads)
+
+[GET,HEAD] download.jetbrains.com   # Kotlin/JB stable + EAP tools
+
+
+# --- Capacitor-specific — docs & references ----------------------------------
+
+[GET,HEAD] capacitorjs.com          # Capacitor 4+ official docs + guides
+[GET,HEAD] ionicframework.com       # Ionic parent framework docs
+[GET,HEAD] ionic.io                 # Ionic company site + community
+[GET,HEAD] capacitor.ionicframework.com  # Legacy Capacitor 3.x docs (some plugins reference)
+
+
+# --- Capacitor plugin JS side — npm registry ---------------------------------
+
+[GET,HEAD] registry.npmjs.org       # npm install @capacitor/core, @capacitor/android, etc.
+[GET,HEAD] www.npmjs.com            # npm browsing (search, package pages)
+[GET,HEAD] npmjs.org                # legacy alias, occasionally hit
+
+
+# --- Optional: Cordova compat (some Capacitor plugins wrap Cordova APIs) -----
+
+[GET,HEAD] cordova.apache.org       # Cordova docs (plugin interop reference)
+
+
+# --- Optional: publishing side (only if you publish plugins) -----------------
+
+[POST,PUT,GET] registry.npmjs.org   # publish requires POST/PUT

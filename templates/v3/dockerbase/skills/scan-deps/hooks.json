@@ -1,0 +1,5 @@
+{
+  "SessionStart": [
+    {"matcher": "startup", "hooks": [{"type": "command", "command": "bash /workspace/.devcontainer/skills/scan-deps/scan-deps-suggest-stale.sh"}]}
+  ]
+}

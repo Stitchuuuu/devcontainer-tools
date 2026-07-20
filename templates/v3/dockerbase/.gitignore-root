@@ -1,0 +1,16 @@
+# DevContainer (v2) — root-scope
+
+# Claude — local runtime artefacts
+.claude/*
+!.claude/rules/
+!.claude/rules/**
+!.claude/settings.local.json.example
+
+# VS Code — bind-mount via docker-compose, single tracked file
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Build / OS
+.env.dev
+.DS_Store

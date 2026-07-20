@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Archive a research bundle's result/ back into the main project's bundle
+# source (snapshot), then optionally promote selected files to a final dest.
+# HOST-ONLY — run from the main project root, NOT inside the devcontainer
+# (the `..` sibling has no meaning inside the container).
+#
+# Usage:
+#   bring-back-result <bundle-id>             archive only
+#   bring-back-result <bundle-id> <dest-dir>  archive + promote to <dest-dir>
+#
+# The sibling is NOT deleted here — use research-cleanup for that.
+
+set -euo pipefail
+
+# Sanity guard : refuse to run inside the devcontainer. The sibling
+# `../<bundle-id>/` lives on the host filesystem, not in the container.
+if [ -f /.dockerenv ] || grep -qE ':/(docker|kubepods)[/-]' /proc/1/cgroup 2>/dev/null; then
+  echo "❌ bring-back-result must run on the HOST, not inside the container." >&2
+  echo "   Open a host terminal in the main project root and run:" >&2
+  echo "     .devcontainer/host-helpers/bring-back-result <bundle-id> [<dest>]" >&2
+  exit 2
+fi
+
+BUNDLE_ID="${1:-}"
+DEST="${2:-}"
+
+if [ -z "$BUNDLE_ID" ]; then
+  echo "usage: bring-back-result <bundle-id> [<dest-dir>]" >&2
+  exit 1
+fi
+
+case "$BUNDLE_ID" in
+  */*|..*|*/.*)
+    echo "❌ <bundle-id> must be a single path segment (no slashes, no dots)" >&2
+    exit 1
+    ;;
+esac
+
+SIBLING="../${BUNDLE_ID}"
+ARCHIVE=".devcontainer/research-bundles/${BUNDLE_ID}/result"
+BUNDLE_SRC=".devcontainer/research-bundles/${BUNDLE_ID}"
+
+if [ ! -d "$SIBLING/result" ]; then
+  echo "❌ $SIBLING/result not found" >&2
+  exit 1
+fi
+if [ ! -d "$BUNDLE_SRC" ]; then
+  echo "❌ bundle source missing: $BUNDLE_SRC/" >&2
+  echo "   (expected for the archive snapshot ; was the bundle deleted?)" >&2
+  exit 1
+fi
+
+echo "Archive  : $SIBLING/result/.  →  $ARCHIVE/"
+read -r -p "→ Confirm? Type 'yes' : " ok
+if [ "$ok" != "yes" ]; then
+  echo "Aborted."
+  exit 0
+fi
+mkdir -p "$ARCHIVE"
+cp -r "$SIBLING/result/." "$ARCHIVE/"
+echo "✓ archived"
+
+if [ -n "$DEST" ]; then
+  echo
+  echo "Promote  : $SIBLING/result/.  →  $DEST/"
+  read -r -p "→ Confirm? Type 'yes' : " ok
+  if [ "$ok" != "yes" ]; then
+    echo "Promote skipped."
+    exit 0
+  fi
+  mkdir -p "$DEST"
+  cp -r "$SIBLING/result/." "$DEST/"
+  echo "✓ promoted"
+fi
+
+cat <<EOF
+
+Next : when fully done with the research, drop the sibling :
+  .devcontainer/host-helpers/research-cleanup --apply
+(or manually : rm -rf $SIBLING && docker volume ls | grep -- '-research-')
+EOF

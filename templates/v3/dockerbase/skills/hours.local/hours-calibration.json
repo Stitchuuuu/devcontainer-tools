@@ -1,0 +1,36 @@
+{
+  "last_updated": "2026-04-09",
+  "sources": ["czsyn.com", "codeur.com", "coqportage.fr", "rh-solutions.com", "platform.claude.com"],
+  "tjm_marche": {
+    "fullstack_senior_province": { "min": 400, "max": 600, "median": 475 },
+    "fullstack_senior_paris": { "min": 500, "max": 700, "median": 580 },
+    "php_laravel_senior": { "min": 420, "max": 500, "median": 460 },
+    "react_vue_senior": { "min": 500, "max": 600, "median": 550 },
+    "malt_fullstack_moyen": 557
+  },
+  "grille_heures": {
+    "crud_endpoint": { "min": 2, "max": 4 },
+    "integration_api": { "min": 4, "max": 8 },
+    "bug_fix_simple": { "min": 1, "max": 2 },
+    "bug_fix_complexe": { "min": 3, "max": 6 },
+    "feature_ui_standard": { "min": 2, "max": 4 },
+    "feature_ui_complexe": { "min": 4, "max": 8 },
+    "refactoring": { "min": 2, "max": 6 },
+    "migration": { "min": 2, "max": 4 },
+    "documentation": { "min": 1, "max": 3 },
+    "recherche": { "min": 2, "max": 6 },
+    "devops": { "min": 1, "max": 4 }
+  },
+  "api_pricing": {
+    "claude-opus-4-6": { "in": 5.00, "cache_read": 0.50, "cache_create": 10.00, "out": 25.00 },
+    "claude-opus-4-5": { "in": 5.00, "cache_read": 0.50, "cache_create": 10.00, "out": 25.00 },
+    "claude-opus-4-1": { "in": 15.00, "cache_read": 1.50, "cache_create": 30.00, "out": 75.00 },
+    "claude-sonnet-4-6": { "in": 3.00, "cache_read": 0.30, "cache_create": 6.00, "out": 15.00 },
+    "claude-sonnet-4-5": { "in": 3.00, "cache_read": 0.30, "cache_create": 6.00, "out": 15.00 },
+    "claude-sonnet-4": { "in": 3.00, "cache_read": 0.30, "cache_create": 6.00, "out": 15.00 },
+    "claude-haiku-4-5": { "in": 1.00, "cache_read": 0.10, "cache_create": 2.00, "out": 5.00 },
+    "claude-haiku-3-5": { "in": 0.80, "cache_read": 0.08, "cache_create": 1.60, "out": 4.00 },
+    "claude-haiku-3": { "in": 0.25, "cache_read": 0.03, "cache_create": 0.50, "out": 1.25 }
+  },
+  "notes": "Calibre le 2026-04-09. TJM: CZSyn + Coq Portage. Malt 403 (557 EUR repris du doc). Pricing API: page officielle Anthropic. Cache_create = 1h write (2x base) car Claude Code utilise le cache 1h."
+}

@@ -1,0 +1,442 @@
+---
+description: Grant a temporary batch of permissions in settings.local.json (session-scoped, TTL-bounded). Auto-triggered by Claude after the PreToolUse hook detects a spike of permission prompts, or invoked manually by the user. Auto-flow uses a single-use token: the hook reserves an id at deny time bound to the exact patterns of the spike, and `apply.js allow id=... session=...` consumes it — Claude cannot widen the scope even if the apply.js command itself is in the allowlist. For Bash grants, writes `permissions.allow` (canonical `Bash(cmd:*)`). For Edit/Write/Read/NotebookEdit grants on paths outside cwd, ALSO writes `permissions.additionalDirectories` — Claude Code refuses file operations outside cwd + additionalDirectories regardless of what's in `allow`. Grants expire after TTL (default 30 min) — SessionEnd cleanup is a best-effort second layer since it doesn't reliably fire on VS Code shutdown. Audit log at .devcontainer/notify/floating-perms-audit.jsonl. MANDATORY workflow: ANALYZE → ASK via AskUserQuestion → EXECUTE → RETRY. Never consume the pending token without an explicit AskUserQuestion confirmation right before it.
+argument-hint: "allow id=<id> session=<sid> [ttl=30m]  |  batch <pat1> <pat2>... [ttl=30m] sid=<id>  |  list [sid=<id>]  |  revoke <pat>  |  gc sid=<id>"
+allowed-tools: Bash(node /workspace/.devcontainer/skills/floating-perms/apply.js:*), Bash(node --test /workspace/.devcontainer/skills/floating-perms/tests/:*)
+---
+
+# /floating-perms — batched session-scoped permissions
+
+## When this skill is triggered
+
+**Automatic trigger.** Claude Code's `PermissionRequest` hook fires for
+every tool call that would prompt the user. When **2 prompts arrive
+within 120 s** in a session, the next tool call that reaches `PreToolUse`
+is **denied** with a `permissionDecisionReason` listing every unique
+pattern from the window — *before* the third permission dialog ever
+fires. The user has paid attention cost twice, not a third time.
+Rationale: repeated prompts are draining whatever the command, so we
+batch. You will see something like:
+
+> STOP — floating-perms: 2 permission prompts in under 120s. Repeated
+> prompts are draining whatever the command, so we batch.
+>
+> Patterns seen in the recent window:
+>   - `Bash(curl:*)`
+>   - `Edit(/tmp/scratch/**)`
+>
+> A single-use grant token has been reserved for this spike:
+>   id=3f2a1b7c   session=abc12345   patterns=2   valid_for=300s
+>
+> Mandatory workflow before any further tool call: 1. ANALYZE, 2. ASK via
+> AskUserQuestion, 3. EXECUTE Skill(skill="floating-perms", args="allow id=3f2a1b7c session=abc12345"),
+> 4. RETRY the denied tool.
+
+When you receive that, **stop** the tool retry. Plan first.
+
+**Single-use token model.** The `id` in the deny reason is a nano-UUID
+reserved by the hook, atomically bound to the exact patterns of the
+spike and the current sid. `apply.js allow` refuses any invocation
+without a valid `id` — unknown, expired (>5 min), session-mismatched,
+or already-consumed tokens all fail with a clear error and land in the
+audit log. The token is the security gate; the outer `Skill` wrapper
+just avoids the extra permission prompt on the node invocation itself,
+by running apply.js inside the skill's `allowed-tools:` scope.
+
+Claude Code fires `PermissionRequest` for **every** tool call, whether it
+about to display a prompt or auto-resolve silently against an existing
+rule. The distinguishing signal is `payload.permission_suggestions`:
+present (non-empty array) when a popup is about to show, absent/empty
+when the call was auto-allowed. The hook only grows the counter for
+prompts the user actually paid attention to (auto-allow guard on the
+`permission_suggestions` field). Meta tools that don't represent work
+(`ExitPlanMode`, `AskUserQuestion`, `TodoWrite`, `Task`, MCP) also
+never count: they canonicalize to `null` and the observer skips them
+silently. The deny message lists the unique work patterns from the
+recent window so you can copy them into the `apply.js batch` call
+verbatim.
+
+**Manual trigger.** The user typed `/floating-perms <subcmd>` directly, or
+asked things like "allow curl + npm for this session" / "session-scope
+these commands" / "kill all session perms".
+
+## Mandatory workflow when auto-triggered
+
+### Step 1 — ANALYZE
+
+Re-read the current task (look at recent conversation context if needed)
+and check that the patterns already listed in the deny reason cover
+what's left. The token was reserved for exactly those patterns — you
+cannot widen it via `allow`. Two cases:
+
+- **Coverage is fine** — just proceed to Step 2 with the deny-listed
+  patterns. This is the common case: the hook fires precisely when the
+  scope is clear.
+- **Missing patterns** — an anticipated Bash command or file path isn't
+  in the deny list. You have two options: (a) narrow the plan so the
+  reserved scope suffices, or (b) fall back to the manual `apply.js
+  batch` path with an ASK step, then flag to the user that the token
+  wasn't sufficient. Prefer (a) — a scope creep at the token step is
+  itself a signal.
+
+Canonical pattern shapes (for reference / manual `batch` invocations):
+- `Bash(<cmd>:*)`              — e.g. `Bash(curl:*)`, `Bash(npm view:*)`
+- `Edit(<dir>/**)`             — e.g. `Edit(/home/node/.config/**)`
+- `Write(<dir>/**)`            — e.g. `Write(/var/tmp/**)`
+- `Read(<dir>/**)`             — e.g. `Read(/tmp/scratch/**)`
+- `NotebookEdit(<dir>/**)`     — same shape
+
+**File-tool dirs outside cwd get injected into `additionalDirectories`
+automatically.** When the grant includes `Write(/tmp/foo/**)`, `apply.js`
+also adds `/tmp/foo` to `permissions.additionalDirectories` because
+Claude Code refuses file writes/reads outside cwd + additionalDirectories
+regardless of what's in `allow`. Dirs already under `/workspace/**` (cwd)
+or already present in `additionalDirectories` are skipped — no churn.
+Bash grants only touch `allow`.
+
+### Step 2 — ASK (mandatory AskUserQuestion call)
+
+**This step is non-negotiable.** Never call `apply.js allow` (or `batch`)
+without an immediately preceding `AskUserQuestion` that lists the exact
+patterns bound to the token. The user must see "authorize THIS and THAT"
+— not a generic "want me to widen perms?".
+
+**VERBATIM rule.** Every pattern listed in the deny reason MUST appear
+**verbatim** as a grantable option in the `AskUserQuestion` you build.
+You MUST NOT replace canonical-form patterns with rewordings, "fixed"
+forms, or a different tool family. If the deny lists `Read(/tmp/**)`,
+the question must propose `Read(/tmp/**)` — not `Bash(cat:*)`, not a
+narrower `Read(/tmp/extensions.js)`. The token is bound to the exact
+patterns from the spike — you cannot add or replace them at `allow` time.
+
+**Group by resource, not by tool.** Under acceptEdits mode, `Read` is
+already bare-allowlisted and `Write` is auto-allowed within cwd +
+`additionalDirectories`. So a file-tool grant for `<dir>` outside cwd
+is effectively a single decision: **"authorize this directory"**. Don't
+list `Read(/dir/**)` + `Write(/dir/**)` + `Edit(/dir/**)` as separate
+items in the AskUserQuestion — that's noise. Ask for the dir once.
+
+Recommended shape — condensed:
+
+```
+question: "<short context, e.g. 'fetch upstream release notes'>. Authorize?"
+header:   "floating-perms"
+options:
+  - label: "Authorize (session, 30m)  (Recommended)"
+    description: "Commands: curl, jq
+                  Directories: /home/node/.config, /var/tmp/probe-42
+                  Auto-revoked after 30 minutes."
+  - label: "Refuse — I'll change approach"
+    description: "No grant; I'll work around."
+```
+
+- **Commands line** — comma-separated bare Bash commands (curl, npm view,
+  gh) from Bash-family patterns.
+- **Directories line** — comma-separated absolute paths (no `/**`) from
+  file-tool patterns whose dir is outside cwd. Omit the line entirely
+  if no file tool needs a dir grant.
+- Add a 3rd option "Longer TTL (e.g. 2h)" only if the user explicitly
+  asked for a longer horizon.
+- Add "Subset" only for heterogeneous batches (>4 items). For a common
+  1-2-item batch, the 2-option shape above is the right default.
+
+Skip the "Subset" option in the token flow: the pending grant is
+all-or-nothing (the token is bound to the exact patterns of the spike).
+If the user wants a strict subset, they refuse the current token and
+you fall back to `apply.js batch` in a subsequent turn.
+
+### Step 3 — EXECUTE (only after explicit user choice)
+
+Based on the user's answer, invoke the skill via the `Skill` tool:
+
+```
+Skill(skill="floating-perms", args="allow id=<id-from-deny> session=<sid-from-deny> [ttl=<duration>]")
+```
+
+Going through `Skill` matters: the frontmatter's `allowed-tools:` list
+authorizes `Bash(node .../apply.js:*)` **within the skill context**, so
+the underlying node invocation runs without a fresh permission prompt.
+Hitting `[Bash] node apply.js …` directly from the main context does
+NOT get that scope and will prompt (the token still gates the actual
+grant on the apply.js side either way, but the extra prompt defeats the
+whole point of the workflow).
+
+No positional args, no patterns to copy — the token binds the patterns
+already. Both `id=` and `session=` are copied verbatim from the deny
+reason (`id=3f2a1b7c   session=abc12345`). If either is missing or the
+token has expired / been consumed, `apply.js allow` refuses with a
+clear error and logs an audit line.
+
+Omitting `ttl=` applies the default grant TTL (30 minutes) — this is
+the TTL of the *effective grant*, not the pending token. Pass `ttl=2h`
+(or similar) only when the user asked for a longer-lived grant.
+
+**Manual override (coverage gap).** If the reserved token doesn't cover
+what you need (surfaced in Step 1), fall back to the classic `batch`
+form — same Skill wrapper for the same auto-allow reasoning:
+
+```
+Skill(skill="floating-perms", args="batch '<pattern1>' '<pattern2>' ... sid=<session_id> [ttl=<duration>]")
+```
+
+`batch` still exists for manual invocations and coverage-gap overrides.
+**CRITICAL: SINGLE-QUOTE each pattern.** Patterns contain `**`, `*`, `(`,
+`)` — all glob and shell-active characters. Without single quotes, bash
+expands them BEFORE `apply.js` sees them, producing garbage patterns
+like `Bash(cfg-**):*)` (real audit-log capture from a failed grant).
+Symptom: the grant silently produces malformed patterns and the retry
+still prompts. Always wrap each pattern in single quotes — never double
+quotes, never bare.
+
+Read stdout — that's the grant report (granted / skipped / blocked /
+invalid). Resurface a clean summary to the user, then retry the originally
+denied tool call.
+
+### Step 4 — RETRY
+
+After the grant lands, the previously denied tool call can now proceed.
+Retry it. If the user chose "Refuse", **do not retry** — generate an
+alternative plan that doesn't need those perms (e.g. don't fetch upstream
+notes, work from cached data).
+
+## What to do when manually triggered
+
+The user passed arguments. Forward them straight to the script:
+
+```bash
+node /workspace/.devcontainer/skills/floating-perms/apply.js <subcmd> <args...>
+```
+
+Subcommands:
+
+| Subcommand | Use |
+|------------|-----|
+| `allow id=<id> session=<sid> [ttl=<duration>]` | Consume a single-use pending token reserved by the hook at deny time. This is the auto-flow path. Refuses unknown / expired / cross-session / already-consumed ids. |
+| `batch <pat1> [pat2 …] [ttl=<duration>] sid=<id>` | Manual grant of N patterns for the session. Default TTL 30 min. Used for coverage-gap overrides and direct user invocations. |
+| `list [sid=<id>]` | Show active grants. |
+| `revoke <pattern>` | Remove a single pattern across all sessions. |
+| `gc sid=<current_sid>` | Revoke state-side grants whose sid != current (orphans from previous sessions that didn't run SessionEnd cleanup). |
+| `reconcile sid=<current_sid> [--auto]` | Detect entries in settings.local.json that look floating but have no matching state.json grant. Interactive by default; pass `--auto` to revoke without confirmation. |
+
+Duration syntax for `ttl=`: `15m`, `30m` (default), `2h`, `1d`, or bare integer = seconds.
+
+Read stdout — that's the report (granted / skipped / blocked / invalid).
+Re-emit a clean summary to the user.
+
+For a manual `batch`, the user is the one making the call explicit, so
+the AskUserQuestion step is implicit (their command IS the answer). Still
+echo back what's about to be granted before running, in case of typos.
+
+## Examples
+
+### Auto-triggered allow — full workflow (token consumption)
+
+```
+hook deny:  STOP — 3 prompts in 90s. Patterns: Bash(curl:*),
+            Edit(/home/node/.config/**), Read(/tmp/scratch/**).
+            Token: id=3f2a1b7c session=abc12345 valid_for=300s.
+            Workflow: ANALYZE → ASK → EXECUTE Skill floating-perms allow → RETRY.
+
+claude:     [Step 1 — ANALYZE]
+            (re-reads task: "fetch upstream release notes + patch local config")
+            Reserved patterns cover the plan — no missing scope.
+
+            [Step 2 — ASK]
+            → AskUserQuestion:
+              "Upstream upgrade fetch. Authorize (reserved by the token):
+               Bash(curl:*), Edit(/home/node/.config/**), Read(/tmp/scratch/**)?"
+              · Authorize all (default TTL 30m)  (Recommended)
+              · Authorize all, longer TTL (e.g. ttl=2h)
+              · Refuse — I'll change approach
+
+user:       picks "Authorize all (default TTL 30m)"
+
+claude:     [Step 3 — EXECUTE]
+            → Skill(skill="floating-perms", args="allow id=3f2a1b7c session=abc12345")
+            ✓ 3 pattern(s) granted [sid abc12345 · expires 2026-06-12T20:00:00Z (TTL 1800s)]
+
+            [Step 4 — RETRY]
+            [re-runs the originally denied curl call; passes now]
+```
+
+### Coverage gap — manual batch fallback
+
+```
+hook deny:  STOP — 2 prompts in 8s. Patterns: Read(/tmp/**).
+            Token: id=9a2b1c3d session=abc12345 valid_for=300s.
+
+claude:     [Step 1 — ANALYZE]
+            Both prompts were Read on files under /tmp. The task also
+            needs Write(/tmp/**) for a follow-up — NOT in the reserved
+            scope. Coverage gap → fall back to manual batch.
+
+            [Step 2 — ASK]
+            → AskUserQuestion:
+              "Inspecting files under /tmp. The hook reserved Read(/tmp/**),
+               but the task also needs Write(/tmp/**). Authorize both?"
+              · Authorize Read + Write (manual batch, TTL 30m)  (Recommended)
+              · Authorize Read only (consume the token as-is)
+              · Refuse
+
+user:       picks "Authorize Read + Write"
+
+claude:     [Step 3 — EXECUTE]
+            → Skill(skill="floating-perms",
+                    args="batch 'Read(/tmp/**)' 'Write(/tmp/**)' sid=abc12345")
+            ✓ 2 pattern(s) granted
+```
+
+### Manual TTL
+
+```
+user:       /floating-perms batch Bash(gh:*) ttl=30m sid=abc12345
+claude:     [runs apply.js]
+            ✓ 1 pattern(s) granted [sid abc12345 · expires 2026-06-12T19:30:00Z]
+```
+
+### List + manual revoke
+
+```
+user:       /floating-perms list
+claude:     [runs] node apply.js list
+            Active grants (2):
+              - Bash(curl:*)  [sid abc12345 · expires: 2026-06-12T20:00:00Z]
+              - Bash(gh:*)    [sid abc12345 · expires: 2026-06-12T19:30:00Z]
+
+user:       /floating-perms revoke Bash(gh:*)
+claude:     [runs] node apply.js revoke Bash(gh:*)
+            Revoked 1 grant(s) for Bash(gh:*).
+```
+
+### Reconcile orphans
+
+```
+session_start additionalContext:
+  floating-perms — SessionStart reconciliation report:
+  Allow-side orphans (2) — entries in settings.local.json with no matching state.grants record:
+    - `Bash(npm:*)`  [pre-V1.2 form]
+    - `Bash(node:*)`  [pre-V1.2 form]
+  Resolution:
+    - Allow-side: /floating-perms reconcile sid=abc12345 to inspect, then re-run with --auto to clean.
+
+user:       /floating-perms reconcile sid=abc12345
+claude:     [runs] node apply.js reconcile sid=abc12345
+            Found 2 orphan floating-form entry/entries in settings.local.json:
+              - Bash(npm:*)  [pre-V1.2 heuristic]
+              - Bash(node:*) [pre-V1.2 heuristic]
+            To revoke them all, re-run with --auto:
+              /floating-perms reconcile sid=abc12345 --auto
+
+claude:     [asks user via AskUserQuestion: "Revoke these 2 orphans? Allow / Skip / Keep one"]
+user:       picks "Revoke all"
+claude:     [runs] node apply.js reconcile sid=abc12345 --auto
+            ✓ Revoked 2 orphan(s) from settings.local.json.
+```
+
+## What the sentinels mean
+
+Starting V1.2, `apply.js` and `cleanup.js` insert two marker strings into
+`permissions.allow` to bracket the floating-perms managed section:
+
+```
+"// ──────── floating-perms managed below — auto-revoked on TTL expiry ────────"
+…floating entries…
+"// ──────── end floating-perms ────────"
+```
+
+The pre-V1.2 form of the start sentinel (`… auto-revoked at SessionEnd …`)
+is still recognized on read for backward compat, and rewritten to the new
+form on the next mutation.
+
+These are string array entries (not JSON comments — Claude Code doesn't
+support JSONC), but they don't begin with any tool prefix (`Bash`, `Read`,
+`Edit`, …) so the permission engine has nothing to match them against.
+Effective no-ops. They survive `JSON.stringify` round-trips. The user can
+scan the file and immediately tell which entries are managed.
+
+If you ever see one sentinel without its pair, the writer auto-heals on
+the next mutation — both sentinels are filtered on every write and
+re-emitted from scratch.
+
+**`permissions.additionalDirectories` has NO sentinel** — it's a plain
+array of absolute paths, no entries the permission engine ignores. Tracking
+is state-driven instead: each grant stores its `additional_dir` in
+`state.json`, and cleanup removes the dir from `additionalDirectories` only
+if no remaining grant still needs it. If `state.json` is lost, injected
+dirs stay in the file until the user removes them manually — same failure
+mode class as pre-V1.2 allow-list orphans, currently not covered by
+`reconcile`.
+
+## Orphan reconciliation
+
+Two failure modes leave stale entries in `permissions.allow`:
+
+1. **SessionEnd never fired** (process crash, kill -9, container yanked,
+   VS Code window closed with the ✕ — the CLI runs in an integrated
+   terminal and the extension's deactivate is a no-op, so SessionEnd is
+   not reliably invoked on shutdown). The default 30 min TTL caps the
+   damage, but grants still active at the moment of a hard shutdown
+   remain in `state.json` until either they expire (removed on next
+   `revokeExpired` tick) or `gc` finds them (state-side, grants whose
+   `sid !== current`).
+2. **`state.json` was lost** (rm, container rebuild, corruption). The
+   `permissions.allow` entries remain but the state has no record of them.
+   `cleanup.js` is state-driven so it will never see them. Detected by
+   `reconcile` (allow-side, canonical-form entries with no state match).
+
+Both failure modes are surfaced at SessionStart via `additionalContext`,
+and the user is pointed at the right subcommand (`gc` for state-side,
+`reconcile` for allow-side).
+
+- **AskUserQuestion is mandatory before any auto-triggered grant.** No
+  silent batch grants. The user must see the exact patterns spelled out
+  in the question's options. If the user types `/floating-perms batch ...`
+  manually, the explicit command itself IS the confirmation — still echo
+  what will be granted before running.
+- **Blocklist is non-negotiable.** `rm`, `sudo`, `chmod`, and friends, plus
+  system paths (`/etc/**`, `/usr/bin/**`, `/root/**`, etc.) are refused
+  even if the user asks. Reason printed in the report.
+- **Canonical state file** at `/workspace/.devcontainer/notify/floating-perms-state.json`.
+  `settings.local.json` is a mirror; never extended with a non-standard
+  schema.
+- **Audit log append-only** at `/workspace/.devcontainer/notify/floating-perms-audit.jsonl`.
+  Every grant + revoke logged with timestamp, sid, reason.
+- **One-shot deny per spike** — the hook clears the counter after emitting
+  the deny so you're not paralyzed. If you ignore the reason and trigger
+  a new spike (3 more prompts after the 60s cooldown), a new deny fires.
+- **Auto-allowed calls skipped** — any tool call Claude Code auto-resolves
+  (no popup, `payload.permission_suggestions` absent) is dropped by the
+  hook before touching the counter. Covers cwd file operations, allowlist
+  hits, and everything else the runtime settles silently.
+- **No automatic cleanup of `.allow` entries not in `_state`.** If the
+  user has hand-edited `permissions.allow`, those entries are not touched
+  by SessionEnd cleanup. Only patterns this skill granted are revoked.
+
+## Failure modes
+
+- **Hook can't read state file** → returns silently, no deny. Worst case:
+  user still sees the next prompt and can grant manually.
+- **Lock contention** → 6 retries with jitter, then proceeds without lock
+  (state read is best-effort). Two simultaneous grants in this window may
+  duplicate-write — apply.js skips already-allowed patterns so the dup is
+  harmless; state.grants may have two entries for one pattern but cleanup
+  tolerates that.
+- **SessionEnd didn't fire** (process crash, kill -9, VS Code force-close)
+  → the 30 min default TTL will still expire the grant on the next hook
+  tick; any still-active grants at the moment of the next session are
+  surfaced as orphans via SessionStart additionalContext, user decides
+  via `/floating-perms gc sid=<current>`.
+
+## Files in scope
+
+- Reads: `/workspace/.claude/settings.local.json`, state + audit files.
+- Writes: `/workspace/.claude/settings.local.json` (only `permissions.allow`),
+  state file, audit JSONL.
+- Never writes: `~/.claude/settings.json` (global), any other config.
+
+## Related skills
+
+- `fewer-permission-prompts` — retrospective scan over past transcripts,
+  produces a permanent allowlist suggestion. Cousin skill: permanent
+  vs ephemeral.
+- `update-config` — owns settings.json mutations more broadly. This skill
+  bypasses it because the operation is mechanical and tightly scoped.

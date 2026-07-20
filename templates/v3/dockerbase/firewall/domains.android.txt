@@ -1,0 +1,39 @@
+# =============================================================================
+# Android + Kotlin dev — starter allowlist (opt-in, MANUAL)
+# =============================================================================
+# This file is NOT auto-loaded. Copy the lines you need into your
+# `domains.local.txt` (gitignored) or paste into `domains.txt` if
+# committing team-wide.
+#
+# Two levels — cherry-pick per your workflow :
+#
+#   Level A (docs)    → reference lookup only, zero package fetches.
+#   Level B (Maven)   → jars fetch for AndroidX, Compose, third-party libs.
+#
+# In `basic` mode, only the host matters (paths ignored). In `strict`,
+# the [GET,HEAD] scopes and per-path narrowing apply.
+# =============================================================================
+
+
+# --- Level A — Documentation (reference lookup) ------------------------------
+
+[GET,HEAD] developer.android.com    # Android SDK reference + guides
+[GET,HEAD] source.android.com       # AOSP source browser
+[GET,HEAD] kotlinlang.org           # Kotlin language + stdlib docs
+[GET,HEAD] docs.oracle.com          # Java 17 stdlib javadoc
+
+
+# --- Level B — Maven / Gradle package repos (dependency fetching) ------------
+
+[GET,HEAD] dl.google.com            # Google Maven (AndroidX, Compose, Play Services) + android.jar stubs
+[GET,HEAD] maven.google.com         # Alias for dl.google.com/android/maven2
+[GET,HEAD] repo.maven.apache.org    # Maven Central (canonical)
+[GET,HEAD] repo1.maven.org          # Maven Central (mirror)
+[GET,HEAD] oss.sonatype.org         # Sonatype snapshots (SNAPSHOT deps)
+[GET,HEAD] plugins.gradle.org       # Gradle Plugin Portal
+[GET,HEAD] services.gradle.org      # Gradle distributions (wrapper downloads)
+
+
+# --- Kotlin toolchain distribution (only if fetching Kotlin releases) --------
+
+[GET,HEAD] download.jetbrains.com   # Kotlin/JB stable + EAP tools

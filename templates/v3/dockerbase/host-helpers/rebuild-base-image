@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Rebuild the claude-devcontainer-base:${VERSION} image from
+# .devcontainer/Dockerfile.base, layer cache enabled by default.
+#
+# When to use this :
+# - You edited a script that's `COPY`'d into the base image
+#   (init-firewall.sh, test-firewall.sh, mitm-init.sh, compile-policy.py,
+#   addons/, dnsmasq.conf, sudoers fragments, …) and need the runtime
+#   `/usr/local/bin/<script>` to reflect your changes.
+# - VS Code's "Rebuild Container" alone only rebuilds the slim layer on top
+#   of the cached base, so script edits stay invisible — this is the missing
+#   step.
+#
+# Cache behaviour : Docker invalidates the COPY layer of the file you edited
+# AND every layer downstream, but keeps everything before it. Typically
+# ~10-30 s on M-series. Pass `--no-cache` as first arg to force a full
+# rebuild (~3-4 min — used when you change FROM, ARGs upstream of the COPY,
+# or you're hunting layer reproducibility issues).
+#
+# Usage :
+#   [host]   bash .devcontainer/host-helpers/rebuild-base-image [--no-cache] [TAG]
+#   default tag = claude-devcontainer-base:${CLAUDE_CODE_VERSION from .env}
+#
+# After this script succeeds, run "Dev Containers: Rebuild Container" in
+# VS Code (or `docker compose up --build` from .devcontainer/) so the slim
+# layer is rebuilt on top of the fresh base.
+#
+# Output is teed to .devcontainer/logs/build-base-<version>-<ts>.log (mirrors
+# the log format used by initialize.sh's build_base_if_missing).
+#
+# Refuses to run from inside the container (needs docker daemon access).
+set -euo pipefail
+
+if [ -f /.dockerenv ] || [ -n "${REMOTE_CONTAINERS:-}" ]; then
+  echo "ERROR: This script must run on the host (needs docker daemon)." >&2
+  echo "       Open a terminal on your Mac/Linux host, cd to the project, and run :" >&2
+  echo "       bash .devcontainer/host-helpers/rebuild-base-image" >&2
+  exit 2
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: docker CLI not found in PATH." >&2
+  exit 2
+fi
+
+NO_CACHE=()
+if [ "${1:-}" = "--no-cache" ]; then
+  NO_CACHE=(--no-cache)
+  shift
+fi
+
+DEVCONTAINER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE="$DEVCONTAINER_DIR/.env"
+
+VERSION=""
+if [ -f "$ENV_FILE" ]; then
+  VERSION=$(grep -E '^CLAUDE_CODE_VERSION=' "$ENV_FILE" | head -1 | cut -d= -f2 | tr -d ' \t\r')
+fi
+VERSION="${VERSION:-2.1.145}"
+TAG="${1:-claude-devcontainer-base:$VERSION}"
+
+mkdir -p "$DEVCONTAINER_DIR/logs"
+TS=$(date +%Y%m%d-%H%M%S)
+LOG="$DEVCONTAINER_DIR/logs/build-base-${VERSION}-${TS}.log"
+
+# Strip HTTPS_PROXY etc. — mitmproxy only listens inside the runtime
+# container ; leaking proxy vars into `docker build` makes apt/curl/npm
+# inside the image try to reach a dead port. Same precaution as
+# build_base_if_missing() in initialize.sh.
+{
+  echo "=== rebuild-base-image $(date) ==="
+  echo "tag           : $TAG"
+  echo "no-cache      : ${NO_CACHE[*]:-(off)}"
+  echo "dockerfile    : $DEVCONTAINER_DIR/Dockerfile.base"
+  echo "context       : $DEVCONTAINER_DIR"
+  echo "docker version: $(docker --version 2>&1)"
+  echo "---"
+} | tee -a "$LOG"
+
+started=$SECONDS
+
+set +e
+env -u HTTPS_PROXY -u HTTP_PROXY -u NO_PROXY \
+    -u https_proxy -u http_proxy -u no_proxy \
+  docker build \
+    --progress=plain \
+    "${NO_CACHE[@]}" \
+    -f "$DEVCONTAINER_DIR/Dockerfile.base" \
+    --build-arg CLAUDE_CODE_VERSION="$VERSION" \
+    -t "$TAG" \
+    "$DEVCONTAINER_DIR" \
+    2>&1 | tee -a "$LOG"
+rc=${PIPESTATUS[0]}
+set -e
+
+elapsed=$((SECONDS - started))
+if [ "$rc" -eq 0 ]; then
+  printf '\033[1;32m✓ Rebuilt %s in %ds. Now: VS Code → "Dev Containers: Rebuild Container".\033[0m\n' "$TAG" "$elapsed"
+  printf '  Log: %s\n' "${LOG#${DEVCONTAINER_DIR}/}"
+  exit 0
+else
+  printf '\033[1;31m✗ Build failed (exit %d, %ds elapsed). Full log: %s\033[0m\n' "$rc" "$elapsed" "$LOG"
+  echo "  Last 20 log lines:"
+  tail -n 20 "$LOG" | sed 's/^/    /'
+  exit "$rc"
+fi
