@@ -48,6 +48,11 @@
   "remoteUser": "node",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096 --use-openssl-ca",
+    // UTF-8 locale — Dockerfile.base purges all locale packs except en/en_US/C
+    // (~175 MB saved), so only glibc's built-in C.UTF-8 is available. Without
+    // this, LANG is empty → LC_CTYPE=POSIX → zsh's ZLE renders every non-ASCII
+    // byte as `?` (em-dash « — » → « ??? », idem accents/arrows).
+    "LANG": "C.UTF-8",
     // CLAUDE_CONFIG_DIR is intentionally NOT pinned here — `.env` (via
     // docker-compose env_file) is the single source of truth so
     // host-helpers/claude-switch can toggle local↔cloud by editing one file.

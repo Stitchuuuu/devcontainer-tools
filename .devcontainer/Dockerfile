@@ -18,6 +18,21 @@ FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}
 
 USER root
 
+# --- Animation fixture tooling (dev-only, rarely used) ------------------
+# Regenerates purrpause's raster/video test fixtures (GIF / animated WebP /
+# APNG / alpha WebM) from the bundled Lottie, so every format benchmarks the
+# SAME animation. Isolated in a venv to sidestep PEP-668; the driver script
+# (apps/purrpause/scripts/gen-anim-fixtures.py) calls the venv python by
+# absolute path, so nothing here shadows the default python3 for other work.
+# ffmpeg ships libvpx-vp9 for the alpha WebM path. Purely a build-time
+# convenience — none of this is embedded in the purrpause binary.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/anim-tools \
+ && /opt/anim-tools/bin/pip install --no-cache-dir rlottie-python pillow lottie
+# -----------------------------------------------------------------------
+
 # Project-specific firewall data — baked into the image, no runtime bind mount.
 # Recursive COPY embarks the whole firewall/ tree (domains, policy.d/,
 # policy.local.d/, default-mode, direct-tcp-allow.txt, addons, dnsmasq.conf,
