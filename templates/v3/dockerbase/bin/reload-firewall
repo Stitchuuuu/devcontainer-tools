@@ -293,6 +293,18 @@ fi
 # -------------------------------------------------------------------------
 start_ns=$(date +%s%N)
 
+# Pre-flight. A reload assumes a booted firewall : it flushes the local ipset
+# and lets dnsmasq repopulate it. If that set is missing, the DNS half still
+# succeeds and the packet-filter half silently does not — the new hosts resolve
+# but stay blocked, and the summary below would still print a tick. Refuse here,
+# before anything under /var/run has been touched.
+if ! ipset list allowed-domains-local >/dev/null 2>&1; then
+  echo "❌ the allowed-domains-local ipset does not exist — the firewall is not up." >&2
+  echo "   Nothing was changed." >&2
+  echo "   Boot it first :  sudo /usr/local/bin/init-firewall.sh" >&2
+  exit 1
+fi
+
 # Rename rather than truncate-in-place : the mitmproxy addons watch
 # policy.compiled.yaml's mtime and re-read it mid-flight, so a partially
 # written file would be observable.
@@ -307,8 +319,16 @@ for f in dnsmasq-domains-base.conf dnsmasq-domains-local.conf policy.compiled.ya
 done
 
 # Flush only the local ipset — the base set keeps its entries, so connections
-# to baseline hosts survive the reload.
-ipset flush allowed-domains-local
+# to baseline hosts survive the reload. Checked as well as pre-flighted: the
+# set can disappear between the two, and an unflushed set means dnsmasq
+# repopulates on top of stale entries.
+if ! ipset flush allowed-domains-local 2>"$STAGE/ipset.err"; then
+  echo "❌ could not flush the allowed-domains-local ipset :" >&2
+  sed 's/^/   /' "$STAGE/ipset.err" >&2
+  echo "   The new dnsmasq confs are in place but the packet filter was NOT updated." >&2
+  echo "   Restart the container : boot reapplies the baked ruleset cleanly." >&2
+  exit 1
+fi
 
 # SIGHUP is NOT enough : per dnsmasq(8) it re-reads /etc/hosts, /etc/ethers,
 # --addn-hosts, --hostsdir and the --dhcp-* files, but never re-parses
