@@ -14,7 +14,11 @@
         // Marketplace path. Keep the version in sync with CLAUDE_CODE_VERSION
         // in .devcontainer/.env — bumping one without the other will trigger
         // a redownload of ~250 MB per container start.
-        "anthropic.claude-code@2.1.145",
+        // anthropic.claude-code is DELIBERATELY NOT listed. The base image
+        // bakes the patched extension and registers it in extensions.json —
+        // a pin here is the one path by which an unpatched Marketplace copy
+        // can arrive. The 42-claude-ext-pin-warn post-start hook banners if
+        // a pin reappears or the baked extension is missing.
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
         "eamodio.gitlens",
