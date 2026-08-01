@@ -3,6 +3,12 @@
 The v3 architecture splits the old all-in-one template into distributed
 artifacts. This directory no longer holds everything :
 
+- **`project/`** — the **copy-paste `.devcontainer/` for a v3 project** :
+  thin fw-bake Dockerfile over the published GHCR image, `devc-hook`
+  lifecycle, firewall allowlist, hook overlay dirs, patched
+  `initialize.sh` (no local base build). Hand-assembled precursor of the
+  session-5 `devc init` scaffold — see its README for install steps.
+
 - **`dockerbase/`** — the **project-side** template source only : the thin
   project `Dockerfile` (fw-bake + `FROM` the published base),
   `devcontainer.json`, `docker-compose.yml`, `initialize.sh`, firewall
