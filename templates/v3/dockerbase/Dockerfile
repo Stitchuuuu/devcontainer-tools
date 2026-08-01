@@ -10,6 +10,35 @@
 # -----------------------------------------------
 ARG CLAUDE_CODE_VERSION=2.1.145
 ARG DC_PROJECT={{PROJECT_ID}}
+
+# -----------------------------------------------
+# Stage 1 — firewall bake (throwaway)
+# -----------------------------------------------
+# Why a separate stage rather than one COPY + RUN in the final image :
+# firewall/ carries domains.local.txt and policy.local.d/, which are gitignored
+# and writable by anything running in the container, an npm postinstall
+# included. A `RUN rm` after the COPY would not help — the file still sits in
+# the COPY layer, so `docker save` and any registry push still ship it. Layers
+# built in a stage that nothing copies from never enter the final manifest, so
+# the .local files are discarded rather than merely hidden.
+#
+# The bake also freezes the compiled ruleset into effective/, which boot
+# installs verbatim instead of recompiling.
+FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT} AS fw-bake
+
+# 0 = hardened (default) : domains.local.txt and policy.local.d/ are NOT baked.
+# 1 = convenience : they are. Set per developer through .env, never as a team
+# default. Either way the bake logs which it did and how many hosts it costs.
+ARG FIREWALL_ALLOW_LOCAL_AT_REBUILD=0
+
+USER root
+COPY firewall/ /tmp/fw-src/
+RUN FIREWALL_ALLOW_LOCAL_AT_REBUILD="${FIREWALL_ALLOW_LOCAL_AT_REBUILD}" \
+    /usr/local/bin/firewall-docker-setup.sh --src /tmp/fw-src --dest /out
+
+# -----------------------------------------------
+# Final image
+# -----------------------------------------------
 FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}
 
 # Project-specific layer (empty by default — add project deps here).
@@ -18,14 +47,12 @@ FROM claude-devcontainer-base:${CLAUDE_CODE_VERSION}-${DC_PROJECT}
 
 USER root
 
-# Project-specific firewall data — baked into the image, no runtime bind mount.
-# Recursive COPY embarks the whole firewall/ tree (domains, policy.d/,
-# policy.local.d/, default-mode, direct-tcp-allow.txt, addons, dnsmasq.conf,
-# tests, …). Base-layer COPYs into /etc/devcontainer-firewall/ from
-# Dockerfile.base are overlaid by this COPY where paths overlap — projects
-# can override addons/, dnsmasq.conf, tests/ that way. firewall-docker-setup.sh
-# (baked in the base image) finalizes perms + chown.
-COPY firewall/ /etc/devcontainer-firewall/
-RUN /usr/local/bin/firewall-docker-setup.sh
+# /out already merges the base image's firewall content with the project
+# overlay, so this single COPY is the whole configuration. Ownership and modes
+# were set root:root / u=rwX,go=rX in the bake stage and COPY --from preserves
+# them. The assertion catches a bake that silently produced nothing.
+COPY --from=fw-bake /out/ /etc/devcontainer-firewall/
+RUN test -s /etc/devcontainer-firewall/baked-at \
+ && test -s /etc/devcontainer-firewall/effective/sources.sha256
 
 USER node

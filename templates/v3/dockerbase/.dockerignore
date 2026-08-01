@@ -13,3 +13,9 @@
 # Local logs
 *.log
 logs/
+
+# Firewall bake output — regenerated inside the build. Keeping it out of the
+# context means a stale local copy can never reach the image, and the bake
+# stage's cache key does not move every time someone rebuilds locally.
+firewall/effective/
+firewall/baked-at

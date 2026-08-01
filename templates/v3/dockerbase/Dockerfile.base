@@ -307,10 +307,18 @@ COPY firewall/compile-policy.py /usr/local/bin/compile-policy.py
 COPY firewall/mitm-init.sh /usr/local/bin/mitm-init.sh
 COPY firewall/firewall-blocks /usr/local/bin/firewall-blocks
 COPY firewall/firewall-docker-setup.sh /usr/local/bin/firewall-docker-setup.sh
+# Both must be image content, not workspace content. reload-firewall runs as
+# root ; the digest library decides whether boot trusts the baked ruleset. A
+# copy under /workspace is writable by everything in the container, so running
+# either from there would hand root (or the allowlist) to any postinstall.
+COPY bin/reload-firewall     /usr/local/bin/reload-firewall
+COPY bin/firewall-digest.sh  /usr/local/bin/firewall-digest.sh
 COPY firewall/dnsmasq.conf /etc/devcontainer-firewall/dnsmasq.conf
 COPY firewall/tests/ /etc/devcontainer-firewall/tests/
 COPY firewall/addons/ /etc/devcontainer-firewall/addons/
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/test-firewall.sh /usr/local/bin/mitm-init.sh /usr/local/bin/compile-policy.py /usr/local/bin/firewall-blocks /usr/local/bin/firewall-docker-setup.sh && \
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/test-firewall.sh /usr/local/bin/mitm-init.sh /usr/local/bin/compile-policy.py /usr/local/bin/firewall-blocks /usr/local/bin/firewall-docker-setup.sh /usr/local/bin/reload-firewall && \
+    chmod 0644 /usr/local/bin/firewall-digest.sh && \
+    chown root:root /usr/local/bin/reload-firewall /usr/local/bin/firewall-digest.sh && \
     chown -R root:root /etc/devcontainer-firewall && \
     chmod -R 644 /etc/devcontainer-firewall && \
     chmod 755 /etc/devcontainer-firewall \
@@ -320,8 +328,29 @@ RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/test-firewall.sh /us
     for f in /etc/devcontainer-firewall/addons/*.py; do \
       python3 -c "import ast,sys; ast.parse(open('$f').read())" || exit 1; \
     done && \
+    bash -n /usr/local/bin/reload-firewall && \
+    bash -n /usr/local/bin/firewall-digest.sh && \
     echo "$USERNAME ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh, /usr/local/bin/test-firewall.sh" > /etc/sudoers.d/node-firewall && \
-    chmod 0440 /etc/sudoers.d/node-firewall
+    chmod 0440 /etc/sudoers.d/node-firewall && \
+    printf '%s\n' \
+      '# reload-firewall - PASSWORD REQUIRED, DELIBERATELY. Never add NOPASSWD.' \
+      '#' \
+      '# This command merges workspace .local files into the live firewall. The' \
+      '# env-var and TTY checks inside it are honesty guards, not a boundary:' \
+      '# both are trivially cleared by any process that wants to. A NOPASSWD' \
+      '# grant here would therefore let an npm postinstall, or an agent, widen' \
+      '# the firewall allowlist unattended in two lines.' \
+      '#' \
+      '# The node user has no password, so this rule cannot be used as written.' \
+      '# That is intended. Root comes from the host instead:' \
+      '#   docker exec -it -u 0 <container> /usr/local/bin/reload-firewall' \
+      '# No docker socket is mounted, so nothing inside can reach that path.' \
+      '# The rule exists to record the policy on disk.' \
+      "$USERNAME ALL=(root) /usr/local/bin/reload-firewall" \
+      > /etc/sudoers.d/node-reload-firewall && \
+    chmod 0440 /etc/sudoers.d/node-reload-firewall && \
+    visudo -c -f /etc/sudoers.d/node-reload-firewall && \
+    visudo -c -f /etc/sudoers.d/node-firewall
 
 # -----------------------------------------------
 # Shell init

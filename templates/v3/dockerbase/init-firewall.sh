@@ -240,17 +240,63 @@ fi
 # See firewall/compile-policy.py for syntax + merge precedence.
 echo "📝 Compiling firewall policy from $FIREWALL_CONFIG_DIR..."
 mkdir -p "$(dirname "$GENERATED_DNSMASQ_CONF")"
+
+# Frozen effective set — bake is ingestion, boot is apply.
+# firewall-docker-setup.sh compiles the committed sources once at docker build
+# time into $FIREWALL_CONFIG_DIR/effective/, alongside a digest of every input
+# compile-policy.py reads. While that digest still matches, boot installs the
+# frozen artifacts rather than recompiling. Any mismatch — a base-image bump
+# that changed the compiler, a hand-edited /etc, a legacy image built before
+# the bake existed — falls back to compiling in place, with the reason logged.
+EFFECTIVE_DIR="$FIREWALL_CONFIG_DIR/effective"
+# Overridable for the same reason FIREWALL_CONFIG_DIR is : firewall/tests/
+# exercises this decision against a sandbox tree.
+FW_DIGEST_LIB="${FW_DIGEST_LIB:-/usr/local/bin/firewall-digest.sh}"
+USE_FROZEN=false
+FROZEN_REASON="image has no baked effective/ set"
+if [ -r "$FW_DIGEST_LIB" ] && [ -s "$EFFECTIVE_DIR/sources.sha256" ]; then
+  # shellcheck source=/dev/null
+  . "$FW_DIGEST_LIB"
+  FROZEN_DIGEST=$(cat "$EFFECTIVE_DIR/sources.sha256")
+  CURRENT_DIGEST=$(fw_sources_digest "$FIREWALL_CONFIG_DIR" \
+                     "$(cat "$EFFECTIVE_DIR/local-included" 2>/dev/null || echo 0)")
+  if [ "$FROZEN_DIGEST" != "$CURRENT_DIGEST" ]; then
+    FROZEN_REASON="sources changed since bake (${FROZEN_DIGEST:0:12} → ${CURRENT_DIGEST:0:12})"
+  elif [ ! -s "$EFFECTIVE_DIR/dnsmasq-domains-base.conf" ] \
+    || [ ! -s "$EFFECTIVE_DIR/policy.compiled.yaml" ] \
+    || [ ! -f "$EFFECTIVE_DIR/dnsmasq-domains-local.conf" ]; then
+    FROZEN_REASON="baked effective/ set is incomplete"
+  else
+    USE_FROZEN=true
+  fi
+fi
+
+# Rename rather than truncate in place : the mitmproxy addons re-read
+# policy.compiled.yaml whenever its mtime moves, so they must never observe a
+# half-written file.
+install_frozen() {
+  install -m 644 "$EFFECTIVE_DIR/$1" "$2.new" && mv -f "$2.new" "$2"
+}
+
 if [ "$FIREWALL_MODE" = "basic" ] || [ "$FIREWALL_MODE" = "strict" ]; then
-  # Split base/local so reload-local.sh can flush only the local layer
-  # without dropping baseline connections. In strict, the local flush
-  # spares baseline mitmproxy connections; the addons pick up the new
-  # policy.compiled.yaml via mtime check on their next request.
-  python3 /usr/local/bin/compile-policy.py \
-    --config-dir "$FIREWALL_CONFIG_DIR" \
-    --split-local \
-    --out-dnsmasq-base  "$GENERATED_DNSMASQ_BASE_CONF" \
-    --out-dnsmasq-local "$GENERATED_DNSMASQ_LOCAL_CONF" \
-    --out-policy        "$GENERATED_POLICY_COMPILED"
+  if [ "$USE_FROZEN" = "true" ]; then
+    echo "  ⚡ installing the frozen ruleset baked at $(head -1 "$FIREWALL_CONFIG_DIR/baked-at" 2>/dev/null || echo 'unknown')"
+    install_frozen dnsmasq-domains-base.conf  "$GENERATED_DNSMASQ_BASE_CONF"
+    install_frozen dnsmasq-domains-local.conf "$GENERATED_DNSMASQ_LOCAL_CONF"
+    install_frozen policy.compiled.yaml       "$GENERATED_POLICY_COMPILED"
+  else
+    echo "  ↻ recompiling — $FROZEN_REASON"
+    # Split base/local so reload-firewall can flush only the local layer
+    # without dropping baseline connections. In strict, the local flush
+    # spares baseline mitmproxy connections; the addons pick up the new
+    # policy.compiled.yaml via mtime check on their next request.
+    python3 /usr/local/bin/compile-policy.py \
+      --config-dir "$FIREWALL_CONFIG_DIR" \
+      --split-local \
+      --out-dnsmasq-base  "$GENERATED_DNSMASQ_BASE_CONF" \
+      --out-dnsmasq-local "$GENERATED_DNSMASQ_LOCAL_CONF" \
+      --out-policy        "$GENERATED_POLICY_COMPILED"
+  fi
   chmod 644 "$GENERATED_DNSMASQ_BASE_CONF" "$GENERATED_DNSMASQ_LOCAL_CONF" "$GENERATED_POLICY_COMPILED"
   dbg "  generated $(grep -c '^server=' "$GENERATED_DNSMASQ_BASE_CONF") base + $(grep -c '^server=' "$GENERATED_DNSMASQ_LOCAL_CONF") local dnsmasq rules"
 else

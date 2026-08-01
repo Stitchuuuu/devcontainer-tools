@@ -24,6 +24,11 @@ firewall/domains.local.txt
 firewall/policy.local.d/*
 firewall/tests/*.log
 firewall-blocks.*.log
+# Build output of firewall-docker-setup.sh, never a source. Committing it would
+# put a hand-editable copy of the compiled ruleset next to the files it is
+# supposed to be derived from.
+firewall/effective/
+firewall/baked-at
 
 !firewall/policy.local.d/.keep
 

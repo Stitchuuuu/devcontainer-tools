@@ -14,6 +14,12 @@ services:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.145}
         GIT_DELTA_VERSION: "0.18.2"
         DC_PROJECT: ${DC_PROJECT:-{{PROJECT_ID}}}
+        # Whether the build bakes firewall/domains.local.txt and
+        # firewall/policy.local.d/ into the image. Hardened default is 0 :
+        # those files are gitignored and container-writable, so a rebuild
+        # would otherwise be a silent path from "a postinstall edited a file"
+        # to "the firewall allows more". Personal opt-in through .env only.
+        FIREWALL_ALLOW_LOCAL_AT_REBUILD: ${FIREWALL_ALLOW_LOCAL_AT_REBUILD:-0}
     # Local Ollama backend (cf. .devcontainer/knowledge/ollama-local.md). Two aliases for
     # the same host gateway IP — the routing difference comes from NO_PROXY :
     #   ollama.internal  ∉ NO_PROXY  → routed via HTTP_PROXY (mitmproxy audit)

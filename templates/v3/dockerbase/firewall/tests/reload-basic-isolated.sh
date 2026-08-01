@@ -3,7 +3,7 @@
 #
 # HOST-RUNNABLE ONLY. Spawns a scoped Docker container from the host, boots
 # init-firewall.sh in basic mode (DNS + ipset only, no mitmproxy L7), drives
-# direct curl through the firewall, triggers reload-local.sh, and asserts:
+# direct curl through the firewall, triggers reload-firewall, and asserts:
 #   - baseline (allowlisted host) reaches upstream directly (no L7 proxy)
 #   - non-allowlisted host is blocked (dnsmasq NXDOMAIN → curl 000)
 #   - reload adds a new host in < 500 ms
@@ -192,8 +192,9 @@ echo
 echo "═══ [1] Install scripts + force basic mode + seed portal-test:4242 ═══"
 dex cp /workspace/.devcontainer/init-firewall.sh              /usr/local/bin/init-firewall.sh
 dex cp /workspace/.devcontainer/firewall/compile-policy.py    /usr/local/bin/compile-policy.py
-dex cp /workspace/.devcontainer/reload-local.sh               /usr/local/bin/reload-local.sh
-dex chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/compile-policy.py /usr/local/bin/reload-local.sh
+dex cp /workspace/.devcontainer/bin/reload-firewall           /usr/local/bin/reload-firewall
+dex cp /workspace/.devcontainer/bin/firewall-digest.sh        /usr/local/bin/firewall-digest.sh
+dex chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/compile-policy.py /usr/local/bin/reload-firewall
 dex sh -c 'echo basic > /etc/devcontainer-firewall/default-mode'
 # Seed portal-test:4242 AND host:$HOST_PORT_ALLOWED into the CONTAINER's
 # direct-tcp-allow.txt (transient — container-scoped, no workspace
@@ -259,13 +260,19 @@ echo "═══ [5] Append example.org to domains.local.txt + trigger reload ═
 dex sh -c 'printf "\nexample.org\n" >> /workspace/.devcontainer/firewall/domains.local.txt'
 echo "  ✔ domains.local.txt appended"
 
-RELOAD_OUT=$(dex /usr/local/bin/reload-local.sh 2>&1)
+# reload-firewall demands a TTY and an interactive `yes`. `script -qec`
+# supplies both — the very bypass its header documents as trivial. Using it
+# here is the point : the TTY and CLAUDECODE checks are honesty guards, so a
+# test that simulates a human is allowed to look like one. The barrier that
+# actually holds is root, and `docker exec -u 0` is how we cross it.
+RELOAD_OUT=$(printf 'yes\n' | docker exec -i -u 0 "$CONTAINER" \
+               script -qec /usr/local/bin/reload-firewall /dev/null 2>&1)
 RELOAD_RC=$?
 echo "$RELOAD_OUT" | sed 's/^/    /'
 if [ $RELOAD_RC -eq 0 ]; then
-  echo "  ✔ reload-local.sh exited 0"
+  echo "  ✔ reload-firewall exited 0"
 else
-  fail "reload-local.sh exit=$RELOAD_RC"
+  fail "reload-firewall exit=$RELOAD_RC"
 fi
 
 echo
