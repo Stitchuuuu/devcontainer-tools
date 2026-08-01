@@ -1,0 +1,404 @@
+// End-to-end tests for `devc initialize` against a minimal fixture.
+//
+// These cover the branch the differential harness cannot reach: the
+// interactive path. That harness runs both implementations with stdin not a
+// TTY, which is the right choice — it is what CI and a VS Code rebuild hit —
+// but it means the Claude-mode prompt never fires there.
+//
+// The fixture is deliberately bare. No notify/index.js means the daemon spawn
+// returns immediately — a property of the code under test, not a stub bolted
+// on. Docker does need standing in for, since a missing docker is fatal by
+// design and there is none inside this container; the stub records nothing and
+// succeeds at everything, which drives the "image already present, no rebuild
+// signal" path.
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
+import { initialize } from '../src/commands/initialize.js'
+import type { HostProbe } from '../src/lib/platform.js'
+
+const LINUX_PROBE: HostProbe = { platform: 'linux', env: {}, procVersion: 'Linux version 6.12.76-linuxkit' }
+
+function fixture(): { projectDir: string; devcontainerDir: string; cleanup: () => void } {
+	const projectDir = mkdtempSync(join(tmpdir(), 'devc-init-'))
+	const devcontainerDir = join(projectDir, '.devcontainer')
+	mkdirSync(join(devcontainerDir, 'firewall'), { recursive: true })
+	return { projectDir, devcontainerDir, cleanup: () => rmSync(projectDir, { recursive: true, force: true }) }
+}
+
+/** Marks the run interactive. Never read from — `ask` supplies the answers. */
+const TTY_STDIN = (): NodeJS.ReadableStream & { isTTY?: boolean } =>
+	Object.assign(new PassThrough(), { isTTY: true })
+
+const PIPED_STDIN = (): NodeJS.ReadableStream & { isTTY?: boolean } =>
+	Object.assign(new PassThrough(), { isTTY: false })
+
+/**
+ * Answers queued in order, and a record of what was actually asked.
+ *
+ * An exhausted queue returns '' — the same thing a user pressing Enter gives,
+ * so a test that under-supplies answers reports a wrong value rather than
+ * hanging.
+ */
+function answering(...answers: string[]): ((question: string) => Promise<string>) & { asked: string[] } {
+	const asked: string[] = []
+	let index = 0
+	const ask = async (question: string): Promise<string> => {
+		asked.push(question)
+		return answers[index++] ?? ''
+	}
+	return Object.assign(ask, { asked })
+}
+
+/**
+ * Run with a stub `docker` first on PATH.
+ *
+ * `mode` is passed to writeFileSync rather than shelled out to chmod, which is
+ * blocklisted in this environment anyway.
+ */
+async function withStubDocker<T>(fn: () => Promise<T>): Promise<T> {
+	const binDir = mkdtempSync(join(tmpdir(), 'devc-bin-'))
+	writeFileSync(join(binDir, 'docker'), '#!/bin/bash\nexit 0\n', { encoding: 'utf8', mode: 0o755 })
+	const saved = process.env['PATH']
+	process.env['PATH'] = `${binDir}:${saved ?? ''}`
+	try {
+		return await fn()
+	} finally {
+		process.env['PATH'] = saved
+		rmSync(binDir, { recursive: true, force: true })
+	}
+}
+
+/** Run with PATH blanked, so `which docker` cannot resolve anything. */
+async function withoutDocker<T>(fn: () => Promise<T>): Promise<T> {
+	const saved = process.env['PATH']
+	process.env['PATH'] = ''
+	try {
+		return await fn()
+	} finally {
+		process.env['PATH'] = saved
+	}
+}
+
+/** Fails loudly if anything prompts — used where nothing should. */
+const neverAsked = async (question: string): Promise<string> => {
+	throw new Error(`unexpected prompt: ${question}`)
+}
+
+const read = (path: string): string | null => (existsSync(path) ? readFileSync(path, 'utf8') : null)
+
+test('non-interactive: writes the defaults and syncs the proxy variables', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		const code = await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+			}),
+		)
+
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, '.configured-auth')), 'standard\n')
+		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-dev.md\n')
+		assert.equal(read(join(devcontainerDir, 'firewall', 'default-mode')), 'strict\n')
+		assert.equal(read(join(devcontainerDir, 'logs', 'host-os')), 'linux\n')
+
+		// strict keeps the proxy/CA variables, in the bash order.
+		assert.equal(
+			read(join(devcontainerDir, '.env')),
+			[
+				'CLAUDE_CODE_VERSION=2.1.220',
+				'HTTPS_PROXY=http://127.0.0.1:8080',
+				'HTTP_PROXY=http://127.0.0.1:8080',
+				'NO_PROXY=localhost,127.0.0.0/8,host.docker.internal,.local',
+				'NODE_EXTRA_CA_CERTS=/var/lib/mitmproxy/mitmproxy-ca-cert.pem',
+				'',
+			].join('\n'),
+		)
+
+		// The seeded files the image build COPYs.
+		for (const seeded of ['firewall/domains.local.txt', 'firewall/direct-tcp-allow.txt']) {
+			assert.ok(existsSync(join(devcontainerDir, seeded)), `${seeded} seeded`)
+		}
+		assert.ok(existsSync(join(devcontainerDir, 'firewall', 'policy.local.d')), 'policy.local.d created')
+		assert.ok(existsSync(join(projectDir, '.vscode', 'settings.json')), '.vscode stub created')
+	} finally {
+		cleanup()
+	}
+})
+
+test('a first interactive run never reaches the Claude-mode prompt', async () => {
+	// Faithful to the bash script, and surprising enough to pin down. On a fresh
+	// setup both flags are absent, so prompt_auth runs — and prompt_auth itself
+	// writes MODE_FLAG when it is missing (initialize.sh:526). By the time the
+	// next line tests `[ ! -f "$MODE_FLAG" ]`, the file exists, so
+	// prompt_claude_mode is skipped and CLAUDE_MODE stays unset, which also
+	// means the "Press Enter" pause never fires.
+	//
+	// The prompt is reachable only the way the summary tells you to reach it:
+	// `rm .devcontainer/.configured-claude-mode` on its own.
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		// No answers queued at all — anything that prompted would hang or default.
+		const code = await withStubDocker(() =>
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: neverAsked, probe: LINUX_PROBE }),
+		)
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, '.configured-auth')), 'standard\n')
+		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-dev.md\n')
+	} finally {
+		cleanup()
+	}
+})
+
+/** Reset only the Claude-mode flag, which is what makes the prompt reachable. */
+function withAuthAlreadyConfigured(devcontainerDir: string): void {
+	writeFileSync(join(devcontainerDir, '.configured-auth'), 'standard\n', 'utf8')
+}
+
+test('interactive: answering 2 selects the reviewer flavour', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		withAuthAlreadyConfigured(devcontainerDir)
+		// Second line answers the "Press Enter to continue..." pause.
+		const code = await withStubDocker(() =>
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering('2'), probe: LINUX_PROBE }),
+		)
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-reviewer.md\n')
+	} finally {
+		cleanup()
+	}
+})
+
+test('interactive: an empty answer defaults to dev', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		withAuthAlreadyConfigured(devcontainerDir)
+		const code = await withStubDocker(() =>
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering(''), probe: LINUX_PROBE }),
+		)
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-dev.md\n')
+	} finally {
+		cleanup()
+	}
+})
+
+test('a missing docker is fatal, but the .env version pin is written first', async () => {
+	// Matches the bash ordering: set_env_var at initialize.sh:415 lands before
+	// anything touches the daemon, and the run then dies rather than reporting
+	// a success it did not achieve.
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		await assert.rejects(
+			() =>
+				withoutDocker(() =>
+					initialize({
+						devcontainerDir,
+						dryRun: false,
+						cwd: projectDir,
+						input: PIPED_STDIN(),
+						probe: LINUX_PROBE,
+					}),
+				),
+			/docker not found on PATH/,
+		)
+		assert.equal(read(join(devcontainerDir, '.env')), 'CLAUDE_CODE_VERSION=2.1.220\n')
+		assert.equal(existsSync(join(devcontainerDir, '.configured-auth')), false, 'flags not written')
+	} finally {
+		cleanup()
+	}
+})
+
+test('a second run re-prompts nothing and leaves the flags alone', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		withAuthAlreadyConfigured(devcontainerDir)
+		await withStubDocker(() =>
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering('2'), probe: LINUX_PROBE }),
+		)
+		// No answers queued: if anything prompted, the run would hang or default.
+		const code = await withStubDocker(() =>
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: neverAsked, probe: LINUX_PROBE }),
+		)
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-reviewer.md\n')
+	} finally {
+		cleanup()
+	}
+})
+
+test('a manual edit of firewall/default-mode re-aligns .env on the next run', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+			}),
+		)
+		assert.match(read(join(devcontainerDir, '.env')) ?? '', /HTTPS_PROXY=/)
+
+		// basic clears the four variables — the idempotent re-sync bash does at
+		// initialize.sh:647.
+		writeFileSync(join(devcontainerDir, 'firewall', 'default-mode'), 'basic\n', 'utf8')
+		await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+			}),
+		)
+		const env = read(join(devcontainerDir, '.env')) ?? ''
+		for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS']) {
+			assert.doesNotMatch(env, new RegExp(`^${key}=`, 'm'), `${key} cleared in basic`)
+		}
+		assert.match(env, /^CLAUDE_CODE_VERSION=/m, 'unrelated keys survive')
+	} finally {
+		cleanup()
+	}
+})
+
+test('an unsupported host is refused by name before anything is written', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		const code = await initialize({
+			devcontainerDir,
+			dryRun: false,
+			cwd: projectDir,
+			input: PIPED_STDIN(),
+			probe: { platform: 'win32', env: { MSYSTEM: 'CYGWIN_NT-10.0' }, procVersion: null },
+		})
+		assert.equal(code, 1)
+		assert.equal(existsSync(join(devcontainerDir, 'logs')), false, 'nothing written')
+	} finally {
+		cleanup()
+	}
+})
+
+test('dry-run writes nothing at all', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		const code = await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: true,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+			}),
+		)
+		assert.equal(code, 0)
+		for (const path of [
+			join(devcontainerDir, '.env'),
+			join(devcontainerDir, '.configured-auth'),
+			join(devcontainerDir, 'logs'),
+			join(projectDir, '.vscode'),
+		]) {
+			assert.equal(existsSync(path), false, `${path} must not exist after a dry run`)
+		}
+		// The one pre-existing file must be untouched, not truncated.
+		assert.equal(read(join(devcontainerDir, 'firewall', 'default-mode')), null)
+	} finally {
+		cleanup()
+	}
+})
+
+test('a padded answer still selects the reviewer flavour, like bash read', () => {
+	// Not a divergence, despite looking like one. `read -p "..." CLAUDE_MODE`
+	// strips leading and trailing IFS whitespace before assigning, so bash
+	// compares "2" against "2" for an input of "2 ". Verified against real bash:
+	//   printf '2 \n' | bash -c 'read -p p: M; [ "$M" = 2 ] && echo match'
+	// The port's .trim() reproduces that; without it the two would diverge.
+	assert.equal('2 '.trim(), '2')
+	assert.equal('\t2\t'.trim(), '2')
+})
+
+test('a padded answer produces the same flag file as an unpadded one', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		withAuthAlreadyConfigured(devcontainerDir)
+		const code = await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: TTY_STDIN(),
+				ask: answering('  2  '),
+				probe: LINUX_PROBE,
+			}),
+		)
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-reviewer.md\n')
+	} finally {
+		cleanup()
+	}
+})
+
+test('BUILD_BASE_NO_CACHE=0 in .env is not "consumed" when the signal came from elsewhere', async () => {
+	// Bash gated on the VALUE (`grep -qE '^BUILD_BASE_NO_CACHE=1[[:space:]]*$'`,
+	// initialize.sh:424), not the key. With the file already reset to 0 and the
+	// no-cache request arriving by another route, it rewrote nothing and said
+	// nothing.
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		writeFileSync(join(devcontainerDir, '.env'), '# keep me\nBUILD_BASE_NO_CACHE=0\n', 'utf8')
+		await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+			}),
+		)
+		const env = read(join(devcontainerDir, '.env')) ?? ''
+		assert.match(env, /^BUILD_BASE_NO_CACHE=0$/m, 'left at 0')
+		assert.match(env, /^# keep me$/m, 'comment preserved')
+	} finally {
+		cleanup()
+	}
+})
+
+test('an unwritable notify queue does not fail the run', async () => {
+	// `spawn_notify_daemon || true` (initialize.sh:656). The daemon is a
+	// convenience; a container must still come up without it.
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		withAuthAlreadyConfigured(devcontainerDir)
+		writeFileSync(join(devcontainerDir, '.configured-claude-mode'), 'CLAUDE-dev.md\n', 'utf8')
+		mkdirSync(join(devcontainerDir, 'notify'), { recursive: true })
+		writeFileSync(join(devcontainerDir, 'notify', 'index.js'), '', 'utf8')
+		// A regular file where the queue directory has to go: mkdirSync throws
+		// ENOTDIR, exactly as an unwritable mount point would.
+		writeFileSync(join(devcontainerDir, 'notify', 'queue'), '', 'utf8')
+
+		const code = await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: TTY_STDIN(),
+				ask: neverAsked,
+				probe: LINUX_PROBE,
+			}),
+		)
+		assert.equal(code, 0, 'the run still succeeds')
+		assert.equal(read(join(devcontainerDir, 'firewall', 'default-mode')), 'strict\n')
+	} finally {
+		cleanup()
+	}
+})

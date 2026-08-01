@@ -1,7 +1,8 @@
-# `@stitchu/devcontainer-cli` — placeholder
+# `@stitchu/devcontainer-cli` — moved
 
-Package scaffold arrives in session 3 (`cli-scaffold`) of the devcontainer-v3
-rollout. See [../../plans/devcontainer-v3/ROLLOUT.md](../../../plans/devcontainer-v3/ROLLOUT.md).
+The package lives at [packages/devcontainer-cli/](../../../packages/devcontainer-cli/)
+as of session 3 (`cli-scaffold`), which is where the design's final monorepo
+layout puts it. Building it here first would only have bought a move later.
 
-Directory reserved so other v3 artefacts (dockerbase, notifier) can refer to
-the final layout without breaking on missing paths.
+This directory is kept so links written before the move still resolve. See
+[plans/devcontainer-v3/ROLLOUT.md](../../../plans/devcontainer-v3/ROLLOUT.md).

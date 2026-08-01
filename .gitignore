@@ -32,6 +32,11 @@ extensions/*/out/
 extensions/*/prebuilds/
 extensions/*/*.vsix
 
+# npm packages (host-side CLI) — build/install output, keep sources
+packages/*/node_modules/
+packages/*/dist/
+packages/*/*.tgz
+
 # Scratch / experimentation
 .tmp/
 .vscode-id
