@@ -52,6 +52,16 @@ export interface InitializeOptions {
 	 * test. The seam is the question, not the bytes behind it.
 	 */
 	ask?: (question: string) => Promise<string>
+	/**
+	 * Where human-facing output goes. Defaults to the real terminal.
+	 *
+	 * Injectable for the same reason `ask` is: a test that lets this command
+	 * write to the real stdout dumps hundreds of lines into whatever is reading
+	 * it. Under `node --test` that is the runner's own IPC channel, and enough
+	 * interleaved output corrupts its frames outright.
+	 */
+	out?: NodeJS.WritableStream
+	err?: NodeJS.WritableStream
 	probe?: HostProbe
 }
 
@@ -91,9 +101,10 @@ export async function initialize(options: InitializeOptions): Promise<number> {
 	const probe = options.probe ?? readHostProbe()
 
 	// === Host-OS detection (initialize.sh:14-41) =============================
+	const err = options.err ?? process.stderr
 	const hostKind = detectHostKind(probe)
 	if (!isSupported(hostKind)) {
-		process.stderr.write(
+		err.write(
 			`✗ devc initialize does not support host kind: ${hostKind} (${probe.platform})\n` +
 				'  Supported : Mac, native Linux, Windows-with-WSL, Windows-with-Git-Bash.\n',
 		)
@@ -103,7 +114,7 @@ export async function initialize(options: InitializeOptions): Promise<number> {
 		// Unreachable today — bare win32 classifies as `unknown` and exits above.
 		// Kept as the explicit home of the design §7 warning for when a native
 		// Windows path is added.
-		process.stderr.write('⚠ Running on native Windows outside WSL — WSL2 is the supported route.\n')
+		err.write('⚠ Running on native Windows outside WSL — WSL2 is the supported route.\n')
 	}
 
 	// === Lifecycle logging (initialize.sh:57-111) ============================
@@ -115,6 +126,8 @@ export async function initialize(options: InitializeOptions): Promise<number> {
 		traceFile: join(logsDir, `initialize-${timestamp}.trace`),
 		debug: process.env['DEBUG'] === '1',
 		silentSink: options.dryRun,
+		...(options.out === undefined ? {} : { out: options.out }),
+		...(options.err === undefined ? {} : { err: options.err }),
 	})
 
 	try {
@@ -193,6 +206,7 @@ async function runInitialize(context: Context): Promise<number> {
 	const signals = detectRebuildSignals({ hostKind, projectDir, devcontainerDir, envNoCache, logger })
 	await buildBaseIfMissing({
 		logger,
+		...(options.out === undefined ? {} : { out: options.out }),
 		devcontainerDir,
 		envFile,
 		projectId,
@@ -236,7 +250,7 @@ async function runInitialize(context: Context): Promise<number> {
 	const ask =
 		options.ask ??
 		(async (question: string): Promise<string> => {
-			held.readline ??= createInterface({ input, output: process.stdout })
+			held.readline ??= createInterface({ input, output: options.out ?? process.stdout })
 			return held.readline.question(question)
 		})
 

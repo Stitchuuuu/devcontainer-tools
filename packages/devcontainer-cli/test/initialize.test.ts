@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
 import { initialize } from '../src/commands/initialize.js'
 import type { HostProbe } from '../src/lib/platform.js'
 
@@ -89,6 +89,26 @@ const neverAsked = async (question: string): Promise<string> => {
 	throw new Error(`unexpected prompt: ${question}`)
 }
 
+/**
+ * A sink for everything the command prints.
+ *
+ * Not cosmetic. Letting these tests write to the real stdout puts hundreds of
+ * lines through the node:test runner's IPC channel, which corrupts its frames
+ * and aborts the file with "Unable to deserialize cloned data" — intermittently,
+ * and more often right after a rebuild. Capturing the output also makes it
+ * assertable.
+ */
+function captured(): { out: NodeJS.WritableStream; err: NodeJS.WritableStream; text(): string } {
+	let buffer = ''
+	const sink = new Writable({
+		write(chunk: Buffer, _encoding, callback) {
+			buffer += chunk.toString('utf8')
+			callback()
+		},
+	})
+	return { out: sink, err: sink, text: () => buffer }
+}
+
 const read = (path: string): string | null => (existsSync(path) ? readFileSync(path, 'utf8') : null)
 
 test('non-interactive: writes the defaults and syncs the proxy variables', async () => {
@@ -101,6 +121,7 @@ test('non-interactive: writes the defaults and syncs the proxy variables', async
 				cwd: projectDir,
 				input: PIPED_STDIN(),
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 
@@ -148,7 +169,7 @@ test('a first interactive run never reaches the Claude-mode prompt', async () =>
 	try {
 		// No answers queued at all — anything that prompted would hang or default.
 		const code = await withStubDocker(() =>
-			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: neverAsked, probe: LINUX_PROBE }),
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: neverAsked, probe: LINUX_PROBE, ...captured() }),
 		)
 		assert.equal(code, 0)
 		assert.equal(read(join(devcontainerDir, '.configured-auth')), 'standard\n')
@@ -169,7 +190,7 @@ test('interactive: answering 2 selects the reviewer flavour', async () => {
 		withAuthAlreadyConfigured(devcontainerDir)
 		// Second line answers the "Press Enter to continue..." pause.
 		const code = await withStubDocker(() =>
-			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering('2'), probe: LINUX_PROBE }),
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering('2'), probe: LINUX_PROBE, ...captured() }),
 		)
 		assert.equal(code, 0)
 		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-reviewer.md\n')
@@ -183,7 +204,7 @@ test('interactive: an empty answer defaults to dev', async () => {
 	try {
 		withAuthAlreadyConfigured(devcontainerDir)
 		const code = await withStubDocker(() =>
-			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering(''), probe: LINUX_PROBE }),
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering(''), probe: LINUX_PROBE, ...captured() }),
 		)
 		assert.equal(code, 0)
 		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-dev.md\n')
@@ -207,6 +228,7 @@ test('a missing docker is fatal, but the .env version pin is written first', asy
 						cwd: projectDir,
 						input: PIPED_STDIN(),
 						probe: LINUX_PROBE,
+				...captured(),
 					}),
 				),
 			/docker not found on PATH/,
@@ -223,11 +245,11 @@ test('a second run re-prompts nothing and leaves the flags alone', async () => {
 	try {
 		withAuthAlreadyConfigured(devcontainerDir)
 		await withStubDocker(() =>
-			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering('2'), probe: LINUX_PROBE }),
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: answering('2'), probe: LINUX_PROBE, ...captured() }),
 		)
 		// No answers queued: if anything prompted, the run would hang or default.
 		const code = await withStubDocker(() =>
-			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: neverAsked, probe: LINUX_PROBE }),
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: TTY_STDIN(), ask: neverAsked, probe: LINUX_PROBE, ...captured() }),
 		)
 		assert.equal(code, 0)
 		assert.equal(read(join(devcontainerDir, '.configured-claude-mode')), 'CLAUDE-reviewer.md\n')
@@ -246,6 +268,7 @@ test('a manual edit of firewall/default-mode re-aligns .env on the next run', as
 				cwd: projectDir,
 				input: PIPED_STDIN(),
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 		assert.match(read(join(devcontainerDir, '.env')) ?? '', /HTTPS_PROXY=/)
@@ -260,6 +283,7 @@ test('a manual edit of firewall/default-mode re-aligns .env on the next run', as
 				cwd: projectDir,
 				input: PIPED_STDIN(),
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 		const env = read(join(devcontainerDir, '.env')) ?? ''
@@ -281,6 +305,7 @@ test('an unsupported host is refused by name before anything is written', async 
 			cwd: projectDir,
 			input: PIPED_STDIN(),
 			probe: { platform: 'win32', env: { MSYSTEM: 'CYGWIN_NT-10.0' }, procVersion: null },
+			...captured(),
 		})
 		assert.equal(code, 1)
 		assert.equal(existsSync(join(devcontainerDir, 'logs')), false, 'nothing written')
@@ -299,6 +324,7 @@ test('dry-run writes nothing at all', async () => {
 				cwd: projectDir,
 				input: PIPED_STDIN(),
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 		assert.equal(code, 0)
@@ -339,6 +365,7 @@ test('a padded answer produces the same flag file as an unpadded one', async () 
 				input: TTY_STDIN(),
 				ask: answering('  2  '),
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 		assert.equal(code, 0)
@@ -363,6 +390,7 @@ test('BUILD_BASE_NO_CACHE=0 in .env is not "consumed" when the signal came from 
 				cwd: projectDir,
 				input: PIPED_STDIN(),
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 		const env = read(join(devcontainerDir, '.env')) ?? ''
@@ -394,6 +422,7 @@ test('an unwritable notify queue does not fail the run', async () => {
 				input: TTY_STDIN(),
 				ask: neverAsked,
 				probe: LINUX_PROBE,
+				...captured(),
 			}),
 		)
 		assert.equal(code, 0, 'the run still succeeds')

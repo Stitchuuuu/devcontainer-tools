@@ -1,6 +1,11 @@
 // Rolling N-line progress window — the port of run_with_progress
 // (initialize.sh:224-294).
 //
+// Transitional, and worth knowing before extending it: the only thing that
+// calls this is the local base-image build, which exists because the image is
+// built from Dockerfile.base on each host rather than pulled from a registry.
+// Once it is pulled, nothing here has a caller. See buildBaseIfMissing.
+//
 // Half of the bash implementation existed to undo a problem bash created for
 // itself. Because `exec > >(tee …)` had already replaced fd 1 with a pipe, the
 // function could not ask whether it was on a terminal (`[ -t 1 ]` was always

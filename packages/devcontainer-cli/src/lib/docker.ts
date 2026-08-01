@@ -127,6 +127,8 @@ export function detectRebuildSignals(context: DetectContext): RebuildSignals {
 
 export interface BuildBaseOptions {
 	logger: Logger
+	/** Terminal stream the progress window paints to. Defaults to stdout. */
+	out?: NodeJS.WritableStream
 	devcontainerDir: string
 	envFile: string
 	projectId: string
@@ -147,6 +149,19 @@ export function baseImageTag(version: string, projectId: string): string {
  * Build the base image when it is missing or when a rebuild was signalled.
  *
  * Ports `build_base_if_missing` (initialize.sh:412-494).
+ *
+ * @remarks
+ * **Transitional.** This entire path exists because the base image is built
+ * locally from `Dockerfile.base` on every host that opens the project. The
+ * target architecture consumes a published image instead: compose pulls a
+ * pinned tag, and bumping that tag is what an upgrade means. On that day this
+ * function, the rolling progress window it is the sole caller of, and the
+ * `--no-cache` half of {@link detectRebuildSignals} all lose their reason to
+ * exist — the container-presence probe stays, since that is still what tells a
+ * rebuild from a reopen.
+ *
+ * Kept because no project points at a published image yet, and until one does,
+ * removing this leaves a host with no base image at all.
  */
 export async function buildBaseIfMissing(options: BuildBaseOptions): Promise<void> {
 	const { logger, devcontainerDir, signals } = options
@@ -246,6 +261,7 @@ export async function buildBaseIfMissing(options: BuildBaseOptions): Promise<voi
 		logPath,
 		title: `Building Claude Devcontainer Base v${options.version}  (log: ${relativeTo(devcontainerDir, logPath)})`,
 		size: 10,
+		...(options.out === undefined ? {} : { out: options.out }),
 	})
 	const elapsed = Math.round((Date.now() - started) / 1000)
 	logger.trace({ kind: 'exit', argv, code, ms: Date.now() - started })
