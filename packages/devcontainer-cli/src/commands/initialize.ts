@@ -25,7 +25,13 @@ import {
 import { readEnvFile, setEnvVar, unsetEnvVar } from '../lib/env-file.js'
 import { Logger } from '../lib/logger.js'
 import { spawnNotifyDaemon } from '../lib/notify-daemon.js'
-import { defaultProjectId, relativeTo, resolveProjectPaths, type ProjectPaths } from '../lib/paths.js'
+import {
+	classifyDevcontainer,
+	defaultProjectId,
+	relativeTo,
+	resolveProjectPaths,
+	type ProjectPaths,
+} from '../lib/paths.js'
 import {
 	detectHostKind,
 	isBareWin32,
@@ -115,6 +121,24 @@ export async function initialize(options: InitializeOptions): Promise<number> {
 		// Kept as the explicit home of the design §7 warning for when a native
 		// Windows path is added.
 		err.write('⚠ Running on native Windows outside WSL — WSL2 is the supported route.\n')
+	}
+
+	// === Precondition (no bash counterpart — see classifyDevcontainer) =======
+	// Runs before the logger, because creating the log file is itself a write
+	// into the directory being judged.
+	const state = classifyDevcontainer(paths.devcontainerDir)
+	if (state.kind !== 'present') {
+		err.write(
+			state.kind === 'absent'
+				? `✗ No .devcontainer at ${paths.devcontainerDir}\n` +
+						'  devc initialize prepares an existing devcontainer before it starts;\n' +
+						'  it does not create one. Run "devc init" to scaffold a project.\n'
+				: `✗ ${paths.devcontainerDir} has no devcontainer.json\n` +
+						'  Nothing identifies it as a devcontainer, so there is nothing to\n' +
+						'  prepare. Run "devc init" to scaffold one, or point\n' +
+						'  --devcontainer-dir at the right project.\n',
+		)
+		return 1
 	}
 
 	// === Lifecycle logging (initialize.sh:57-111) ============================

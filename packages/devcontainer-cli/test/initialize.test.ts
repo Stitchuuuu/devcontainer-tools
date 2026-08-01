@@ -14,7 +14,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
@@ -27,6 +27,9 @@ function fixture(): { projectDir: string; devcontainerDir: string; cleanup: () =
 	const projectDir = mkdtempSync(join(tmpdir(), 'devc-init-'))
 	const devcontainerDir = join(projectDir, '.devcontainer')
 	mkdirSync(join(devcontainerDir, 'firewall'), { recursive: true })
+	// devcontainer.json is what identifies the directory as a devcontainer at
+	// all — without it the command refuses before writing anything.
+	writeFileSync(join(devcontainerDir, 'devcontainer.json'), '{ "name": "fixture" }\n', 'utf8')
 	return { projectDir, devcontainerDir, cleanup: () => rmSync(projectDir, { recursive: true, force: true }) }
 }
 
@@ -219,6 +222,9 @@ test('a missing docker is fatal, but the .env version pin is written first', asy
 	// a success it did not achieve.
 	const { projectDir, devcontainerDir, cleanup } = fixture()
 	try {
+		// A build has to be on the table for a missing docker to be fatal — with
+		// no Dockerfile.base there is nothing to build and nothing to check for.
+		writeFileSync(join(devcontainerDir, 'Dockerfile.base'), 'FROM scratch\n', 'utf8')
 		await assert.rejects(
 			() =>
 				withoutDocker(() =>
@@ -427,6 +433,96 @@ test('an unwritable notify queue does not fail the run', async () => {
 		)
 		assert.equal(code, 0, 'the run still succeeds')
 		assert.equal(read(join(devcontainerDir, 'firewall', 'default-mode')), 'strict\n')
+	} finally {
+		cleanup()
+	}
+})
+
+test('refuses a directory that is not a devcontainer, before writing anything', async () => {
+	// The bash script could not reach this state: DEVCONTAINER_DIR came from
+	// `dirname $0`, so the directory provably held the script and its siblings.
+	// Accepting a path from the caller removes that guarantee.
+	const projectDir = mkdtempSync(join(tmpdir(), 'devc-bare-'))
+	try {
+		const devcontainerDir = join(projectDir, '.devcontainer')
+		mkdirSync(devcontainerDir, { recursive: true })
+		const sink = captured()
+
+		const code = await withStubDocker(() =>
+			initialize({ devcontainerDir, dryRun: false, cwd: projectDir, input: PIPED_STDIN(), probe: LINUX_PROBE, ...sink }),
+		)
+
+		assert.equal(code, 1)
+		assert.match(sink.text(), /has no devcontainer\.json/)
+		assert.match(sink.text(), /devc init/, 'names the command that would fix it')
+		// The failure mode this guards against is a half-mutated project.
+		assert.deepEqual(readdirSync(devcontainerDir), [], 'nothing written into the target')
+		assert.equal(existsSync(join(projectDir, '.vscode')), false, 'no .vscode stub either')
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true })
+	}
+})
+
+test('refuses a missing .devcontainer and says so', async () => {
+	const projectDir = mkdtempSync(join(tmpdir(), 'devc-none-'))
+	try {
+		const sink = captured()
+		const code = await initialize({
+			devcontainerDir: join(projectDir, '.devcontainer'),
+			dryRun: false,
+			cwd: projectDir,
+			input: PIPED_STDIN(),
+			probe: LINUX_PROBE,
+			...sink,
+		})
+		assert.equal(code, 1)
+		assert.match(sink.text(), /No \.devcontainer at/)
+		assert.deepEqual(readdirSync(projectDir), [], 'the project is untouched')
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true })
+	}
+})
+
+test('a project root resolves to its .devcontainer', async () => {
+	// `--devcontainer-dir ../some-project` is the natural way to say it.
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		const code = await withStubDocker(() =>
+			initialize({
+				devcontainerDir: projectDir,
+				dryRun: false,
+				cwd: '/nonexistent',
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+				...captured(),
+			}),
+		)
+		assert.equal(code, 0)
+		assert.equal(read(join(devcontainerDir, 'firewall', 'default-mode')), 'strict\n')
+	} finally {
+		cleanup()
+	}
+})
+
+test('no Dockerfile.base means no local build — the registry-image shape', async () => {
+	// Not a special case for broken directories: a project consuming a published
+	// base image has no Dockerfile.base, and compose pulls the tag instead.
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		const sink = captured()
+		const code = await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+				...sink,
+			}),
+		)
+		assert.equal(code, 0)
+		assert.match(sink.text(), /No Dockerfile\.base — base image not built locally/)
+		assert.doesNotMatch(sink.text(), /Building Claude Devcontainer Base/)
 	} finally {
 		cleanup()
 	}

@@ -26,31 +26,51 @@ export class PathResolutionError extends Error {}
 /**
  * Resolve the pair of directories every command works against.
  *
- * Accepts, in order of precedence:
- * 1. An explicit `--devcontainer-dir` (used by tests and by anyone driving the
- *    CLI from outside the project).
- * 2. `cwd` when it is itself named `.devcontainer`.
- * 3. `cwd/.devcontainer`.
+ * The path given — whether through `--devcontainer-dir` or as the working
+ * directory — may be either the `.devcontainer` itself or the project root
+ * holding it. Anything not already named `.devcontainer` gets `.devcontainer`
+ * appended, so `../some-project` and `../some-project/.devcontainer` resolve to
+ * the same place. Pointing at a project root is the more natural way to say it,
+ * and getting an error for it would be pedantry.
  *
- * Walking up the tree looking for a `.devcontainer` ancestor is deliberately
- * *not* implemented: `devc initialize` mutates `.env`, seeds firewall files and
- * kicks off an image build, and picking the wrong project silently would be
- * worse than an error message.
+ * Walking *up* the tree looking for a `.devcontainer` ancestor is deliberately
+ * not implemented: this command mutates `.env`, seeds firewall files and can
+ * start an image build, so silently picking a different project than the one
+ * named would be worse than an error.
  */
 export function resolveProjectPaths(cwd: string, explicitDir?: string): ProjectPaths {
-	const devcontainerDir = resolve(explicitDir ?? implicitDevcontainerDir(cwd))
-	if (!existsSync(devcontainerDir) || !statSync(devcontainerDir).isDirectory()) {
-		throw new PathResolutionError(
-			`No .devcontainer directory at ${devcontainerDir}\n` +
-				`  Run devc from a project root, or pass --devcontainer-dir <path>.`,
-		)
-	}
+	const devcontainerDir = devcontainerDirFor(resolve(explicitDir ?? cwd))
 	const projectDir = dirname(devcontainerDir)
 	return { devcontainerDir, projectDir, envFile: join(devcontainerDir, '.env') }
 }
 
-function implicitDevcontainerDir(cwd: string): string {
-	return basename(cwd) === '.devcontainer' ? cwd : join(cwd, '.devcontainer')
+/** `<path>` when it is already a `.devcontainer`, else `<path>/.devcontainer`. */
+export function devcontainerDirFor(path: string): string {
+	return basename(path) === '.devcontainer' ? path : join(path, '.devcontainer')
+}
+
+export type DevcontainerState =
+	/** No `.devcontainer` directory at all. */
+	| { kind: 'absent' }
+	/** A directory exists, but nothing identifies it as a devcontainer. */
+	| { kind: 'unrecognised' }
+	/** A `devcontainer.json` is present — safe to operate on. */
+	| { kind: 'present' }
+
+/**
+ * Classify the target before anything writes to it.
+ *
+ * The bash script never needed this: `DEVCONTAINER_DIR` came from
+ * `dirname $0`, so the directory provably contained the script and everything
+ * shipped beside it. Accepting a path from the caller removes that guarantee,
+ * and without a check the command will happily seed firewall files, write a
+ * `.vscode` stub and create a Docker volume inside a directory that is not a
+ * devcontainer at all — then fail on the first thing that actually needs one.
+ */
+export function classifyDevcontainer(devcontainerDir: string): DevcontainerState {
+	if (!existsSync(devcontainerDir) || !statSync(devcontainerDir).isDirectory()) return { kind: 'absent' }
+	if (!existsSync(join(devcontainerDir, 'devcontainer.json'))) return { kind: 'unrecognised' }
+	return { kind: 'present' }
 }
 
 /**

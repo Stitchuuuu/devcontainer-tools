@@ -1,6 +1,6 @@
 // Docker orchestration: the base-image build and the rebuild-vs-reopen probe.
 
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setEnvVar } from './env-file.js'
 import type { Logger } from './logger.js'
@@ -176,6 +176,18 @@ export async function buildBaseIfMissing(options: BuildBaseOptions): Promise<voi
 	if (signals.noCache && options.envNoCacheFromFile) {
 		if (!options.dryRun) setEnvVar(options.envFile, 'BUILD_BASE_NO_CACHE', '0')
 		logger.log('  ↳ Consumed BUILD_BASE_NO_CACHE=1 from .env (reset to 0 for next rebuild)')
+	}
+
+	// A project that consumes a published base image has no Dockerfile.base and
+	// nothing to build — compose pulls the tag instead. Bash never had to
+	// consider this: the file was always beside the script. Checking for it is
+	// what makes this command correct both before and after the image moves to a
+	// registry, and it is also what stops a mis-pointed --devcontainer-dir from
+	// launching a build against a path that does not exist.
+	const dockerfile = join(devcontainerDir, 'Dockerfile.base')
+	if (!existsSync(dockerfile)) {
+		logger.log(`✓ No Dockerfile.base — base image not built locally (compose resolves ${tag})`)
+		return
 	}
 
 	// Bash reached this point with no docker and died inside `docker build`,

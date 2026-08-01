@@ -32,7 +32,7 @@ Usage:
 
 Commands:
   initialize                 Host-side pre-container setup (initializeCommand)
-${STUB_COMMANDS.map((stub) => `  ${stub.name.padEnd(26)} ${stub.summary} [${stub.arrivesIn}]`).join('\n')}
+${STUB_COMMANDS.map((stub) => `  ${stub.name.padEnd(26)} ${stub.summary} (not implemented)`).join('\n')}
 
 Options:
   -h, --help                 Show this help
@@ -66,7 +66,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 	const stub = STUB_COMMANDS.find((candidate) => candidate.name === first)
 	if (stub !== undefined) {
 		if (rest.includes('--help') || rest.includes('-h')) {
-			process.stdout.write(`devc ${stub.name} — ${stub.summary}\n\nNot implemented yet: arrives in ${stub.arrivesIn}.\n`)
+			process.stdout.write(`devc ${stub.name} — ${stub.summary}\n\nNot implemented in this version.\n`)
 			return EXIT_OK
 		}
 		return runStub(stub)
