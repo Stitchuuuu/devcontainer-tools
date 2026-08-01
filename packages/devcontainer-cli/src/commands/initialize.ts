@@ -16,7 +16,6 @@ import { dirname, join } from 'node:path'
 import { projectCustomizations, readStitchuCustomizations } from '../lib/devcontainer-json.js'
 import {
 	baseImageTag,
-	buildBaseIfMissing,
 	DEFAULT_CLAUDE_CODE_VERSION,
 	detectRebuildSignals,
 	hasDocker,
@@ -75,7 +74,8 @@ export const INITIALIZE_HELP = `devc initialize — host-side pre-container setu
 
 Runs before the devcontainer is built (VS Code initializeCommand): host-OS
 detection, firewall file seeding, .env synchronisation, credentials volume,
-base image build, and the first-run prompts.
+and the first-run prompts. The base image is pulled by compose from its
+published tag, never built here.
 
 Usage:
   devc initialize [options]
@@ -89,7 +89,6 @@ Options:
 Environment:
   DEBUG=1                    Write a structured decision trace next to the log
   DEBUG_REBUILD_CONTEXT=1    Dump the rebuild-signal diagnostic
-  BUILD_BASE_NO_CACHE=1      Force a full base image rebuild (consumed from .env)
 `
 
 /** Modes that keep the proxy/CA variables. Legacy names remain accepted. */
@@ -217,31 +216,18 @@ async function runInitialize(context: Context): Promise<number> {
 		dumpRebuildContext({ logger, devcontainerDir, timestamp })
 	}
 
-	// === Base image (initialize.sh:613-616) ==================================
+	// === Base image version pin (initialize.sh:613-616) ======================
 	const version = env['CLAUDE_CODE_VERSION'] ?? DEFAULT_CLAUDE_CODE_VERSION
-	const envNoCache = env['BUILD_BASE_NO_CACHE'] === '1'
 	// Pin the version before anything probes docker. Bash did this at
 	// initialize.sh:415, one line ahead of detect_no_cache_request at :417 —
 	// nothing reads the value in between, but keeping the order means the .env
-	// lands even when the probe or the build dies.
+	// lands even when the probe dies.
 	if (!dryRun) setEnvVar(envFile, 'CLAUDE_CODE_VERSION', version)
 
-	// detectRebuildSignals self-guards on docker (channel 2 only).
-	const signals = detectRebuildSignals({ hostKind, projectDir, devcontainerDir, envNoCache, logger })
-	await buildBaseIfMissing({
-		logger,
-		...(options.out === undefined ? {} : { out: options.out }),
-		devcontainerDir,
-		envFile,
-		projectId,
-		version,
-		signals,
-		// Only reset the flag when .env is where it came from; an env-prefixed
-		// invocation must not rewrite the file.
-		envNoCacheFromFile: signals.noCache && fileHasNoCacheFlag(envFile),
-		timestamp,
-		dryRun,
-	})
+	// Rebuild-vs-reopen probe — informational since nothing is built locally:
+	// compose resolves the published base tag. detectRebuildSignals self-guards
+	// on docker.
+	detectRebuildSignals({ hostKind, projectDir, devcontainerDir, logger })
 	logger.trace({ kind: 'decide', name: 'baseImageTag', value: baseImageTag(version, projectId), why: 'resolved' })
 
 	// === Non-interactive early exit (initialize.sh:618-632) ==================
@@ -537,17 +523,7 @@ function readMode(flagFile: string): string {
 /**
  * Whether `.env` is where a no-cache request came from.
  *
- * Bash tested the **value**, not the key:
- * `grep -qE '^BUILD_BASE_NO_CACHE=1[[:space:]]*$'` (initialize.sh:424). The
- * distinction matters when the signal came from the process ancestry instead —
- * a `.env` already holding `BUILD_BASE_NO_CACHE=0` must not be rewritten, nor
- * announced as consumed.
  */
-function fileHasNoCacheFlag(envFile: string): boolean {
-	if (!existsSync(envFile)) return false
-	return readEnvFile(envFile)['BUILD_BASE_NO_CACHE'] === '1'
-}
-
 function writeFlag(path: string, value: string, dryRun: boolean, logger: Logger): void {
 	if (dryRun) {
 		logger.log(`  [dry-run] would write ${path} = ${value}`)

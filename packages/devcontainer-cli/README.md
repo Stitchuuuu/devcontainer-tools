@@ -42,9 +42,10 @@ order:
 4. Projects team defaults from `customizations.stitchu-devc` in
    `devcontainer.json` into `.env`, never overwriting a value already there.
 5. Creates the Claude credentials volume.
-6. Decides whether this is a Rebuild, a Reopen or a first run, and builds
-   `claude-devcontainer-base:<cc-version>-<project-id>` when needed, behind a
-   rolling progress window.
+6. Decides whether this is a Rebuild, a Reopen or a first run (the
+   container-presence probe) and logs which. Nothing is built locally — the
+   base image is `ghcr.io/stitchuuuu/devcontainer-base:<base>-cc<cc>`, pulled
+   by compose; bumping that tag is what an upgrade means.
 7. Prompts for the Claude mode on first run, writes the flag files, aligns the
    proxy variables in `.env` with the firewall mode, prints a summary, and spawns
    the host notify daemon.
@@ -60,7 +61,6 @@ daemon.
 |---|---|
 | `DEBUG=1` | Structured decision trace beside the log |
 | `DEBUG_REBUILD_CONTEXT=1` | Dump the rebuild-signal diagnostic |
-| `BUILD_BASE_NO_CACHE=1` | Force a full base rebuild (consumed from `.env`, reset to `0`) |
 
 ### Notable divergences from the bash script
 

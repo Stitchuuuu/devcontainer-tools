@@ -1,9 +1,15 @@
 // Differential harness: bash initialize.sh vs devc initialize.
 //
 // The port claims zero behavioural regression on the observable artefacts —
-// flag files, .env keys and values, logs/host-os, the base image tag scheme.
-// This proves it by running both implementations against two identical scratch
-// copies of a .devcontainer tree and diffing the results.
+// flag files, .env keys and values, logs/host-os. This proves it by running
+// both implementations against two identical scratch copies of a
+// .devcontainer tree and diffing the results.
+//
+// NO LONGER COVERED, deliberately: the base-image `docker build` argv and the
+// BUILD_BASE_NO_CACHE consumption. The CLI dropped the local base build (the
+// published GHCR image replaces it); bash keeps it until session 7 retires the
+// script. The traces are compared minus those bash-only calls — see the
+// scoping note at the comparison site.
 //
 // Two obstacles, both handled rather than waved away:
 //
@@ -164,13 +170,24 @@ for (const flag of ['.configured-auth', '.configured-claude-mode', 'firewall/def
 check('logs/host-os', read(join(bashDir, 'logs', 'host-os')), read(join(nodeDir, 'logs', 'host-os')))
 check('.env byte for byte', read(join(bashDir, '.env')), read(join(nodeDir, '.env')))
 
-const normaliseTrace = (path) =>
+// The docker-argv comparison is SCOPED since the CLI dropped the local base
+// build: bash still runs `docker --version` / `image inspect` / `build`, the
+// CLI never does — compose pulls the published base tag instead. Those calls
+// are filtered from the bash side before comparing, so the check still proves
+// the shared surface (the `ps -a` reopen probe, `volume create`) is identical,
+// and the two explicit checks below keep the intentional divergence loud
+// instead of silently shrinking coverage.
+const BUILD_ONLY = /^(--version$|image inspect |build )/
+const normaliseTrace = (path, { dropBuild = false } = {}) =>
 	(read(path) ?? '')
 		.split('\n')
 		.filter(Boolean)
+		.filter((line) => !(dropBuild && BUILD_ONLY.test(line)))
 		.map((line) => line.split(root).join('<ROOT>').replace(/bash-run|node-run/g, '<RUN>'))
 		.join('\n')
-check('docker argv sequence', normaliseTrace(bashTrace), normaliseTrace(nodeTrace))
+check('docker argv sequence (minus the bash-only base build)', normaliseTrace(bashTrace, { dropBuild: true }), normaliseTrace(nodeTrace))
+check('bash still builds the base locally', true, /^build /m.test(read(bashTrace) ?? ''))
+check('the CLI never invokes docker build', false, /^build /m.test(read(nodeTrace) ?? ''))
 
 // The .vscode stub is created by the node run only, deliberately: it exists in
 // the shipped template copies of initialize.sh but not in the dogfood one, and

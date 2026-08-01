@@ -216,31 +216,26 @@ test('interactive: an empty answer defaults to dev', async () => {
 	}
 })
 
-test('a missing docker is fatal, but the .env version pin is written first', async () => {
-	// Matches the bash ordering: set_env_var at initialize.sh:415 lands before
-	// anything touches the daemon, and the run then dies rather than reporting
-	// a success it did not achieve.
+test('a missing docker is no longer fatal — the version pin lands, the probe is skipped', async () => {
+	// The local base build was the only step that could not proceed without
+	// docker; with the image pulled by compose there is nothing left to build,
+	// so a missing docker just skips the rebuild-vs-reopen probe. The bash
+	// ordering guarantee survives in its new form: the .env pin lands before the
+	// probe, so it is present even on a docker-less host.
 	const { projectDir, devcontainerDir, cleanup } = fixture()
 	try {
-		// A build has to be on the table for a missing docker to be fatal — with
-		// no Dockerfile.base there is nothing to build and nothing to check for.
-		writeFileSync(join(devcontainerDir, 'Dockerfile.base'), 'FROM scratch\n', 'utf8')
-		await assert.rejects(
-			() =>
-				withoutDocker(() =>
-					initialize({
-						devcontainerDir,
-						dryRun: false,
-						cwd: projectDir,
-						input: PIPED_STDIN(),
-						probe: LINUX_PROBE,
+		const code = await withoutDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
 				...captured(),
-					}),
-				),
-			/docker not found on PATH/,
+			}),
 		)
-		assert.equal(read(join(devcontainerDir, '.env')), 'CLAUDE_CODE_VERSION=2.1.220\n')
-		assert.equal(existsSync(join(devcontainerDir, '.configured-auth')), false, 'flags not written')
+		assert.equal(code, 0)
+		assert.match(read(join(devcontainerDir, '.env')) ?? '', /^CLAUDE_CODE_VERSION=2\.1\.220$/m)
 	} finally {
 		cleanup()
 	}
@@ -381,32 +376,6 @@ test('a padded answer produces the same flag file as an unpadded one', async () 
 	}
 })
 
-test('BUILD_BASE_NO_CACHE=0 in .env is not "consumed" when the signal came from elsewhere', async () => {
-	// Bash gated on the VALUE (`grep -qE '^BUILD_BASE_NO_CACHE=1[[:space:]]*$'`,
-	// initialize.sh:424), not the key. With the file already reset to 0 and the
-	// no-cache request arriving by another route, it rewrote nothing and said
-	// nothing.
-	const { projectDir, devcontainerDir, cleanup } = fixture()
-	try {
-		writeFileSync(join(devcontainerDir, '.env'), '# keep me\nBUILD_BASE_NO_CACHE=0\n', 'utf8')
-		await withStubDocker(() =>
-			initialize({
-				devcontainerDir,
-				dryRun: false,
-				cwd: projectDir,
-				input: PIPED_STDIN(),
-				probe: LINUX_PROBE,
-				...captured(),
-			}),
-		)
-		const env = read(join(devcontainerDir, '.env')) ?? ''
-		assert.match(env, /^BUILD_BASE_NO_CACHE=0$/m, 'left at 0')
-		assert.match(env, /^# keep me$/m, 'comment preserved')
-	} finally {
-		cleanup()
-	}
-})
-
 test('an unwritable notify queue does not fail the run', async () => {
 	// `spawn_notify_daemon || true` (initialize.sh:656). The daemon is a
 	// convenience; a container must still come up without it.
@@ -504,26 +473,39 @@ test('a project root resolves to its .devcontainer', async () => {
 	}
 })
 
-test('no Dockerfile.base means no local build — the registry-image shape', async () => {
-	// Not a special case for broken directories: a project consuming a published
-	// base image has no Dockerfile.base, and compose pulls the tag instead.
+test('nothing builds the base image — even when a Dockerfile.base is present', async () => {
+	// The registry-image shape is the rule, not a branch: compose pulls the
+	// published tag, and a leftover Dockerfile.base (the dogfood keeps one as an
+	// escape hatch) must not resurrect the local build. The tracing stub records
+	// every docker argv so the assertion is on what ran, not on a message.
 	const { projectDir, devcontainerDir, cleanup } = fixture()
+	const binDir = mkdtempSync(join(tmpdir(), 'devc-trace-'))
+	const trace = join(binDir, 'trace.txt')
+	writeFileSync(join(binDir, 'docker'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(trace)}\nexit 0\n`, {
+		encoding: 'utf8',
+		mode: 0o755,
+	})
+	const savedPath = process.env['PATH']
+	process.env['PATH'] = `${binDir}:${savedPath ?? ''}`
 	try {
+		writeFileSync(join(devcontainerDir, 'Dockerfile.base'), 'FROM scratch\n', 'utf8')
 		const sink = captured()
-		const code = await withStubDocker(() =>
-			initialize({
-				devcontainerDir,
-				dryRun: false,
-				cwd: projectDir,
-				input: PIPED_STDIN(),
-				probe: LINUX_PROBE,
-				...sink,
-			}),
-		)
+		const code = await initialize({
+			devcontainerDir,
+			dryRun: false,
+			cwd: projectDir,
+			input: PIPED_STDIN(),
+			probe: LINUX_PROBE,
+			...sink,
+		})
 		assert.equal(code, 0)
-		assert.match(sink.text(), /No Dockerfile\.base — base image not built locally/)
+		const argvs = read(trace) ?? ''
+		assert.doesNotMatch(argvs, /^build\b/m, 'no docker build was spawned')
+		assert.match(argvs, /^ps -a -q --filter/m, 'the reopen probe still ran')
 		assert.doesNotMatch(sink.text(), /Building Claude Devcontainer Base/)
 	} finally {
+		process.env['PATH'] = savedPath
+		rmSync(binDir, { recursive: true, force: true })
 		cleanup()
 	}
 })
