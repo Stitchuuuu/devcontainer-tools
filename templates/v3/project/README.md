@@ -19,7 +19,7 @@ mirror the `dogfood-switchover` branch, proven by a 19/19 host smoke.
 
    ```bash
    cd .devcontainer
-   grep -rl '{{PROJECT_ID}}' . | xargs sed -i '' -e 's/{{PROJECT_ID}}/my-project/g' -e 's/{{PROJECT_DISPLAY_NAME}}/My Project/g'
+   grep -rl '{{PROJECT_' . | xargs sed -i '' -e 's/{{PROJECT_ID}}/my-project/g' -e 's/{{PROJECT_DISPLAY_NAME}}/My Project/g'
    ```
 
    (GNU sed : `sed -i` sans `''`.)
