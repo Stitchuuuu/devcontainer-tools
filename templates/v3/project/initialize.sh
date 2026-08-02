@@ -413,18 +413,21 @@ detect_no_cache_request() {
 # (cf. amendment 2026-05-20). All output is teed to
 # .devcontainer/logs/build-base-<version>-<ts>.log for post-mortem.
 build_base_if_missing() {
-	local version="${CLAUDE_CODE_VERSION:-2.1.145}"
-	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-{{PROJECT_ID}}}"
-	set_env_var "CLAUDE_CODE_VERSION" "$version"
-
 	# A project on the published base image has no Dockerfile.base and nothing
 	# to build — compose pulls the BASE_IMAGE tag instead. Without this guard,
 	# `docker build -f Dockerfile.base` below dies under set -e on a fresh
-	# host and takes the whole initializeCommand down with it.
+	# host and takes the whole initializeCommand down with it. Checked before
+	# the CLAUDE_CODE_VERSION write : that var only pins the LOCAL base build,
+	# on the published image the CC version comes from the BASE_IMAGE tag —
+	# writing a stale default into .env would just mislead.
 	if [ ! -f "$DEVCONTAINER_DIR/Dockerfile.base" ]; then
 		echo "✓ No Dockerfile.base — base image not built locally (compose resolves \${BASE_IMAGE})"
 		return 0
 	fi
+
+	local version="${CLAUDE_CODE_VERSION:-2.1.145}"
+	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-{{PROJECT_ID}}}"
+	set_env_var "CLAUDE_CODE_VERSION" "$version"
 
 	detect_no_cache_request
 
