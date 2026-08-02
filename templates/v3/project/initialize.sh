@@ -617,9 +617,13 @@ print_summary() {
 # initialize/rebuild-debug.sh — sourced here only when the flag is set so
 # the default hot path stays free of it.
 if [ "${DEBUG_REBUILD_CONTEXT:-0}" = "1" ]; then
-	# shellcheck source=/dev/null
-	. "$DEVCONTAINER_DIR/initialize/rebuild-debug.sh"
-	dump_rebuild_context
+	if [ -f "$DEVCONTAINER_DIR/initialize/rebuild-debug.sh" ]; then
+		# shellcheck source=/dev/null
+		. "$DEVCONTAINER_DIR/initialize/rebuild-debug.sh"
+		dump_rebuild_context
+	else
+		echo "⚠ DEBUG_REBUILD_CONTEXT=1 but initialize/rebuild-debug.sh absent — skipping"
+	fi
 fi
 
 # Build claude-devcontainer-base if missing OR if VS Code triggered Rebuild
@@ -660,12 +664,14 @@ sync_proxy_env "$(cat "$FW_FLAG" 2>/dev/null || echo strict)"
 
 print_summary
 
-# Notify daemon (spawn + fallback diagnostic) — extracted to
-# initialize/notify-daemon.sh. Sourced unconditionally since the daemon runs
-# on every rebuild ; the extraction is purely for file-size hygiene.
-# shellcheck source=/dev/null
-. "$DEVCONTAINER_DIR/initialize/notify-daemon.sh"
-spawn_notify_daemon || true
+# Notify daemon (spawn + fallback diagnostic) — initialize/notify-daemon.sh
+# is NOT shipped with the template ; `devc notify install` drops it in later.
+# Guarded so a template-only project boots without it.
+if [ -f "$DEVCONTAINER_DIR/initialize/notify-daemon.sh" ]; then
+	# shellcheck source=/dev/null
+	. "$DEVCONTAINER_DIR/initialize/notify-daemon.sh"
+	spawn_notify_daemon || true
+fi
 
 # Pause only when an interactive prompt actually ran. prompt_auth is now a
 # silent info banner (no input), so only prompt_claude_mode (which sets
