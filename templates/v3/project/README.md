@@ -42,7 +42,7 @@ mirror the `dogfood-switchover` branch, proven by a 19/19 host smoke.
 | `Dockerfile` | fw-bake stage + `FROM ${BASE_IMAGE}` ; add project `RUN`s in the final stage (stacks : see the base repo's `stacks/*.md`) |
 | `docker-compose.yml` | `BASE_IMAGE` + `FIREWALL_ALLOW_LOCAL_AT_REBUILD` build args, volumes, caps |
 | `initialize.sh` | host-side pre-container step (creds volume, `.env` sync, prompts). Patched : no `Dockerfile.base` → no local base build. Will be replaced by `npx @stitchu/devcontainer-cli initialize` once published |
-| `firewall/` | YOUR allowlist : `domains.txt` (curated, committed), `domains.d/` (auto-extracts), `policy.d/` (L7), `.local` variants gitignored — never baked unless `FIREWALL_ALLOW_LOCAL_AT_REBUILD=1` |
+| `firewall/` | YOUR additions on top of the base-image allowlist (Claude Code / VS Code / sandbox tooling ship in the image — a fresh project needs nothing here) : `domains.txt` (curated, committed), `domains.d/` (auto-extracts), `policy.d/` (L7), `.local` variants gitignored — never baked unless `FIREWALL_ALLOW_LOCAL_AT_REBUILD=1`. Override a base host with `!disable` (+ optional redeclare) in `domains.txt` |
 | `hooks/{on-create,post-create,post-start}.d/` | project overlay fragments — same filename as an image fragment masks it, unique filename adds |
 | `.env.example` | documented knobs ; copy to `.env` (gitignored) |
 
