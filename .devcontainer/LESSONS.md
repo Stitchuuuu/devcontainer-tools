@@ -172,3 +172,91 @@
   `Read` the matching file. The « Canonical links » footer at the end
   of each cheat-sheet is the escape hatch when the local doc feels
   stale ; the doc itself is the primary source.
+
+- **A persisted flag is a symptom, not a diagnosis — always co-locate
+  the discriminant that tells you WHY the flag is set.** *Why* : the
+  purrpause b.18 anti-bypass rule fired on `popup_pending == true`
+  at cold-boot as a single-signal proxy for "kid killed the service".
+  But `popup_pending == true` at cold-boot has TWO valid causes —
+  malicious kill (unclean shutdown) AND legitimate PC restart during
+  a popup (clean shutdown) — with opposite required responses (punish
+  vs resurrect). Collapsing them punished legitimate users. Same
+  pattern applies to any "did the last shutdown crash mid-operation"
+  flag : the flag records the state, `was_clean_shutdown` records the
+  cause. *How to apply* : whenever a design uses a boolean flag from
+  runtime.dat / any persisted state as a proxy for intent, ask "what's
+  the second orthogonal signal that disambiguates the two possible
+  causes ?" — if there isn't one, the design is ambiguous. Thread
+  both signals into the pure-kernel inputs (in purrpause's case :
+  `ResolveInputs.was_clean_shutdown` alongside `popup_pending`) so
+  the decision logic is fully expressed without caller-side gates.
+
+- **On a Parallels-NATed link (Shared network), a Windows Firewall
+  inbound *drop* can surface on the macOS client as `No route to
+  host` (EHOSTUNREACH), not the usual silent timeout.** *Why* : during
+  a purrpause LAN-console smoke, the Mac got `nc: ... No route to host`
+  hitting the guest's `0.0.0.0:8787`. That error normally means an
+  L2/ARP/routing failure, so ~5 rounds were spent chasing the Parallels
+  network (bridged vs shared, ARP tables, vnic/bridge interfaces) — when
+  the real cause was the guest's **missing inbound firewall rule**
+  (Private profile, default-deny). The Parallels NAT gateway relayed the
+  firewall drop back as an ICMP unreachable → EHOSTUNREACH on the client.
+  *How to apply* : when a guest service listens on `0.0.0.0` and answers
+  on `127.0.0.1` but not from the host, **do the firewall-off/on A-B test
+  early** (`Set-NetFirewallProfile -All -Enabled False`, retest, re-enable)
+  — it's decisive in one step. Don't let `No route to host` alone rule out
+  the firewall on a virtualized/NATed link ; the error class is unreliable
+  there. Verify firewall rules in an **elevated** shell — non-admin
+  `Get-NetFirewallRule`/`Get-NetFirewallPortFilter` return empty or
+  Access-Denied and give false "no rule" reads.
+
+- **`cargo clippy` on Linux does NOT lint `#[cfg(windows)]` modules —
+  run `cargo xwin clippy --target x86_64-pc-windows-msvc` before
+  committing purrpause code that touches Windows-only files.** *Why* :
+  in purrpause, whole modules are `#[cfg(windows)]` (`modes/config/{tabs,app}`,
+  `platform/win32/*`), so they simply don't compile on the Linux dev host —
+  Linux clippy reports them clean even when they carry real lints. A session-7
+  change pushed `ui_security` to 8 args (clippy `too_many_arguments`, limit 7) ;
+  the Linux clippy in the DoD saw zero warnings, and only the cross-compiled
+  clippy caught it — against the project's established zero-warnings-on-Windows
+  bar. *How to apply* : for any change under a `#[cfg(windows)]` module, add a
+  `cargo xwin clippy --bin SystemHealthAgent --target x86_64-pc-windows-msvc`
+  pass (aarch64 also works) to verification, not just `cargo clippy` on Linux.
+  The aarch64 `pack` build proves it *compiles* but does not run clippy.
+
+- **A heredoc that must expand variables cannot carry backticks — not even
+  inside a comment.** *Why* : `<<EOF` (unquoted) is a full expansion context,
+  so backticks are command substitution wherever they appear. In
+  `init-firewall.sh`, the heredoc writing the dnsmasq injections held a
+  comment reading « no manual [ipset add] workaround needed », the two words
+  in backticks : every container boot ran `ipset add` with no arguments **as
+  root**, printed `ipset v7.17: Missing mandatory argument` to stderr, and
+  spliced the empty output into the generated conf, truncating the comment.
+  It shipped in the image for three sessions because the firewall worked
+  anyway. The same mistake reappeared the same day in a preflight script,
+  where a comment backticked two shell builtins and ran them. Markdown habits
+  — backticks around identifiers — are exactly what triggers it. *How to
+  apply* : when writing a heredoc, pick the delimiter deliberately. `<<'EOF'`
+  (quoted) if nothing needs expanding — then backticks are safe. `<<EOF` only
+  when a variable must expand, and then **no backticks in the body**, prose
+  included ; write `ipset-add` or plain words instead. To audit a file, slice
+  its heredocs with `awk '/<<EOF/,/^EOF$/' <file>` and grep the result for a
+  backtick — any hit is a command substitution waiting to fire.
+
+- **Brace every `$var` that a non-ASCII character follows : `"${p}…"`, never
+  `"$p…"`.** *Why* : host-side scripts run under macOS's bash **3.2**, which
+  is not multibyte-safe when parsing identifiers — it absorbs the UTF-8 bytes
+  of `…` / `—` / `→` into the variable name and looks up `p\xe2\x80\xa6`.
+  Under `set -u` that is a hard `unbound variable` abort, and the error names
+  a mangled variable that appears nowhere in the source, so it reads as
+  corruption rather than a parsing rule. A preflight run died this way right
+  before its most expensive phase, on `step "devc-hook $p…"`. Our scripts are
+  full of `…`, `—` and `→` in user-facing strings, so the pattern is common.
+  *How to apply* : brace by default in any string mixing a variable with
+  typographic punctuation. Sweep a script with
+  `grep -nP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' <file>` — no `\{?`/`\}?`
+  in that pattern on purpose, adding them matches the already-braced (safe)
+  form too. Comments that merely mention the bug still show up ; read the
+  hits, don't count them. `bash -n` does **not** catch this — the failure is
+  at expansion time, so a script can be syntactically perfect and still die
+  mid-run.
