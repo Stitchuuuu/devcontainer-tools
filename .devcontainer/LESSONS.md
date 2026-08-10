@@ -260,3 +260,20 @@
   hits, don't count them. `bash -n` does **not** catch this — the failure is
   at expansion time, so a script can be syntactically perfect and still die
   mid-run.
+
+- **A new assertion in `packages/devcontainer-base/test/` is not delivered
+  until it is in [`TESTING.md`](../packages/devcontainer-base/TESTING.md).**
+  *Why* : the suites are the contract of a **published** image, and the people
+  who need to know what is guaranteed — whoever pulls the image, whoever signs
+  off a release — do not read bash. A test that exists only in the source is a
+  guarantee nobody outside the repo can see. The catalogue also drove out two
+  real defects during 4.1b-bis, simply by forcing each label to be explained in
+  plain language : a stale label naming `jq` after `jq` had left that code
+  path, and a group of assertions that turned out to be untestable. *How to
+  apply* : same commit as the test, never a follow-up. One row per assertion,
+  two columns — what it guarantees for a non-technical reader, then the
+  mechanism for a dev. Group only assertions that differ by one parameter, and
+  then name every value in a sub-table. Keep the left column **byte-identical**
+  to the label the suite prints : that is how someone greps from a red run back
+  to the explanation. Cross-check with the runtime output, not the source —
+  loops emit several assertions per line of code.
