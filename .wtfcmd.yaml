@@ -55,3 +55,15 @@
     - name: args
       desc: Arguments forwarded verbatim to the notif binary.
       is_array: true
+
+# ---- image — suites de l'image de base -------------------------------------
+# Une passe complète = DEUX exécutions : une dans le devcontainer (manifest,
+# firewall, overlay couche 1), une sur le host Docker lancé (overlay couche 2,
+# suites image). Le runner détecte de quel côté il tourne et dit ce qu'il reste.
+
+- group: image
+  name: test
+  desc: |
+    Toutes les suites de l'image de base, selon le contexte détecté.
+    À rejouer des deux côtés (container puis host) à chaque bump mineur/majeur.
+  cmd: bash ./packages/devcontainer-base/test/run-all.sh
