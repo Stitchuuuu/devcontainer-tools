@@ -1,4 +1,4 @@
-# direct-tcp-allow.txt — services allowed via direct TCP (mitmproxy bypass)
+# ports.txt — services reachable by direct TCP (mitmproxy bypass)
 #
 # Format: host:port per line. Comments: # at start of line or inline.
 # Special keyword: "host" = host.docker.internal.

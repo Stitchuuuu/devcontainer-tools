@@ -112,15 +112,19 @@ echo "  DC_PROJECT:   ${DC_PROJECT:-{{PROJECT_ID}}}"
 echo "  claude-creds: $CREDS_VOLUME"
 
 # Ensure firewall/ baked files exist before Dockerfile COPY (recursive).
-# domains.local.txt is gitignored ; default-mode + direct-tcp-allow.txt are
+# domains.local.txt is gitignored ; default-mode + ports.txt are
 # committed but a fresh project clone may need them seeded. policy.local.d/
 # is committed with .keep, but mkdir as a safety net for older clones.
 [ -f "$DEVCONTAINER_DIR/firewall/domains.local.txt" ] || \
   touch "$DEVCONTAINER_DIR/firewall/domains.local.txt"
 [ -s "$DEVCONTAINER_DIR/firewall/default-mode" ] || \
   echo "strict" > "$DEVCONTAINER_DIR/firewall/default-mode"
+# ports.txt was called direct-tcp-allow.txt until 2026-08-10. Seed the new
+# name only when NEITHER exists: a project still carrying the old file keeps
+# working, and never ends up with both (which the firewall would flag).
+[ -f "$DEVCONTAINER_DIR/firewall/ports.txt" ] || \
 [ -f "$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt" ] || \
-  : > "$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt"
+  : > "$DEVCONTAINER_DIR/firewall/ports.txt"
 mkdir -p "$DEVCONTAINER_DIR/firewall/policy.local.d"
 
 # Migrate legacy .configured-firewall-mode → firewall/default-mode (one-shot,

@@ -148,7 +148,7 @@ test('non-interactive: writes the defaults and syncs the proxy variables', async
 		)
 
 		// The seeded files the image build COPYs.
-		for (const seeded of ['firewall/domains.local.txt', 'firewall/direct-tcp-allow.txt']) {
+		for (const seeded of ['firewall/domains.local.txt', 'firewall/ports.txt']) {
 			assert.ok(existsSync(join(devcontainerDir, seeded)), `${seeded} seeded`)
 		}
 		assert.ok(existsSync(join(devcontainerDir, 'firewall', 'policy.local.d')), 'policy.local.d created')
@@ -292,6 +292,33 @@ test('a manual edit of firewall/default-mode re-aligns .env on the next run', as
 			assert.doesNotMatch(env, new RegExp(`^${key}=`, 'm'), `${key} cleared in basic`)
 		}
 		assert.match(env, /^CLAUDE_CODE_VERSION=/m, 'unrelated keys survive')
+	} finally {
+		cleanup()
+	}
+})
+
+test('a project still on direct-tcp-allow.txt is not given a second ports file', async () => {
+	const { projectDir, devcontainerDir, cleanup } = fixture()
+	try {
+		// ports.txt was called direct-tcp-allow.txt until 2026-08-10. Seeding the
+		// new name next to the old one would leave the firewall reading one file
+		// and ignoring the other — the rules a human wrote silently not applied.
+		mkdirSync(join(devcontainerDir, 'firewall'), { recursive: true })
+		writeFileSync(join(devcontainerDir, 'firewall', 'direct-tcp-allow.txt'), 'host:9222\n', 'utf8')
+
+		await withStubDocker(() =>
+			initialize({
+				devcontainerDir,
+				dryRun: false,
+				cwd: projectDir,
+				input: PIPED_STDIN(),
+				probe: LINUX_PROBE,
+				...captured(),
+			}),
+		)
+
+		assert.ok(!existsSync(join(devcontainerDir, 'firewall', 'ports.txt')), 'no second ports file created')
+		assert.equal(read(join(devcontainerDir, 'firewall', 'direct-tcp-allow.txt')), 'host:9222\n', 'the old file is left alone')
 	} finally {
 		cleanup()
 	}

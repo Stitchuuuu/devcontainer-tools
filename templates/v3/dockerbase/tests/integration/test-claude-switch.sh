@@ -3,9 +3,9 @@
 #
 # claude-switch (host-side) toggles 2 files :
 #   - .devcontainer/.env (ANTHROPIC_BASE_URL line comment/decomment)
-#   - .devcontainer/firewall/direct-tcp-allow.txt (active host:port entry)
+#   - .devcontainer/firewall/ports.txt (active host:port entry)
 #
-# After a rebuild, the baked /etc/devcontainer-firewall/direct-tcp-allow.txt
+# After a rebuild, the baked /etc/devcontainer-firewall/ports.txt
 # should match the workspace copy (which was just updated by claude-switch).
 # This suite cross-checks workspace ↔ baked alignment for whichever mode
 # is currently active, detected from .env.
@@ -15,8 +15,8 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
 ENV_FILE=/workspace/.devcontainer/.env
-WORKSPACE_TCP=/workspace/.devcontainer/firewall/direct-tcp-allow.txt
-BAKED_TCP=/etc/devcontainer-firewall/direct-tcp-allow.txt
+WORKSPACE_TCP=/workspace/.devcontainer/firewall/ports.txt
+BAKED_TCP=/etc/devcontainer-firewall/ports.txt
 
 _post_bake() {
   in_container || return 1
@@ -48,14 +48,14 @@ _active_lines() {
 test_workspace_baked_alignment() {
   _post_bake || { skip_test "not in post-bake container"; return; }
   [ -f "$WORKSPACE_TCP" ] && [ -f "$BAKED_TCP" ] || {
-    skip_test "direct-tcp-allow.txt missing in workspace or /etc"; return; }
+    skip_test "ports.txt missing in workspace or /etc"; return; }
   # The active entries must match exactly (comments may differ in spacing
   # but actual entries are what init-firewall.sh applies as iptables ACCEPT).
   local ws_active baked_active
   ws_active=$(grep -vE '^\s*(#|$)' "$WORKSPACE_TCP" | tr -d '[:space:]' | sort)
   baked_active=$(grep -vE '^\s*(#|$)' "$BAKED_TCP"   | tr -d '[:space:]' | sort)
   if [ "$ws_active" = "$baked_active" ]; then
-    _ok "workspace ↔ baked direct-tcp-allow active entries match"
+    _ok "workspace ↔ baked ports.txt active entries match"
   else
     _nok "workspace ↔ baked diverge — last rebuild didn't pick up claude-switch ?"
     echo "      workspace : $(echo "$ws_active" | tr '\n' ' ')"
@@ -69,9 +69,9 @@ test_mode_cloud() {
   [ "$m" = "cloud" ] || { skip_test "active mode = $m, not cloud"; return; }
   # Expected : no active entry (only commented examples) in both copies.
   if [ "$(_active_lines "$BAKED_TCP")" -eq 0 ]; then
-    _ok "cloud : baked direct-tcp-allow has zero active entries"
+    _ok "cloud : baked ports.txt has zero active entries"
   else
-    _nok "cloud : baked direct-tcp-allow has unexpected entries"
+    _nok "cloud : baked ports.txt has unexpected entries"
     grep -vE '^\s*(#|$)' "$BAKED_TCP" | sed 's/^/      /'
   fi
 }

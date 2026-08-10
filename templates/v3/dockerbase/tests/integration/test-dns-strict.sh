@@ -13,7 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
 DNS_PORT=53
 DNS_ADDR=127.0.0.53
-DIRECT_TCP_ALLOW=/etc/devcontainer-firewall/direct-tcp-allow.txt
+PORTS_FILE=/etc/devcontainer-firewall/ports.txt
 
 _post_bake() {
   in_container || return 1
@@ -84,12 +84,12 @@ test_hostdockerinternal_resolves() {
 
 test_sibling_claudebridge_resolves_when_active() {
   _post_bake || { skip_test "not in post-bake container"; return; }
-  if [ ! -f "$DIRECT_TCP_ALLOW" ]; then
-    skip_test "direct-tcp-allow.txt not baked"
+  if [ ! -f "$PORTS_FILE" ]; then
+    skip_test "ports.txt not baked"
     return
   fi
-  if ! grep -qE '^[[:space:]]*claude-bridge:[0-9]+' "$DIRECT_TCP_ALLOW"; then
-    skip_test "claude-bridge not active in direct-tcp-allow.txt (cloud mode)"
+  if ! grep -qE '^[[:space:]]*claude-bridge:[0-9]+' "$PORTS_FILE"; then
+    skip_test "claude-bridge not active in ports.txt (cloud mode)"
     return
   fi
   assert_true _dig_resolves claude-bridge -- \

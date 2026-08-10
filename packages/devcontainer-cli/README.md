@@ -35,7 +35,7 @@ order:
    hypervisor, not the OS.
 2. Opens a timestamped log under `logs/`, plus a decision trace when `DEBUG=1`.
 3. Seeds the files the image build depends on: `firewall/domains.local.txt`,
-   `firewall/default-mode`, `firewall/direct-tcp-allow.txt`,
+   `firewall/default-mode`, `firewall/ports.txt`,
    `firewall/policy.local.d/`, `claude-bridge/config.json`, and the
    `.vscode/settings.json` stub Docker Desktop on macOS needs before it will
    bind a file.

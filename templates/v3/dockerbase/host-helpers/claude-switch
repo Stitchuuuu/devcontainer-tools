@@ -31,7 +31,7 @@
 #    The two MODEL vars force Claude Code to request a single model name
 #    (claude-opus-4-7) for both main and small-fast calls — keeps Ollama at
 #    one loaded model and the UI transparent.
-# 3. Syncs firewall/direct-tcp-allow.txt (baked since session 1) with the
+# 3. Syncs firewall/ports.txt (baked since session 1) with the
 #    host:port the new mode needs — host:11434 for local, claude-bridge:9223
 #    for local-proxy, empty for cloud. Modifying this file requires a rebuild
 #    (same gate as .env vars).
@@ -72,7 +72,12 @@ PROJECT_DIR="$(cd "$DEVCONTAINER_DIR/.." && pwd)"
 ENV_FILE="$DEVCONTAINER_DIR/.env"
 MODE_FLAG="$DEVCONTAINER_DIR/.configured-claude-mode"
 CLAUDE_MD="$PROJECT_DIR/CLAUDE.md"
-DIRECT_TCP_ALLOW="$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt"
+# ports.txt was called direct-tcp-allow.txt until 2026-08-10. Write to
+# whichever the project actually has, so a switch never leaves two files
+# behind — the firewall would then read one and ignore the other.
+PORTS_FILE="$DEVCONTAINER_DIR/firewall/ports.txt"
+[ -f "$PORTS_FILE" ] || [ ! -f "$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt" ] || \
+  PORTS_FILE="$DEVCONTAINER_DIR/firewall/direct-tcp-allow.txt"
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: $ENV_FILE not found — run initialize.sh first." >&2
@@ -86,20 +91,20 @@ sed_inplace() {
   sed -E "$expr" "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
-# Rewrite the active (non-comment) entries of firewall/direct-tcp-allow.txt.
-# direct-tcp-allow.txt is baked into the image (since session 1) — modifying
+# Rewrite the active (non-comment) entries of firewall/ports.txt.
+# ports.txt is baked into the image (since session 1) — modifying
 # it requires a rebuild to apply. Each mode toggles a different host:port :
 #   cloud       → no active entry
 #   local       → host:11434  (Ollama on host.docker.internal)
 #   local-proxy → claude-bridge:9223
 # Comment lines (template examples) are preserved.
-sync_direct_tcp_allow() {
+sync_ports_file() {
   local entry=$1 tmp
-  mkdir -p "$(dirname "$DIRECT_TCP_ALLOW")"
-  touch "$DIRECT_TCP_ALLOW"
-  tmp=$(mktemp "${DIRECT_TCP_ALLOW}.XXXXXX")
+  mkdir -p "$(dirname "$PORTS_FILE")"
+  touch "$PORTS_FILE"
+  tmp=$(mktemp "${PORTS_FILE}.XXXXXX")
   # Strip existing active entries (non-comment, non-blank lines).
-  awk '/^[[:space:]]*#/ || /^[[:space:]]*$/' "$DIRECT_TCP_ALLOW" > "$tmp"
+  awk '/^[[:space:]]*#/ || /^[[:space:]]*$/' "$PORTS_FILE" > "$tmp"
   # Append the new entry, if any.
   if [ -n "$entry" ]; then
     # Ensure trailing newline before append.
@@ -108,7 +113,7 @@ sync_direct_tcp_allow() {
     fi
     echo "$entry" >> "$tmp"
   fi
-  mv "$tmp" "$DIRECT_TCP_ALLOW"
+  mv "$tmp" "$PORTS_FILE"
 }
 
 # Regex-escape an ERE pattern in pure bash (no sed). The character class
@@ -246,7 +251,7 @@ case "${1:-}" in
     sed_inplace 's|^# *(CLAUDE_CONFIG_DIR=)|\1|'            "$ENV_FILE"
     sed_inplace 's/^# *(ANTHROPIC_MODEL=)/\1/'              "$ENV_FILE"
     sed_inplace 's/^# *(ANTHROPIC_SMALL_FAST_MODEL=)/\1/'   "$ENV_FILE"
-    sync_direct_tcp_allow "host:11434"
+    sync_ports_file "host:11434"
     ln -sfn ".devcontainer/claude/CLAUDE-local-dev.md" "$CLAUDE_MD"
     printf '\033[1;33m✓ claude → local (direct Ollama, raw)\033[0m\n'
     echo "    base URL       : $URL_LOCAL (via mitmproxy audit)"
@@ -273,7 +278,7 @@ case "${1:-}" in
     sed_inplace 's|^# *(CLAUDE_CONFIG_DIR=)|\1|'            "$ENV_FILE"
     sed_inplace 's/^# *(ANTHROPIC_MODEL=)/\1/'              "$ENV_FILE"
     sed_inplace 's/^# *(ANTHROPIC_SMALL_FAST_MODEL=)/\1/'   "$ENV_FILE"
-    sync_direct_tcp_allow "claude-bridge:9223"
+    sync_ports_file "claude-bridge:9223"
     ln -sfn ".devcontainer/claude/CLAUDE-local-dev.md" "$CLAUDE_MD"
     printf '\033[1;33m✓ claude → local-proxy (via UniClaudeProxy sidecar)\033[0m\n'
     echo "    base URL       : $URL_LOCAL_PROXY (audited via mitmproxy + claude-bridge.yaml)"
@@ -299,7 +304,7 @@ case "${1:-}" in
     sed_inplace 's|^(CLAUDE_CONFIG_DIR=)|# \1|'             "$ENV_FILE"
     sed_inplace 's/^(ANTHROPIC_MODEL=)/# \1/'               "$ENV_FILE"
     sed_inplace 's/^(ANTHROPIC_SMALL_FAST_MODEL=)/# \1/'    "$ENV_FILE"
-    sync_direct_tcp_allow ""
+    sync_ports_file ""
     ln -sfn ".devcontainer/claude/$CLOUD_CLAUDE_MD" "$CLAUDE_MD"
     printf '\033[1;32m✓ claude → cloud\033[0m\n'
     echo "    base URL       : api.anthropic.com (default)"

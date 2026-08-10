@@ -30,7 +30,7 @@ test_reads_work() {
   _post_bake || { skip_test "not in post-bake container"; return; }
   assert_file_exists /etc/devcontainer-firewall/domains.txt          "domains.txt readable"
   assert_file_exists /etc/devcontainer-firewall/default-mode         "default-mode readable"
-  assert_file_exists /etc/devcontainer-firewall/direct-tcp-allow.txt "direct-tcp-allow.txt readable"
+  assert_file_exists /etc/devcontainer-firewall/ports.txt "ports.txt readable"
   assert_dir_exists  /etc/devcontainer-firewall/policy.local.d       "policy.local.d/ readable"
 }
 
@@ -109,15 +109,15 @@ test_vector12_inert() {
 }
 
 test_vector13_inert() {
-  # Vector #13 : adding evil:port to workspace direct-tcp-allow must not propagate.
+  # Vector #13 : adding evil:port to workspace ports.txt must not propagate.
   _post_bake || { skip_test "not in post-bake container"; return; }
-  [ -w /workspace/.devcontainer/firewall/direct-tcp-allow.txt ] || {
-    skip_test "workspace direct-tcp-allow not writable" ; return ; }
-  echo "evil.com:443" >> /workspace/.devcontainer/firewall/direct-tcp-allow.txt
+  [ -w /workspace/.devcontainer/firewall/ports.txt ] || {
+    skip_test "workspace ports.txt not writable" ; return ; }
+  echo "evil.com:443" >> /workspace/.devcontainer/firewall/ports.txt
   sync
-  assert_false grep -qF "evil.com:443" /etc/devcontainer-firewall/direct-tcp-allow.txt -- \
-    "vector #13 inert : workspace direct-tcp-allow not visible at runtime"
-  sed -i '/evil\.com:443/d' /workspace/.devcontainer/firewall/direct-tcp-allow.txt 2>/dev/null
+  assert_false grep -qF "evil.com:443" /etc/devcontainer-firewall/ports.txt -- \
+    "vector #13 inert : workspace ports.txt not visible at runtime"
+  sed -i '/evil\.com:443/d' /workspace/.devcontainer/firewall/ports.txt 2>/dev/null
 }
 
 run_tests

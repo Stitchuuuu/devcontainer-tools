@@ -317,13 +317,18 @@ function seedProjectFiles(options: SeedOptions): void {
 	const { devcontainerDir, projectDir, logger, dryRun } = options
 	const firewallDir = join(devcontainerDir, 'firewall')
 
-	// domains.local.txt is gitignored; default-mode and direct-tcp-allow.txt are
-	// committed, but a fresh clone may still need them seeded.
+	// domains.local.txt is gitignored; default-mode and ports.txt are committed,
+	// but a fresh clone may still need them seeded.
 	touch(join(firewallDir, 'domains.local.txt'), dryRun, logger)
 	if (isEmptyOrMissing(join(firewallDir, 'default-mode'))) {
 		writeFlag(join(firewallDir, 'default-mode'), 'strict', dryRun, logger)
 	}
-	touch(join(firewallDir, 'direct-tcp-allow.txt'), dryRun, logger)
+	// ports.txt was called direct-tcp-allow.txt until 2026-08-10. Seed the new
+	// name only when neither exists: a project still carrying the old file keeps
+	// working, and never ends up with both (the firewall flags that).
+	if (!existsSync(join(firewallDir, 'direct-tcp-allow.txt'))) {
+		touch(join(firewallDir, 'ports.txt'), dryRun, logger)
+	}
 	if (!dryRun) mkdirSync(join(firewallDir, 'policy.local.d'), { recursive: true })
 
 	// One-shot migration: .configured-firewall-mode -> firewall/default-mode.
