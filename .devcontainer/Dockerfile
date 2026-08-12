@@ -33,6 +33,21 @@ RUN python3 -m venv /opt/anim-tools \
  && /opt/anim-tools/bin/pip install --no-cache-dir rlottie-python pillow lottie
 # -----------------------------------------------------------------------
 
+# --- Docker CLI (client only) --------------------------------------------
+# Talks to the nested dind sidecar via DOCKER_HOST=tcp://dind:2375 (see
+# docker-compose.yml) so the agent can run the release-check suites against
+# a daemon whose container list does not include this container. Client
+# only — no engine, no socket. Deliberately NOT in the shared base image:
+# it would eat into the 1200 MiB verify-slim-base cap and ships to users
+# who have no dind.
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+ && rm -rf /var/lib/apt/lists/*
+# -----------------------------------------------------------------------
+
 # Project-specific firewall data — baked into the image, no runtime bind mount.
 # Recursive COPY embarks the whole firewall/ tree (domains, policy.d/,
 # policy.local.d/, default-mode, direct-tcp-allow.txt, addons, dnsmasq.conf,

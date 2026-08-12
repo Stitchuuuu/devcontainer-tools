@@ -39,6 +39,11 @@ services:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
       - net.ipv6.conf.lo.disable_ipv6=1
+    environment:
+      # Nested daemon (dind sidecar below, profile-gated). Set unconditionally:
+      # with dind down, `docker info` fails and run-all.sh degrades to its
+      # skip behaviour — same as before docker existed in this container.
+      DOCKER_HOST: tcp://dind:2375
     env_file:
       - path: .env
         required: false
@@ -87,6 +92,33 @@ services:
       # reads `config.json` relative to CWD (app/config.py).
       - ./claude-bridge/config.json:/app/config.json:ro
 
+  # Nested Docker daemon for the agent-side release-check suites. The agent
+  # talks to tcp://dind:2375, never the host daemon: the nested daemon's
+  # container list does not include the agent's own container, so the
+  # isolation is structural (plans/release-check-dind/ROLLOUT.md).
+  # Egress note: this sidecar has its own network stack — app's NET_ADMIN
+  # ruleset does not apply. Accepted + documented in ROLLOUT.md § Decisions;
+  # the opt-in profile bounds the exposure window.
+  # Opt-in like claude-bridge — start from the host with:
+  #   docker compose --profile dind up -d dind
+  dind:
+    profiles: [dind]
+    image: docker:27-dind
+    privileged: true
+    environment:
+      # Plain TCP on the compose-internal network only — no published port.
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      # SAME source, SAME target as app — load-bearing, not cosmetic.
+      # Invariant: any path under /workspace resolves to the same bytes in
+      # both daemons. The suites hand -v sources under /workspace to this
+      # daemon; an absent source is silently created EMPTY by docker, which
+      # turns "nothing leaked" assertions into vacuous passes (false green).
+      - ..:/workspace:delegated
+      - dind-storage:/var/lib/docker
+    networks:
+      - default
+
 networks:
   default:
     driver_opts:
@@ -104,3 +136,5 @@ volumes:
     external: true
   mitmproxy:
     name: mitmproxy-${DC_PROJECT:-devcontainer-tools}
+  dind-storage:
+    name: dind-storage-${DC_PROJECT:-devcontainer-tools}

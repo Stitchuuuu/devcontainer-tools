@@ -233,6 +233,17 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
   /repos/blunt1337/wtfcmd/*            #   "latest version?" lookup
 
 
+# === Docker CLI apt repo (dogfood image build) ===============================
+# docker-ce-cli + docker-compose-plugin installed in .devcontainer/Dockerfile
+# for the dind sidecar (release-check agent half). The apt fetch runs at
+# `docker build` time on the daemon host, OUT of the runtime firewall scope
+# (same pattern as the wtf binary above) — this entry is the audit trail plus
+# runtime apt use (e.g. reinstalling / upgrading the CLI from inside).
+
+[GET] download.docker.com              # Docker official apt repo
+  /linux/debian/*                      #   gpg key, dists/ indexes, pool/ debs
+
+
 # === CRL / OCSP — TLS certificate revocation infrastructure =================
 # TLS chain validation by VS Code / curl / Node / browsers hits these
 # endpoints to check whether a presented certificate has been revoked.

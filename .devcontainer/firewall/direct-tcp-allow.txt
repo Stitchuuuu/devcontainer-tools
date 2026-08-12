@@ -18,3 +18,11 @@
 
 # Ollama server on the host (port 11434) — used in local-direct mode
 # host:11434
+
+# Nested Docker daemon (dind sidecar) — agent-side release-check suites.
+# Same shape as CDP: the Docker API is an HTTP handshake immediately
+# hijacked into a raw stream for build/exec/attach, and mitmproxy breaks the
+# hijack. Direct TCP is the requirement, not a shortcut. The entry also
+# injects server=/dind/127.0.0.11 into dnsmasq — without it the service name
+# does not resolve at all. Baked at image build: rebuild, not reload.
+dind:2375
