@@ -67,3 +67,13 @@
     Every base-image suite, according to the detected context.
     Replay on both sides (container then host) at each minor/major bump.
   cmd: bash ./packages/devcontainer-base/test/run-all.sh
+
+- group: image
+  name: release-check
+  desc: |
+    Full release gate before a minor/major version bump : --no-cache build,
+    content + suite checks, scratch scaffold, VS Code Reopen (fresh boot +
+    reattach-to-running for defect 6's one reachable path), collection,
+    verdict. Refuses to report green if a step was skipped. Host only
+    (macOS, Docker Desktop, VS Code).
+  cmd: bash ./packages/devcontainer-base/test/release-check.sh
