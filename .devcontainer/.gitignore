@@ -34,6 +34,9 @@ skills/**/*.local/
 # claude-bridge sidecar runtime config (bootstrapped from .example.json)
 claude-bridge/config.json
 
+# shareglaude deployment URLs + create key (bootstrapped from .example)
+shareglaude.env
+
 # Notify daemon — runtime artefacts under notify/queue/ (auto-generated)
 #   *.jsonl          : per-hook event queue (consumed + cleaned by the daemon)
 #   daemon.log       : daemon stderr/stdout sink (rotated at 1 MB → 100 KB)
