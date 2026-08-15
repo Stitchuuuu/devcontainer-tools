@@ -102,9 +102,12 @@ function stagedPathFor(credentialsPath) {
 // The hint has to carry --credentials-path when it is not the default, or it
 // would send the user to promote a staged file that does not exist.
 function promoteHint(credentialsPath) {
-  const suffix =
-    credentialsPath === DEFAULT_CREDENTIALS_PATH ? '' : ` --credentials-path ${credentialsPath}`;
-  return `${process.argv[1]} --promote${suffix}`;
+  if (credentialsPath === DEFAULT_CREDENTIALS_PATH) {
+    // Wrappers (the devcontainer's `wtf token share`) name their own follow-up
+    // command here, so the hint matches how the user actually invoked us.
+    return process.env.SHAREGLAUDE_PROMOTE_HINT || `${process.argv[1]} --promote`;
+  }
+  return `${process.argv[1]} --promote --credentials-path ${credentialsPath}`;
 }
 
 function printHelp() {
@@ -118,7 +121,8 @@ Options:
                             credentials untouched. Offers to install it right away
                             when stdin is a terminal.
   --promote                 Install a token previously staged by --test, then remove
-                            the staged file. Runs alone, offline.
+                            the staged file. Runs alone; re-validates the staged
+                            token and refuses one expired or revoked since staging.
   --mock-exchange           Skip the real Anthropic token exchange, synthesise fake
                             tokens (plumbing test only — combine with --dry-run)
   --credentials-path <path> Alternate credentials path (default: ~/.claude/.credentials.json)
@@ -460,11 +464,28 @@ async function promoteStaged(credentialsPath) {
     die(`Staged credentials at ${staged} are not readable JSON: ${e.message}`);
   }
 
-  const expiresAt = creds?.claudeAiOauth?.expiresAt;
+  const oauth = creds?.claudeAiOauth;
+  const expiresAt = oauth?.expiresAt;
   if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
     die(
       `Staged token expired on ${new Date(expiresAt).toISOString()}. Delete ${staged} and re-run with --test.`,
     );
+  }
+
+  // Re-check rather than trust the staging run: time has passed, the token may
+  // have been revoked, and a stale or synthetic staged file must never reach
+  // the live credentials. A network failure is not the token's fault, so only
+  // an actual answer from the API can block the install.
+  if (oauth?.accessToken) {
+    try {
+      await oauthCall('POST', VALIDATE_URL, oauth.accessToken);
+      console.log('Staged token re-validated.');
+    } catch (e) {
+      if (e.message.startsWith('HTTP')) {
+        die(`Staged token is no longer valid (${e.message}). Delete ${staged} and re-run with --test.`);
+      }
+      console.log(`Could not reach the validation endpoint (${e.message}) — installing anyway.`);
+    }
   }
 
   await installCredentials(credentialsPath, creds);
