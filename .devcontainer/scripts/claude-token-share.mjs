@@ -10,9 +10,9 @@
 
 import { randomBytes, createHash } from 'node:crypto';
 import { readFile, writeFile, chmod, mkdir, rename, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
@@ -21,6 +21,17 @@ const DEFAULT_BASE_URL = 'https://xxx.super.app';
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const VALIDATE_URL = 'https://api.anthropic.com/api/oauth/validate';
+const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
+const ROLES_URL = 'https://api.anthropic.com/api/oauth/claude_cli/roles';
+const SUBSCRIPTION_BY_ORG_TYPE = {
+  claude_max: 'max',
+  claude_pro: 'pro',
+  claude_enterprise: 'enterprise',
+  claude_team: 'team',
+};
+// Claude Code's fallback when the token response carries no
+// refresh_token_expires_in — which, in practice, it never does.
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 const DEFAULT_CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 // Same six scopes a plain `claude /login` requests, in the same order. Only a
@@ -103,9 +114,9 @@ Options:
   --url <base>              Shareglaude base URL (default: ${DEFAULT_BASE_URL})
   --key <value>             Shared secret for POST /new (X-Shareglaude-Key header)
   --dry-run                 Print tokens to stdout, do not write credentials file
-  --test                    Validate the token, stage it as <credentials>.test and
-                            leave the live credentials untouched. Offers to install
-                            it right away when stdin is a terminal.
+  --test                    Stage the token as <credentials>.test and leave the live
+                            credentials untouched. Offers to install it right away
+                            when stdin is a terminal.
   --promote                 Install a token previously staged by --test, then remove
                             the staged file. Runs alone, offline.
   --mock-exchange           Skip the real Anthropic token exchange, synthesise fake
@@ -117,9 +128,15 @@ Environment:
   SHAREGLAUDE_URL           Same effect as --url
   SHAREGLAUDE_KEY           Same effect as --key
 
+Every real exchange is checked before anything is written, whatever the flags:
+  - the token currently installed is reported, so you can see what you'd replace
+  - the incoming token is validated (account, plan, org role, granted scopes)
+  - claude -p runs against it in a throwaway config dir — the decisive proof
+A token that fails any of this is never staged nor installed.
+
 Notes:
   --dry-run wins over --test: it writes nothing at all, staged file included.
-  --mock-exchange skips validation — synthetic tokens cannot be validated.
+  --mock-exchange skips every check — synthetic tokens cannot be validated.
 `);
 }
 
@@ -263,42 +280,149 @@ async function exchangeCode(code, verifier, state) {
   return payload;
 }
 
-// Same check Claude Code runs on its own token. A 200 here is the only proof
-// that the grant is usable — an exchange returning 200 says nothing about
-// whether the scopes actually cover anything.
-async function validateToken(accessToken) {
-  const res = await fetch(VALIDATE_URL, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      'content-type': 'application/json',
-    },
+// ---------- Token inspection ----------
+
+async function oauthCall(method, url, accessToken) {
+  const res = await fetch(url, {
+    method,
+    headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
   });
   const text = await res.text();
-  if (!res.ok) {
-    die(`Token validation failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${text.slice(0, 160)}`);
+  return JSON.parse(text);
+}
+
+// /validate is the gate — the same check Claude Code runs on its own token, and
+// the only one whose failure means the token is unusable. /profile and /roles
+// are reporting: a hiccup there must not block an otherwise good token.
+async function inspectToken(accessToken) {
+  const validation = await oauthCall('POST', VALIDATE_URL, accessToken);
+  const soft = async (url) => {
+    try {
+      return await oauthCall('GET', url, accessToken);
+    } catch {
+      return null;
+    }
+  };
+  return { validation, profile: await soft(PROFILE_URL), roles: await soft(ROLES_URL) };
+}
+
+function printReport(label, { validation, profile, roles }, times) {
+  const account = profile?.account;
+  const org = profile?.organization;
+
+  console.log(`  ${label}`);
+  console.log(
+    `    account : ${account ? `${account.full_name || account.display_name} <${account.email}>` : validation.account_uuid}`,
+  );
+  if (org) {
+    const bits = [org.organization_type, org.rate_limit_tier, org.subscription_status]
+      .filter(Boolean)
+      .join(' · ');
+    console.log(`    plan    : ${bits}`);
   }
+  if (roles) {
+    console.log(`    org     : ${roles.organization_name} · role ${roles.organization_role}`);
+  }
+  console.log(`    scopes  : ${(validation.scopes || []).join(' ')}`);
+  if (times?.expiresAt) {
+    console.log(`    access  : valid until ${new Date(times.expiresAt).toISOString()}`);
+  }
+  if (times?.refreshTokenExpiresAt) {
+    // Assumed, not measured: the token endpoint does not return
+    // refresh_token_expires_in, and using the refresh token to find out would
+    // rotate it. Same 30-day assumption Claude Code makes.
+    console.log(
+      `    refresh : assumed valid until ${new Date(times.refreshTokenExpiresAt).toISOString()} (not server-confirmed)`,
+    );
+  }
+}
+
+// What is about to be replaced. Purely informational: a missing, expired or
+// unreadable current token is a normal state, never a reason to stop.
+async function printCurrentState(path) {
+  console.log('');
+  if (!existsSync(path)) {
+    console.log(`  Current: none — ${path} does not exist yet.`);
+    return;
+  }
+
+  let oauth;
   try {
-    return JSON.parse(text);
-  } catch {
-    die(`Token validation returned non-JSON: ${text.slice(0, 200)}`);
+    oauth = JSON.parse(await readFile(path, 'utf-8'))?.claudeAiOauth;
+  } catch (e) {
+    console.log(`  Current: ${path} is not readable JSON (${e.message}).`);
+    return;
+  }
+  if (!oauth?.accessToken) {
+    console.log(`  Current: ${path} holds no OAuth access token.`);
+    return;
+  }
+  if (typeof oauth.expiresAt === 'number' && oauth.expiresAt <= Date.now()) {
+    console.log(`  Current: access token expired on ${new Date(oauth.expiresAt).toISOString()}.`);
+    console.log(`    scopes  : ${(oauth.scopes || []).join(' ')}`);
+    return;
+  }
+
+  try {
+    printReport('Current', await inspectToken(oauth.accessToken), oauth);
+  } catch (e) {
+    console.log(`  Current: token present but not usable (${e.message}).`);
+  }
+}
+
+// The decisive check: Claude Code itself, on the token under test, in a
+// throwaway config dir. CLAUDE_CODE_OAUTH_TOKEN is honoured as an auth source,
+// and the empty config dir keeps the live credentials out of the picture.
+function smokeClaudeCode(accessToken) {
+  const dir = mkdtempSync(join(tmpdir(), 'shareglaude-'));
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: dir, CLAUDE_CODE_OAUTH_TOKEN: accessToken };
+  // Either of these would authenticate instead, turning the check into a lie.
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+
+  try {
+    const out = execFileSync('claude', ['-p', 'Reply with exactly: ok'], {
+      env,
+      encoding: 'utf-8',
+      timeout: 120000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    console.log(`Claude Code accepted the token — replied ${JSON.stringify(out.trim().slice(0, 40))}.`);
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      console.log('claude is not on PATH — skipped the end-to-end check.');
+      return;
+    }
+    const detail = String(e.stderr || e.stdout || e.message).trim().split('\n')[0];
+    die(`Claude Code refused the token: ${detail}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
 // ---------- Credentials write ----------
 
-function buildCredentials(tokenPayload) {
+// Mirrors what Claude Code writes after its own login, so an installed token is
+// indistinguishable from one it obtained itself.
+function buildCredentials(tokenPayload, profile) {
+  const org = profile?.organization;
+  const refreshExpiresIn = tokenPayload.refresh_token_expires_in;
   return {
     claudeAiOauth: {
       accessToken: tokenPayload.access_token,
       refreshToken: tokenPayload.refresh_token,
       expiresAt: Date.now() + Number(tokenPayload.expires_in) * 1000,
+      refreshTokenExpiresAt:
+        typeof refreshExpiresIn === 'number'
+          ? Date.now() + refreshExpiresIn * 1000
+          : Date.now() + REFRESH_TOKEN_TTL_MS,
       scopes:
         typeof tokenPayload.scope === 'string' && tokenPayload.scope.length > 0
           ? tokenPayload.scope.split(' ')
           : SCOPES.slice(),
-      subscriptionType: null,
-      rateLimitTier: null,
+      subscriptionType: SUBSCRIPTION_BY_ORG_TYPE[org?.organization_type] ?? null,
+      rateLimitTier: org?.rate_limit_tier ?? null,
     },
   };
 }
@@ -399,15 +523,26 @@ async function main() {
     `Token exchange OK (expires in ${tokenPayload.expires_in}s, scope: ${tokenPayload.scope || SCOPES.join(' ')}).`,
   );
 
+  let report = null;
   if (args.mockExchange) {
-    console.log('[--mock-exchange] token validation skipped — synthetic tokens cannot be validated.');
+    console.log('[--mock-exchange] token checks skipped — synthetic tokens cannot be validated.');
   } else {
-    const account = await validateToken(tokenPayload.access_token);
-    const email = account?.account?.email;
-    console.log(`Token validated${email ? ` — account ${email}` : ''}.`);
+    await printCurrentState(args.credentialsPath);
+    try {
+      report = await inspectToken(tokenPayload.access_token);
+    } catch (e) {
+      die(`Token validation failed: ${e.message}`);
+    }
   }
 
-  const creds = buildCredentials(tokenPayload);
+  const creds = buildCredentials(tokenPayload, report?.profile);
+
+  if (report) {
+    console.log('');
+    printReport('Incoming', report, creds.claudeAiOauth);
+    console.log('');
+    smokeClaudeCode(tokenPayload.access_token);
+  }
 
   if (args.dryRun) {
     console.log('--- dry-run: credentials JSON (not written) ---');
