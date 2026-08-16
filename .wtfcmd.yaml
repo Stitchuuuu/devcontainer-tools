@@ -74,9 +74,21 @@
     Full release gate before a minor/major version bump : --no-cache build,
     content + suite checks, scratch scaffold, VS Code Reopen (fresh boot +
     reattach-to-running for defect 6's one reachable path), collection,
-    verdict. Refuses to report green if a step was skipped. Host only
-    (macOS, Docker Desktop, VS Code).
-  cmd: bash ./packages/devcontainer-base/test/release-check.sh
+    verdict. Host only (macOS, Docker Desktop, VS Code).
+    Trois verdicts : GREEN (tout joué et vérifié, exit 0 — l'image est
+    publiable) / GREEN PARTIEL (rien d'échoué mais au moins une étape
+    volontairement non jouée, exit 2) / RED (échec ou étape sautée parce
+    qu'un amont a cassé, exit 1).
+  flags:
+    - name: no-purge
+      desc: |
+        Ne purge pas le cache serveur VS Code (volume `vscode`, partagé par
+        TOUS les devcontainers de la machine). L'étape 6 n'est alors pas un
+        boot à froid et R2 ne traverse rien : étapes 5 et 9 marquées ⊘,
+        verdict GREEN PARTIEL, exit 2.
+      default: ""
+      test: "$bool"
+  cmd: bash ./packages/devcontainer-base/test/release-check.sh{{ if .no_purge }} --no-purge{{ end }}
 
 # ---- shareglaude — receive a shared Claude Code token (user B side) --------
 # Runs INSIDE the devcontainer: it writes ~/.claude/.credentials.json and needs
