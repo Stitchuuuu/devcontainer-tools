@@ -74,11 +74,19 @@
     Full release gate before a minor/major version bump : --no-cache build,
     content + suite checks, scratch scaffold, VS Code Reopen (fresh boot +
     reattach-to-running for defect 6's one reachable path), collection,
-    verdict. Host only (macOS, Docker Desktop, VS Code).
+    verdict.
+    Même commande des deux côtés, le script détecte lequel (/.dockerenv) :
+    sur l'hôte (macOS, Docker Desktop, VS Code) il joue les 11 étapes et
+    c'est le seul côté qui peut sortir 0 ; dans le devcontainer il joue
+    headless, contre le daemon dind imbriqué UNIQUEMENT (assertion en
+    dur, fatale sinon), tout ce qui ne demande pas VS Code — et marque ∅
+    les étapes 5/6/9 que l'humain seul peut jouer. Sa réussite est donc
+    GREEN PARTIEL / exit 2, jamais 0. Il laisse un tarball d'image dont
+    l'hôte hérite les étapes 1 et 2-3 au lieu de les repayer.
     Trois verdicts : GREEN (tout joué et vérifié, exit 0 — l'image est
     publiable) / GREEN PARTIEL (rien d'échoué mais au moins une étape
-    volontairement non jouée, exit 2) / RED (échec ou étape sautée parce
-    qu'un amont a cassé, exit 1).
+    volontairement non jouée ou réservée à l'autre moitié, exit 2) / RED
+    (échec ou étape sautée parce qu'un amont a cassé, exit 1).
   flags:
     - name: no-purge
       desc: |
