@@ -75,25 +75,26 @@
     content + suite checks, scratch scaffold, VS Code Reopen (fresh boot +
     reattach-to-running for defect 6's one reachable path), collection,
     verdict.
-    Même commande des deux côtés, le script détecte lequel (/.dockerenv) :
-    sur l'hôte (macOS, Docker Desktop, VS Code) il joue les 11 étapes et
-    c'est le seul côté qui peut sortir 0 ; dans le devcontainer il joue
-    headless, contre le daemon dind imbriqué UNIQUEMENT (assertion en
-    dur, fatale sinon), tout ce qui ne demande pas VS Code — et marque ∅
-    les étapes 5/6/9 que l'humain seul peut jouer. Sa réussite est donc
-    GREEN PARTIEL / exit 2, jamais 0. Il laisse un tarball d'image dont
-    l'hôte hérite les étapes 1 et 2-3 au lieu de les repayer.
-    Trois verdicts : GREEN (tout joué et vérifié, exit 0 — l'image est
-    publiable) / GREEN PARTIEL (rien d'échoué mais au moins une étape
-    volontairement non jouée ou réservée à l'autre moitié, exit 2) / RED
-    (échec ou étape sautée parce qu'un amont a cassé, exit 1).
+    Same command on both sides, the script detects which one (/.dockerenv):
+    on the host (macOS, Docker Desktop, VS Code) it plays all 11 steps and
+    is the only side that can exit 0 ; inside the devcontainer it plays
+    headless, against the nested dind daemon ONLY (hardcoded assertion,
+    fatal otherwise), everything that does not need VS Code — and marks ∅
+    steps 5/6/9 that only the human can play. Its success path is
+    therefore GREEN PARTIEL / exit 2, never 0. It leaves an image tarball
+    the host inherits steps 1 and 2-3 from instead of repaying them.
+    Three verdicts : GREEN (everything played and verified, exit 0 — the
+    image is publishable) / GREEN PARTIEL (nothing failed but at least one
+    step deliberately not played or reserved for the other half, exit 2) /
+    RED (a failure, or a step skipped because something upstream broke,
+    exit 1).
   flags:
     - name: no-purge
       desc: |
-        Ne purge pas le cache serveur VS Code (volume `vscode`, partagé par
-        TOUS les devcontainers de la machine). L'étape 6 n'est alors pas un
-        boot à froid et R2 ne traverse rien : étapes 5 et 9 marquées ⊘,
-        verdict GREEN PARTIEL, exit 2.
+        Do not purge the VS Code server cache (`vscode` volume, shared by
+        ALL devcontainers on the machine). Step 6 is then not a cold boot
+        and R2 traverses nothing : steps 5 and 9 marked ⊘, verdict GREEN
+        PARTIEL, exit 2.
       default: ""
       test: "$bool"
   cmd: bash ./packages/devcontainer-base/test/release-check.sh{{ if .no_purge }} --no-purge{{ end }}
