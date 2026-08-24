@@ -322,7 +322,10 @@ SETTINGS="$LOCAL_DIR/settings.json"
 BACKUP_STATE="/workspace/.devcontainer/claude/backup-state.sh"
 STATE_CMDS=()
 [ -x "$SYNC_CREDS" ]   && STATE_CMDS+=("sh /workspace/.devcontainer/claude/sync-creds.sh")
-[ -x "$BACKUP_STATE" ] && STATE_CMDS+=("sh $BACKUP_STATE")
+# bash, not sh: backup-state.sh uses pipefail, arrays and mapfile, and `sh …`
+# ignores the shebang. Under dash it dies on line 1 of real work — silently,
+# because a Stop hook's stderr goes nowhere anyone reads.
+[ -x "$BACKUP_STATE" ] && STATE_CMDS+=("bash $BACKUP_STATE")
 if [ "${#STATE_CMDS[@]}" -gt 0 ] && command -v python3 >/dev/null 2>&1; then
   mkdir -p "$(dirname "$SETTINGS")"
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
