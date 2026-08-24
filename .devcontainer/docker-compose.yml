@@ -40,9 +40,10 @@ services:
       - net.ipv6.conf.default.disable_ipv6=1
       - net.ipv6.conf.lo.disable_ipv6=1
     environment:
-      # Nested daemon (dind sidecar below, profile-gated). Set unconditionally:
-      # with dind down, `docker info` fails and run-all.sh degrades to its
-      # skip behaviour — same as before docker existed in this container.
+      # Nested daemon (dind sidecar below, starts with the stack). Set
+      # unconditionally anyway: with dind down, `docker info` fails and
+      # run-all.sh degrades to its skip behaviour — same as before docker
+      # existed in this container.
       DOCKER_HOST: tcp://dind:2375
     env_file:
       - path: .env
