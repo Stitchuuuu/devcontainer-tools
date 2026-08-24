@@ -40,11 +40,13 @@ RUN python3 -m venv /opt/anim-tools \
 # only — no engine, no socket. Deliberately NOT in the shared base image:
 # it would eat into the 1200 MiB verify-slim-base cap and ships to users
 # who have no dind.
+# buildx is required: release-check.sh's `docker build --progress=plain`
+# needs it, and its step-1 VSIX check anchors on buildkit's output prefix.
 RUN install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+ && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
  && rm -rf /var/lib/apt/lists/*
 # -----------------------------------------------------------------------
 
