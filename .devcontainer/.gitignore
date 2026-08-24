@@ -51,6 +51,10 @@ notify/queue/.daemon.pid
 notify/queue/.daemon.startup*
 notify/queue/state/
 
+# Claude state snapshots (claude/backup-state.sh) — transcripts + shell history
+# parked on the bind mount so a `docker compose down -v` cannot take them.
+.state-backup/
+
 # Lessons — local / not-yet-generalisable (committed sibling is LESSONS.md)
 LESSONS.local.md
 

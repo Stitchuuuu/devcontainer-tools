@@ -106,6 +106,11 @@ if [ -f "$ENV_FILE" ]; then
 	set +a
 fi
 
+# This fallback MUST stay byte-identical to docker-compose.yml's, which reads
+# `${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-devcontainer-tools}}`. The
+# volume is `external: true` there, so if the two ever name different volumes,
+# compose aborts `up` with "external volume not found" and the container simply
+# never starts — with .env absent (it is gitignored) nothing else pins them.
 CREDS_VOLUME="${CLAUDE_CREDS_VOLUME:-claude-creds-${DC_PROJECT:-devcontainer-tools}}"
 
 echo "  DC_PROJECT:   ${DC_PROJECT:-devcontainer-tools}"
@@ -143,8 +148,16 @@ if [ -f "$CB_CONFIG_DIR/config.example.json" ] && [ ! -f "$CB_CONFIG_DIR/config.
 	echo "✓ Bootstrapped claude-bridge/config.json from config.example.json"
 fi
 
-# Create volume (always needed)
-docker volume create "$CREDS_VOLUME" > /dev/null 2>&1 || true
+# Create volume (always needed). Reported, never swallowed: this volume is
+# `external: true` in compose, so a failure here is not cosmetic — it is a
+# container that will not start, several minutes later, with an error that
+# names docker-compose rather than this line.
+if ! docker volume create "$CREDS_VOLUME" > /dev/null; then
+	echo "⚠️  Could not create the '$CREDS_VOLUME' volume."
+	echo "   It is declared 'external: true' in docker-compose.yml, so the"
+	echo "   container will fail to start until it exists. Check the Docker"
+	echo "   daemon is running, then retry."
+fi
 
 # Flag files — delete to re-prompt on next rebuild.
 # FW_FLAG moved into firewall/ + renamed default-mode since session 1 (bake-only).

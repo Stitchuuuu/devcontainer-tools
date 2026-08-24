@@ -97,14 +97,28 @@ services:
   # container list does not include the agent's own container, so the
   # isolation is structural (plans/release-check-dind/ROLLOUT.md).
   # Egress note: this sidecar has its own network stack — app's NET_ADMIN
-  # ruleset does not apply. Accepted + documented in ROLLOUT.md § Decisions;
-  # the opt-in profile bounds the exposure window.
-  # Opt-in like claude-bridge — start from the host with:
-  #   docker compose --profile dind up -d dind
+  # ruleset does not apply. Accepted + documented in ROLLOUT.md § Decisions.
+  # It used to be `profiles: [dind]` so the exposure window was bounded to
+  # active test runs; it now starts with the stack, because a test bench that
+  # has to be armed by hand is one that is silently absent when it matters —
+  # `docker info` fails, HAS_DOCKER=0, and every docker-dependent suite
+  # reports SKIP instead of red. The egress tradeoff is accepted knowingly.
+  #
+  # Footgun, now easier to trip: `docker compose up` typed INSIDE the
+  # devcontainer retargets at this daemon (DOCKER_HOST is baked) and builds a
+  # dind-in-dind. Compose commands for this stack are HOST commands only.
   dind:
-    profiles: [dind]
     image: docker:27-dind
     privileged: true
+    restart: unless-stopped
+    # The suites race the daemon otherwise: compose reports the container up
+    # while dockerd is still opening its socket.
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     environment:
       # Plain TCP on the compose-internal network only — no published port.
       DOCKER_TLS_CERTDIR: ""

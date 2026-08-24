@@ -312,21 +312,27 @@ fi
 CLEANUP=/workspace/.devcontainer/host-helpers/watch-log-cleanup
 [ -x "$CLEANUP" ] && "$CLEANUP"
 
-# Merge creds-sync hooks (Stop + SessionEnd) into ~/.claude/settings.json
-# so the shared volume stays fresh whenever Claude Code refreshes the OAuth token
-# during an active session. Idempotent — dedup by command.
+# Merge state hooks (Stop + SessionEnd) into ~/.claude/settings.json:
+#   sync-creds    — keeps the shared volume fresh when Claude refreshes the
+#                   OAuth token mid-session
+#   backup-state  — snapshots transcripts/history onto the bind mount, which
+#                   survives the `down -v` that volumes do not
+# Idempotent — dedup by command.
 SETTINGS="$LOCAL_DIR/settings.json"
-SYNC_CREDS_CMD="sh /workspace/.devcontainer/claude/sync-creds.sh"
-if [ -x "$SYNC_CREDS" ] && command -v python3 >/dev/null 2>&1; then
+BACKUP_STATE="/workspace/.devcontainer/claude/backup-state.sh"
+STATE_CMDS=()
+[ -x "$SYNC_CREDS" ]   && STATE_CMDS+=("sh /workspace/.devcontainer/claude/sync-creds.sh")
+[ -x "$BACKUP_STATE" ] && STATE_CMDS+=("sh $BACKUP_STATE")
+if [ "${#STATE_CMDS[@]}" -gt 0 ] && command -v python3 >/dev/null 2>&1; then
   mkdir -p "$(dirname "$SETTINGS")"
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
   python3 -c "
 import json, sys
-path, cmd = sys.argv[1], sys.argv[2]
+path, cmds = sys.argv[1], sys.argv[2:]
 with open(path) as f:
     s = json.load(f)
 hooks = s.setdefault('hooks', {})
-changed = False
+added = []
 for event in ('Stop', 'SessionEnd'):
     entries = hooks.setdefault(event, [])
     seen = set()
@@ -334,16 +340,17 @@ for event in ('Stop', 'SessionEnd'):
         for h in entry.get('hooks', []):
             if 'command' in h:
                 seen.add(h['command'])
-    if cmd not in seen:
-        entries.append({'matcher': '', 'hooks': [{'type': 'command', 'command': cmd}]})
-        changed = True
-if changed:
+    for cmd in cmds:
+        if cmd not in seen:
+            entries.append({'matcher': '', 'hooks': [{'type': 'command', 'command': cmd}]})
+            added.append(cmd.rsplit('/', 1)[-1])
+if added:
     with open(path, 'w') as f:
         json.dump(s, f, indent=2)
-    print('✓ creds-sync hooks merged into settings.json')
+    print('✓ state hooks merged into settings.json (%s)' % ', '.join(sorted(set(added))))
 else:
-    print('✓ creds-sync hooks already registered')
-" "$SETTINGS" "$SYNC_CREDS_CMD"
+    print('✓ state hooks already registered')
+" "$SETTINGS" "${STATE_CMDS[@]}"
 fi
 
 # Safety net : if vscode-server raced ahead of the firewall init and some
