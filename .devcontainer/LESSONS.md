@@ -277,3 +277,27 @@
   to the label the suite prints : that is how someone greps from a red run back
   to the explanation. Cross-check with the runtime output, not the source —
   loops emit several assertions per line of code.
+
+- **Never run a project-wide `docker compose` command against the devcontainer
+  stack — scope it to the service you actually mean.** `down`, `up -d`,
+  `restart` and `stop` with no service argument act on **every** service,
+  including `app` — the container the human is working in. *Why* : killing
+  `app` destroys the shell history still buffered in every open terminal. The
+  `/commandhistory` volume survives, but history is only flushed when a shell
+  exits cleanly, so an abrupt stop loses whatever was typed since the terminal
+  opened. This cost the user their history on 2026-08-24, from a script whose
+  job was to restart **dind alone** and which opened with
+  `docker compose down --remove-orphans`. And `down -v` is worse still: it
+  deletes every *managed* named volume — `claude-config`
+  (`/home/node/.claude`, **the Claude session transcripts**), `bash-history`,
+  and dind's image store. Only `external: true` volumes survive, which is the
+  one reason the credentials did. *How to apply* : name the service —
+  `docker compose up -d dind`, `docker compose rm -sf dind`. Before writing any
+  compose command into a script or a handoff, ask which services it touches,
+  and put the answer in a comment. When a change genuinely requires `app` to be
+  recreated (a `Dockerfile` or `devcontainer.json` edit), do not do it as a
+  side effect — say so and let the user pick the moment. When a container will
+  not start, diagnose before destroying: the usual cause is a volume **name**
+  mismatch against an `external: true` declaration, and
+  `docker compose config --format json` prints the names compose actually
+  wants.
