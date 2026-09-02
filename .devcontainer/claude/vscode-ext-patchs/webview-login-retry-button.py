@@ -166,9 +166,9 @@ def patch_webview_expose_api(content):
 # Gate 2 — inject the login retry button
 # ---------------------------------------------------------------------------
 
-def _button_modern(classname_var, disabled_var):
+def _button_modern(jsx_var, classname_var, disabled_var):
     return (
-        f'b("button",{{className:`${{{classname_var}.fullWidthButton}} '
+        f'{jsx_var}("button",{{className:`${{{classname_var}.fullWidthButton}} '
         f'${{{classname_var}.primary}}`,'
         f'onClick:()=>window.__CC_vscodeApi__.postMessage({{type:"{RELOAD_MSG_TYPE}"}}),'
         f'disabled:{disabled_var},'
@@ -189,9 +189,11 @@ def _button_legacy(react_var, classname_var, disabled_var):
 
 # Modern JSX (v2.1.207+):
 #   b("button",{className:`${Vo.fullWidthButton} ${Vo.primary}`,onClick:()=>i("claudeai"),disabled:t,...
+# The jsx factory ident is captured, not hardcoded: it is `b` on 2.1.207/2.1.220
+# and `D` on 2.1.258 (Bun renames it on every rebundle).
 _BUTTON_PAT_MODERN = re.compile(
-    r'b\("button",\{className:`\$\{([\w$]+)\.fullWidthButton\} '
-    r'\$\{\1\.primary\}`,onClick:\(\)=>[\w$]+\("claudeai"\),'
+    r'([\w$]+)\("button",\{className:`\$\{([\w$]+)\.fullWidthButton\} '
+    r'\$\{\2\.primary\}`,onClick:\(\)=>[\w$]+\("claudeai"\),'
     r'disabled:([\w$]+)'
 )
 
@@ -219,12 +221,12 @@ def patch_webview_button(content):
     matches = list(_BUTTON_PAT_MODERN.finditer(content))
     if len(matches) == 1:
         m = matches[0]
-        classname_var, disabled_var = m.group(1), m.group(2)
-        button_src = _button_modern(classname_var, disabled_var)
+        jsx_var, classname_var, disabled_var = m.group(1), m.group(2), m.group(3)
+        button_src = _button_modern(jsx_var, classname_var, disabled_var)
         injection = f'{button_src},/*{MARKER_BUTTON}*/'
         new_content = content[:m.start()] + injection + content[m.start():]
         print(f"{GREEN}[2/3]{RESET} webview/index.js button — injected modern "
-              f"(cls={classname_var}, disabled={disabled_var})")
+              f"(jsx={jsx_var}, cls={classname_var}, disabled={disabled_var})")
         return new_content
     if len(matches) > 1:
         banner("WEBVIEW-LOGIN-RETRY-BUTTON PATCH AMBIGUOUS",
@@ -341,8 +343,11 @@ def patch_extension_handlers(content):
         webview_vars.append(webview_var)
         param_vars.append(param_var)
 
-        # Nearest preceding reassign with matching webview_var (~2 KB back)
-        window_start = max(0, opener_end - 2048)
+        # Nearest preceding reassign with matching webview_var. 4 KB back:
+        # the gap was ~1.5 KB up to 2.1.220 and grew to ~2.6 KB in 2.1.258.
+        # Only the NEAREST match is used, so a wider window cannot pick a
+        # wrong reassign — it only avoids missing a legitimate one.
+        window_start = max(0, opener_end - 4096)
         window_text = content[window_start:opener_end]
         candidates = list(_REASSIGN_PAT.finditer(window_text))
         matching = [c for c in candidates if c.group(1) == webview_var]

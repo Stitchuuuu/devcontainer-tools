@@ -116,9 +116,9 @@ def patch_inject_user_action_observer(content):
     patch run, re-running finds 0 matches and short-circuits (YELLOW).
     """
     pat = re.compile(
-        r'(\w+)\.webview\.onDidReceiveMessage\(\((\w+)\)=>\{'
+        r'([\w$]+)\.webview\.onDidReceiveMessage\(\(([\w$]+)\)=>\{'
         r'this\.output\.info\(`Received message from webview: \$\{JSON\.stringify\(\2\)\}`\),'
-        r'(\w+)\?\.fromClient\(\2\)'
+        r'([\w$]+)\?\.fromClient\(\2\)'
         r'\},null,this\.disposables\)'
     )
     matches = list(pat.finditer(content))

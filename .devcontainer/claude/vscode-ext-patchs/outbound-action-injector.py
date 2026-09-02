@@ -231,7 +231,7 @@ def patch_watcher(content):
         print(f"{YELLOW}[outbound-watcher]{RESET} extension.js — already patched ({n} site(s))")
         return content
 
-    pat = re.compile(r'(setupPanel\(\w+,\w+,\w+,\w+\)\{)')
+    pat = re.compile(r'(setupPanel\([\w$]+,[\w$]+,[\w$]+,[\w$]+\)\{)')
     matches = list(pat.finditer(content))
     if not matches:
         banner("OUTBOUND WATCHER PATCH FAILED",
@@ -279,7 +279,7 @@ def patch_sendrequest(content):
     # (Y3() on 2.1.145, Hs() on 2.1.202, likely to keep drifting) — the
     # surrounding sendRequest(...) { let ID = <fn>(); shape is the true anchor.
     pat_pending = re.compile(
-        r'(sendRequest\((\w+),(\w+),(\w+)\)\{let (\w+)=\w+\(\);)'
+        r'(sendRequest\(([\w$]+),([\w$]+),([\w$]+)\)\{let ([\w$]+)=[\w$]+\(\);)'
     )
     m_pending = pat_pending.search(content)
     if not m_pending:
@@ -324,7 +324,7 @@ def patch_sendrequest(content):
     #    sendRequest promise body. Anchor: `this.outstandingRequests.set(N,{resolve:(Z)=>{x(Z)}`
     #    where N is the requestId var captured in A.
     pat_settle = re.compile(
-        r'(this\.outstandingRequests\.set\(' + re.escape(rid_var) + r',\{resolve:\((\w+)\)=>\{)(' + r'\w+\(\2\))(\})'
+        r'(this\.outstandingRequests\.set\(' + re.escape(rid_var) + r',\{resolve:\(([\w$]+)\)=>\{)(' + r'[\w$]+\(\2\))(\})'
     )
     m_settle = pat_settle.search(content)
     if not m_settle:
@@ -369,11 +369,17 @@ def patch_track_session_id(content):
     `this._currentSessionId` will match the watcher's sessionPanels.get()
     lookup on the reciprocal side.
 
-    Anchor: `else if(<msg>.request.type==="update_session_state")return
-             this.onSessionStateChanged?.(<msg>.request.sessionId,...)`.
-    We inject `this._currentSessionId=<msg>.request.sessionId,` before
-    the `onSessionStateChanged` call, using JS comma-operator semantics
-    so the surrounding return expression is unchanged.
+    Anchor: the `this.onSessionStateChanged?.(<expr>.sessionId,...)` call
+    itself. Up to 2.1.220 it sits inline in the request dispatch chain
+    (`else if(<msg>.request.type==="update_session_state")return ...`, so
+    `<expr>` is `<msg>.request`); from 2.1.258 the dispatch entry became a
+    bare acknowledgement and the notification moved into a dedicated
+    state-reporting method, where `<expr>` is a plain local. Anchoring on
+    the call rather than on its enclosing branch covers both.
+
+    We inject `this._currentSessionId=<expr>.sessionId,` before the
+    `onSessionStateChanged` call, using JS comma-operator semantics so the
+    surrounding expression is unchanged.
 
     The tracked value is unset (undefined) until the first
     update_session_state arrives — which happens as soon as Claude
@@ -387,18 +393,17 @@ def patch_track_session_id(content):
         return content
 
     pat = re.compile(
-        r'(else if\((\w+)\.request\.type==="update_session_state"\)return )'
-        r'(this\.onSessionStateChanged)'
+        r'(this\.onSessionStateChanged)\?\.\(([\w$]+(?:\.[\w$]+)*)\.sessionId,'
     )
     matches = list(pat.finditer(content))
     if not matches:
         banner("OUTBOUND SESSION-TRACK PATCH FAILED",
-               'extension.js: else if(<msg>.request.type==="update_session_state")return this.onSessionStateChanged... not found',
+               'extension.js: this.onSessionStateChanged?.(<expr>.sessionId, ...) not found',
                IMPACT_LINES)
         sys.exit(1)
     if len(matches) > 1:
         banner("OUTBOUND SESSION-TRACK PATCH AMBIGUOUS",
-               f"extension.js: update_session_state anchor matched {len(matches)} times (expected 1)",
+               f"extension.js: onSessionStateChanged anchor matched {len(matches)} times (expected 1)",
                IMPACT_LINES)
         sys.exit(1)
 
@@ -412,12 +417,12 @@ def patch_track_session_id(content):
     # overwrite a valid UUID with an empty string.
     inject = (
         f'/*{MARKER_TRACK_SID}*/'
-        f'this._currentSessionId={msg_var}.request.sessionId||this._currentSessionId,'
+        f'this._currentSessionId={msg_var}.sessionId||this._currentSessionId,'
     )
-    # Splice at start of group 3 (`this.onSessionStateChanged`).
-    inject_at = m.start(3)
+    # Splice at start of group 1 (`this.onSessionStateChanged`).
+    inject_at = m.start(1)
     new_content = content[:inject_at] + inject + content[inject_at:]
-    print(f"{GREEN}[outbound-session-track]{RESET} extension.js — tracking this._currentSessionId at update_session_state (msg={msg_var})")
+    print(f"{GREEN}[outbound-session-track]{RESET} extension.js — tracking this._currentSessionId at onSessionStateChanged (expr={msg_var})")
     return new_content
 
 

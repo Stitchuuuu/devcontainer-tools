@@ -34,17 +34,33 @@ Three coordinated edits :
      resolved at patch time from the existing `<helper>("disableLoginPrompt")`
      call.
 
-  3. `webview/index.js` — rewrite the single buggy call site :
+  3. `webview/index.js` — two coordinated gates :
 
-        if(<var>.error==="authentication_failed")<var>.context.showLogin();
+     a. Rewrite the single buggy `authentication_failed` call site :
 
-     into :
+          if(<var>.error==="authentication_failed")<var>.context.showLogin();
 
-        if(<var>.error==="authentication_failed"&&!window.__CC_disableWebviewAuthRedirect__)<var>.context.showLogin();
+        into :
 
-     The other 3 `showLogin()` sites (user-initiated : sidebar login
-     button, 2 command-palette « Log in with a different account »
-     entries) stay untouched — clicking login is supposed to open login.
+          if(<var>.error==="authentication_failed"&&!window.__CC_disableWebviewAuthRedirect__)<var>.context.showLogin();
+
+        The other 2 `showLogin()` sites (command-palette
+        « Log in with a different account » entries) stay untouched —
+        clicking login is supposed to open login.
+
+     b. Bypass the `isAuthenticated` reactive getter right after its
+        `forceLogin` guard (v2). The getter has 5 branches ; the
+        pre-v2 injection sat at the tail fallback and was skipped when
+        the CLI reported `claudeConfig.account.tokenSource==="none"`
+        (branch 3 short-circuits with `return false`). The v2 site
+        injects immediately after :
+
+          if(this.forceLogin.value)return!1;
+          /*<marker>*/if(window.__CC_disableWebviewAuthRedirect__)return!0;
+
+        User-initiated login still wins (forceLogin=true → return
+        false → login screen). Setting-driven bypass covers every
+        other branch.
 
 Anchors
 -------
@@ -97,7 +113,8 @@ from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_f
 SETTING_KEY = "claudeCode.disableWebviewAuthRedirect"
 MARKER_INJECT = "claude-code-disable-webview-auth-redirect-inject-v1"
 MARKER_GATE = "claude-code-disable-webview-auth-redirect-gate-v1"
-MARKER_ISAUTH = "claude-code-disable-webview-auth-redirect-isauth-v1"
+MARKER_ISAUTH = "claude-code-disable-webview-auth-redirect-isauth-v2"
+MARKER_ISAUTH_V1 = "claude-code-disable-webview-auth-redirect-isauth-v1"
 
 IMPACT_LINES = [
     "→ The 'claudeCode.disableWebviewAuthRedirect' setting will be",
@@ -111,7 +128,8 @@ IMPACT_LINES = [
     "  - pretty/webview-index.js — processMessage, the",
     "    `authentication_failed` branch (single call site)",
     "  - pretty/webview-index.js — the `isAuthenticated=` reactive",
-    "    getter (single occurrence, tail-fallback `return!1` inside)",
+    "    getter (single occurrence). v2 injects right after the",
+    "    `if(this.forceLogin.value)return!1;` guard (not at the tail).",
     "  Then update regexes in",
     "  .devcontainer/claude/vscode-ext-patchs/disable-webview-auth-redirect.py.",
 ]
@@ -221,34 +239,54 @@ def patch_webview_gate(content):
     return new_content
 
 
+V1_ISAUTH_INJECTION = re.compile(
+    r'/\*' + re.escape(MARKER_ISAUTH_V1) + r'\*/'
+    r'if\(window\.__CC_disableWebviewAuthRedirect__\)return!0;'
+)
+
+
+def strip_isauth_v1_injection(content):
+    """Remove any pre-existing v1 isauth injection so v2 can be applied
+    cleanly. v1 sat at the tail fallback of the `isAuthenticated` getter
+    (skipped when `claudeConfig.account.tokenSource==="none"`); v2 sits
+    right after the `forceLogin` guard so every non-forceLogin path is
+    covered. Self-healing pattern per vendor CLAUDE.md §Marker naming.
+    """
+    return V1_ISAUTH_INJECTION.sub('', content)
+
+
 def patch_webview_isauthenticated(content):
-    """Gate the `isAuthenticated` reactive getter final fallback on the global.
+    """Gate the `isAuthenticated` reactive getter on the global, right
+    after the `forceLogin` guard (v2 site).
 
     Two live redirect paths trigger the login screen : (1) the synthetic
     assistant message with `error:"authentication_failed"` calling
     `showLogin()` — covered by patch_webview_gate above ; (2) the extension
-    pushing an `update_state` with `authStatus:null` after `claude auth
-    status --json` reports no auth (OAuth session expired + refresh failed).
-    Path (2) drives `isAuthenticated` to false via the tail fallback, which
-    the chat panel reads to swap to the login component. Inject a bypass
-    right before that fallback : forceLogin (user-initiated login) still
-    wins, and legitimate auth still short-circuits earlier — the bypass
-    only kicks in when both signals are absent.
+    pushing an `update_state` with `authStatus:null` + a `claudeConfig`
+    reporting no valid token (OAuth session expired / never authed
+    externally). The getter has 5 branches ; injecting at the tail
+    fallback (v1) was skipped when branch 3 (claudeConfig +
+    tokenSource==="none") returned false first. v2 injects at
+    position 1.5 — after forceLogin, before every other branch —
+    so user-initiated login (forceLogin=true) still wins while the
+    setting bypasses everything else.
     """
+    content = strip_isauth_v1_injection(content)
+
     if MARKER_ISAUTH in content:
         n = content.count(MARKER_ISAUTH)
         print(f"{YELLOW}[4/4]{RESET} webview/index.js isAuthenticated — already patched ({n} site(s))")
         return content
 
     pat = re.compile(
-        r'isAuthenticated=[\w$]+\(\(\)=>\{'
-        r'if\(this\.forceLogin\.value\)return!1;'
-        r'if\(this\.authStatus\.value!==null\)return!0;'
+        r'(isAuthenticated=[\w$]+\(\(\)=>\{'
+        r'if\(this\.forceLogin\.value\)return!1;)'
+        r'(if\(this\.authStatus\.value!==null\)return!0;'
         r'let ([\w$]+)=this\.comms\.connection\.value;'
-        r'if\(\1\)\{let ([\w$]+)=\1\.claudeConfig\.value;'
-        r'if\(\2\)return!!\(\2\.account\.tokenSource&&\2\.account\.tokenSource!=="none"'
-        r'\|\|\2\.account\.subscriptionType\)\}'
-        r'(return!1\}\);)'
+        r'if\(\3\)\{let ([\w$]+)=\3\.claudeConfig\.value;'
+        r'if\(\4\)return!!\(\4\.account\.tokenSource&&\4\.account\.tokenSource!=="none"'
+        r'\|\|\4\.account\.subscriptionType\)\}'
+        r'return!1\}\);)'
     )
     matches = list(pat.finditer(content))
     if len(matches) == 0:
@@ -263,13 +301,13 @@ def patch_webview_isauthenticated(content):
         sys.exit(1)
 
     m = matches[0]
-    fallback_start = m.start(3)
+    injection_point = m.end(1)
     injection = (
         f'/*{MARKER_ISAUTH}*/'
         f'if(window.__CC_disableWebviewAuthRedirect__)return!0;'
     )
-    new_content = content[:fallback_start] + injection + content[fallback_start:]
-    print(f"{GREEN}[4/4]{RESET} webview/index.js isAuthenticated — bypass injected")
+    new_content = content[:injection_point] + injection + content[injection_point:]
+    print(f"{GREEN}[4/4]{RESET} webview/index.js isAuthenticated — bypass injected after forceLogin guard")
     return new_content
 
 

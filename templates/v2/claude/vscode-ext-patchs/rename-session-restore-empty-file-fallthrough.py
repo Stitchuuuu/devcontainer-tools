@@ -157,9 +157,9 @@ def patch_remove_empty_file_early_return(content):
         return content, "already-patched"
 
     pat = re.compile(
-        r'let (\w+)=await (\w+)\((\w+)\);'
+        r'let ([\w$]+)=await ([\w$]+)\(([\w$]+)\);'
         r'if\(!\1\)return!0;'
-        r'if\((\w+)\(\1\.tail,"customTitle"\)\|\|\4\(\1\.head,"customTitle"\)\)return!0;'
+        r'if\(([\w$]+)\(\1\.tail,"customTitle"\)\|\|\4\(\1\.head,"customTitle"\)\)return!0;'
     )
     m = pat.search(content)
     if not m:

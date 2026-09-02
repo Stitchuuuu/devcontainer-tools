@@ -198,9 +198,12 @@ def patch_editor_open_guard(content, owned):
         if 'workspace.getConfiguration("claudeCode").get("preferredLocation"))' in window:
             print(f"{YELLOW}[2/6]{RESET} extension.js editor.open guard — already patched")
             return content
+    # The arg list is captured whole rather than arg-by-arg: the command went
+    # from 3 to 4 parameters in 2.1.258, and only the ViewColumn one matters
+    # here. Re-emitted verbatim, so a further arity change costs nothing.
     pat = re.compile(
-        r'registerCommand\("claude-vscode\.editor\.open",async\((\w+),(\w+),(\w+)\)=>\{'
-        r'if\((\w+)!==(\w+)\.ViewColumn\.Active\)(\w+)\.setPreferredLocation\("panel"\);'
+        r'registerCommand\("claude-vscode\.editor\.open",async\(([\w$,]*)\)=>\{'
+        r'if\(([\w$]+)!==([\w$]+)\.ViewColumn\.Active\)([\w$]+)\.setPreferredLocation\("panel"\);'
     )
     m = pat.search(content)
     if not m:
@@ -208,9 +211,9 @@ def patch_editor_open_guard(content, owned):
                "extension.js: editor.open guard pattern not found",
                IMPACT_LINES)
         sys.exit(1)
-    a1, a2, a3, c1, vs, st = m.groups()
+    args, c1, vs, st = m.groups()
     replacement = (
-        f'registerCommand("claude-vscode.editor.open",async({a1},{a2},{a3})=>{{'
+        f'registerCommand("claude-vscode.editor.open",async({args})=>{{'
         f'if({c1}!=={vs}.ViewColumn.Active'
         f'&&!{owned_check_expr(vs, owned)})'
         f'{st}.setPreferredLocation("panel");'
@@ -224,7 +227,11 @@ def patch_editor_open_guard(content, owned):
 def patch_editor_openLast(content, owned):
     """Redirect `editor.openLast` (= the icon and status bar handler) to
     `primaryEditor.open` when the setting matches any of our owned values."""
-    idx = content.find('"claude-vscode.editor.openLast"')
+    # Anchored on the registerCommand site, not on the bare command name:
+    # from 2.1.258 the name also appears earlier in a log message, and the
+    # window opened there contains none of our injected markers — which made
+    # the already-patched check miss on a second run.
+    idx = content.find('registerCommand("claude-vscode.editor.openLast"')
     if idx != -1:
         window = content[idx:idx + 600]
         if '.includes(' in window and 'preferredLocation' in window:
@@ -232,8 +239,8 @@ def patch_editor_openLast(content, owned):
             return content
     pat = re.compile(
         r'registerCommand\("claude-vscode\.editor\.openLast",async\(\)=>\{'
-        r'if\((\w+)\.getPreferredLocation\(\)==="sidebar"\)\{'
-        r'await (\w+)\.commands\.executeCommand\("claude-vscode\.sidebar\.open"\);return\}'
+        r'if\(([\w$]+)\.getPreferredLocation\(\)==="sidebar"\)\{'
+        r'await ([\w$]+)\.commands\.executeCommand\("claude-vscode\.sidebar\.open"\);return\}'
         r'await \2\.commands\.executeCommand\("claude-vscode\.editor\.open"\)'
     )
     m = pat.search(content)
@@ -270,9 +277,9 @@ def patch_primaryEditor_use_active_column(content):
         print(f"{YELLOW}[4/6]{RESET} extension.js primaryEditor.open active column — already patched")
         return content
     pat = re.compile(
-        r'registerCommand\("claude-vscode\.primaryEditor\.open",async\((\w+),(\w+)\)=>\{'
+        r'registerCommand\("claude-vscode\.primaryEditor\.open",async\(([\w$]+),([\w$]+)\)=>\{'
         r'[\s\S]*?'
-        r'(\w+)\.createPanel\(\1,\2,(\w+)\.ViewColumn\.Active\)\}\)'
+        r'([\w$]+)\.createPanel\(\1,\2,([\w$]+)\.ViewColumn\.Active\)\}\)'
     )
     m = pat.search(content)
     if not m:
@@ -310,16 +317,26 @@ def patch_plus_button_active_column(content, owned):
     anchor = '"new_conversation_tab"'
     idx = content.find(anchor)
     if idx != -1:
-        end = content.find('"new_conversation_tab_response"', idx)
-        window = content[idx:end] if end != -1 else content[idx:idx + 600]
+        # Fixed-size window, deliberately NOT bounded by the
+        # "new_conversation_tab_response" literal: from 2.1.258 that string
+        # also appears in the sessionId-validation guard, i.e. *before* the
+        # call site we rewrite, which truncated the window and made this
+        # already-patched check miss on a second run.
+        window = content[idx:idx + 900]
         if '"claude-vscode.primaryEditor.open"' in window:
             print(f"{YELLOW}[5/6]{RESET} extension.js '+' button — already patched")
             return content
+    # Group 2 absorbs whatever sits between the type test and `return await`:
+    # the branch's closing `)` alone up to 2.1.220, and `){<sessionId
+    # validation>;` from 2.1.258 on. Re-emitted verbatim so the branch keeps
+    # its original bracketing.
     pat = re.compile(
-        r'(\w+)\.request\.type==="new_conversation_tab"\)return await '
-        r'(\w+)\.commands\.executeCommand\("claude-vscode\.editor\.open",'
+        r'([\w$]+)\.request\.type==="new_conversation_tab"'
+        r'(\)(?:\{if\([^;{}]*\)return\{[^{}]*\};)?)'
+        r'return await '
+        r'([\w$]+)\.commands\.executeCommand\("claude-vscode\.editor\.open",'
         r'\1\.request\.sessionId,\1\.request\.initialPrompt'
-        r'(?:,\2\.ViewColumn\.Active)?\)'
+        r'(?:,\3\.ViewColumn\.Active)?\)'
     )
     m = pat.search(content)
     if not m:
@@ -327,9 +344,9 @@ def patch_plus_button_active_column(content, owned):
                "extension.js: new_conversation_tab handler pattern not found",
                IMPACT_LINES)
         sys.exit(1)
-    msg, vs = m.groups()
+    msg, sep, vs = m.groups()
     replacement = (
-        f'{msg}.request.type==="new_conversation_tab")return await '
+        f'{msg}.request.type==="new_conversation_tab"{sep}return await '
         f'({owned_check_expr(vs, owned)}'
         f'?{vs}.commands.executeCommand("claude-vscode.primaryEditor.open",'
         f'{msg}.request.sessionId,{msg}.request.initialPrompt)'
@@ -365,7 +382,7 @@ def patch_openlast_move_to_end(content, owned):
             return content
 
     pm_match = re.search(
-        r'registerCommand\("claude-vscode\.primaryEditor\.open"[^}]*?(\w+)\.createPanel\(',
+        r'registerCommand\("claude-vscode\.primaryEditor\.open"[^}]*?([\w$]+)\.createPanel\(',
         content,
     )
     if not pm_match:
@@ -381,9 +398,9 @@ def patch_openlast_move_to_end(content, owned):
     # than a specific name, since the array literal contents depend on
     # what resolve_owned_names returned.
     pat = re.compile(
-        r'(\.includes\(\w+\.workspace\.getConfiguration\("claudeCode"\)'
+        r'(\.includes\([\w$]+\.workspace\.getConfiguration\("claudeCode"\)'
         r'\.get\("preferredLocation"\)\)\)'
-        r'\{await (\w+)\.commands\.executeCommand'
+        r'\{await ([\w$]+)\.commands\.executeCommand'
         r'\("claude-vscode\.primaryEditor\.open"\);)'
         r'[\s\S]*?'
         r'(return\})'

@@ -79,12 +79,16 @@ IMPACT_LINES = [
 #   1: session var    (e.g. "_", "b", "I")
 #   2: URLSearchParams var (e.g. "b", "_", "R")
 #   3: prompt var     (e.g. "w", "v")
-#   4: vscode alias   (e.g. "ke", "Se", "R0")
+#   4: session-id validation guard, verbatim — empty before 2.1.258, and
+#      `if(x!==void 0&&!SH(x))return;` from 2.1.258 on. Matched loosely so a
+#      future variant still parses, and re-emitted untouched.
+#   5: vscode alias   (e.g. "ke", "Se", "R0")
 PATTERN = re.compile(
     r'case"/open":\{'
-    r'let (\w+)=(\w+)\.get\("session"\)\?\?void 0,'
-    r'(\w+)=\2\.get\("prompt"\)\?\?void 0;'
-    r'(\w+)\.commands\.executeCommand\('
+    r'let ([\w$]+)=([\w$]+)\.get\("session"\)\?\?void 0,'
+    r'([\w$]+)=\2\.get\("prompt"\)\?\?void 0;'
+    r'((?:if\([^;{}]*\)return;)?)'
+    r'([\w$]+)\.commands\.executeCommand\('
     r'"claude-vscode\.primaryEditor\.open",\1,\3\);'
     r'return\}'
 )
@@ -101,7 +105,8 @@ def build_replacement(match):
     S = match.group(1)  # session var — reused verbatim
     B = match.group(2)  # URLSearchParams
     P = match.group(3)  # prompt var
-    V = match.group(4)  # vscode alias
+    G = match.group(4)  # session-id validation guard (may be empty)
+    V = match.group(5)  # vscode alias
 
     return (
         f'case"/open":{{'
@@ -110,6 +115,10 @@ def build_replacement(match):
         f'{P}={B}.get("prompt")??void 0,'
         f'_ws={B}.get("workspace")??void 0,'
         f'_sl=parseInt({B}.get("sleep")??"0",10)||0;'
+        # Anthropic's own session-id validation, re-emitted verbatim and kept
+        # ahead of every branch so an invalid id is rejected the same way it
+        # was before the patch.
+        f'{G}'
         # Branch 1: no workspace hint → historical behavior.
         f'if(!_ws){{'
         f'{V}.commands.executeCommand("claude-vscode.primaryEditor.open",{S},{P});'
@@ -142,11 +151,11 @@ def build_replacement(match):
 
 V1_STRIP_PATTERN = re.compile(
     r'case"/open":\{/\*' + MARKER_V1 + r'\*/'
-    r'let (\w+)=(\w+)\.get\("session"\)\?\?void 0,'
-    r'(\w+)=\2\.get\("prompt"\)\?\?void 0,'
+    r'let ([\w$]+)=([\w$]+)\.get\("session"\)\?\?void 0,'
+    r'([\w$]+)=\2\.get\("prompt"\)\?\?void 0,'
     r'_ws=\2\.get\("workspace"\)\?\?void 0,'
     r'_sl=parseInt\(\2\.get\("sleep"\)\?\?"0",10\)\|\|0;'
-    r'if\(!_ws\)\{(\w+)\.commands\.executeCommand'
+    r'if\(!_ws\)\{([\w$]+)\.commands\.executeCommand'
     r'\("claude-vscode\.primaryEditor\.open",\1,\3\);return\}'
     r'.*?'
     r'\}\)\(\);return\}',
@@ -191,10 +200,11 @@ def patch_handle_uri(content):
                IMPACT_LINES)
         sys.exit(1)
 
-    S, B, P, V = m.groups()
+    S, B, P, G, V = m.groups()
     new_content = PATTERN.sub(build_replacement, content, count=1)
     print(f"{GREEN}[1/1]{RESET} extension.js handleUri /open — applied "
-          f"(session={S}, params={B}, prompt={P}, vscode={V})")
+          f"(session={S}, params={B}, prompt={P}, vscode={V}, "
+          f"guard={'yes' if G else 'none'})")
     return new_content
 
 

@@ -70,8 +70,8 @@ def patch_enable_find_widget(content):
         return content
 
     pat = re.compile(
-        r'(\w+)\.window\.createWebviewPanel\("claudePlanPreview",(\w+),'
-        r'\{viewColumn:(\w+),preserveFocus:!0\},'
+        r'([\w$]+)\.window\.createWebviewPanel\("claudePlanPreview",([\w$]+),'
+        r'\{viewColumn:([\w$]+),preserveFocus:!0\},'
         r'\{enableScripts:!0,retainContextWhenHidden:!0\}\)'
     )
     m = pat.search(content)
