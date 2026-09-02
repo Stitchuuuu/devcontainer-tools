@@ -246,6 +246,44 @@ spawnCalls.length = 0
 	)
 }
 
+// Case A5 : the --body actually handed to `notif send` is the smartText line.
+//
+// notify-app does not build its own text — it reuses notifier.render(). That is
+// exactly why it needs an assertion rather than an assumption : this is the
+// channel that puts an Allow button in the banner, so the body is what the user
+// decides on. A `sed -i` on a tracked file must reach the argv with its target.
+
+spawnCalls.length = 0
+{
+	const { permissionLine } = require('../lib/smart-text')
+	const toolInput = {
+		command:     `sed -i 's/a/b/' docs/how-i-work-with-claude/fr/patient-create.md`,
+		description: 'Repoint the inbound anchors',
+	}
+	const payload = makePermPayload({
+		sid:       'a5a5a5a5-aaaa-bbbb-cccc-dddddddddddd',
+		launchUrl: 'vscode://vscode-remote/dev-container+mno/workspace',
+		toolUseId: 'toolu_01A5',
+		toolInput,
+	})
+	bus.emit('send:notification', payload)
+	const sends = sendSpawns()
+	assert.strictEqual(sends.length, 1, `A5: expected 1 send spawn, got ${sends.length}`)
+
+	const args     = sends[0].args
+	const bodyIdx  = args.indexOf('--body')
+	assert.ok(bodyIdx >= 0, 'A5: --body must be present in the notif argv')
+	const body     = args[bodyIdx + 1]
+	const expected = permissionLine(payload.line)
+
+	assert.strictEqual(body, expected, `A5: --body should be the smartText line, got ${JSON.stringify(body)}`)
+	assert.ok(body.startsWith('Run · '), `A5: verb prefix missing from the body: ${body}`)
+	assert.ok(body.includes('⚠'), `A5: the in-place rewrite must raise a warning: ${body}`)
+	assert.ok(body.includes('patient-create.md'), `A5: the rewritten file must be named: ${body}`)
+	assert.ok(!/ · \d\d:\d\d:\d\d$/.test(body), `A5: the timestamp footer should be gone: ${body}`)
+	assert.ok(!body.includes('\n'), 'A5: the body must stay a single line')
+}
+
 // -----------------------------------------------------------------------------
 // (B) inbox tail → outbound.jsonl.
 // -----------------------------------------------------------------------------

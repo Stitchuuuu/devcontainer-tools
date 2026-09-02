@@ -38,6 +38,7 @@ const https = require('https')
 const { URL } = require('url')
 const log = require('../log')
 const { DISCORD_WEBHOOK_URL_RE, DISCORD_TRUNCATION_LIMITS } = require('../constants')
+const { permissionLine } = require('../smart-text')
 
 let webhookUrl  = ''
 let projectName = ''
@@ -275,8 +276,11 @@ const TEMPLATES = {
 	stop: (p) =>
 		`${head(p, 'Stop')}\n${p.line.last_message_excerpt || '_(no recap)_'}`,
 
+	// The smartText line rides as a TITLE above the code fence — Discord has the
+	// room to keep the full tool_input below, so this summarises rather than
+	// replaces. It is what makes a skimmed channel readable.
 	permission_request: (p) => {
-		const label = `Permission \`${p.line.tool_name || 'unknown'}\``
+		const label = `Permission \`${p.line.tool_name || 'unknown'}\` — ${permissionLine(p.line)}`
 		return head(p, label) + renderToolInput(p.line)
 	},
 

@@ -48,6 +48,7 @@ const { spawn, spawnSync } = require('child_process')
 const log = require('../log')
 const { BRAND_NAME, TYPE_LABELS, WINDOWS_AUMID, WINDOWS_DETACHED_GRACE_MS } = require('../constants')
 const { getHostKind } = require('../host')
+const { permissionLine } = require('../smart-text')
 
 let projectName = ''
 
@@ -214,10 +215,13 @@ const TEMPLATES = {
 		body:     `${p.line.last_message_excerpt || '(empty)'}${footer(p)}`
 	}),
 
+	// No footer here, unlike every other template : the OS already timestamps
+	// the banner, and those 11 characters are worth more spent on naming what
+	// is about to happen — the Allow button is right there in the notification.
 	permission_request: (p) => ({
 		title:    brandTitle(),
 		subtitle: sessionLabel(p),
-		body:     `${p.line.tool_name || TYPE_LABELS.permission_request} — ${renderPermissionInput(p.line)}${footer(p)}`
+		body:     permissionLine(p.line)
 	}),
 
 	permission_prompt: (p) => ({
@@ -247,96 +251,6 @@ const TEMPLATES = {
 		subtitle: 'Notify daemon stopped',
 		body:     `${p.line.last_message_excerpt || '(unknown reason)'}${footer(p)}`
 	})
-}
-
-/**
- * Clamp a string to at most `n` visible chars, using a single `…` ellipsis
- * to mark the cut. Returns empty string on falsy input. The trailing `…`
- * counts in the length budget — output is `str.slice(0, n-1) + '…'` once
- * the limit is exceeded.
- *
- * @param {*} s          value to render — coerced via String(s)
- * @param {number} n     maximum visible length, including the ellipsis
- * @returns {string}     `s` unchanged, an ellipsis-clipped prefix, or '' on falsy
- */
-function truncate(s, n) {
-	if (!s) return ''
-	const str = String(s)
-	return str.length <= n ? str : str.slice(0, n - 1) + '…'
-}
-
-/**
- * Render the second line of a permission_request body : a short, readable
- * description of the tool's input. Branches, in order :
- *   1. string           → legacy hook format, pre-truncated ; clamp again to 150
- *   2. AskUserQuestion  → first question text (+ "+N more" if multiple)
- *   3. ExitPlanMode     → first `# <title>` line of the plan markdown
- *                         (fallback : first non-empty line)
- *   4. Bash             → the actual shell `command` verbatim
- *   5. Edit             → `<file_path>: <first-line-of-old_string>`
- *   6. Write            → `<file_path>`
- *   7. fallback         → JSON.stringify, clamp to 150
- *
- * Cap is 150 chars — the practical UN Center limit for a single body line
- * before Notification Center starts truncating on its own. Session 3 bumped
- * this from 120 so Bash / Edit / Write commands make it through intact when
- * the user needs to decide Allow / Deny from the notif alone.
- *
- * @param {object} line   JSONL event line
- * @param {string|object} line.tool_input   raw or structured tool input
- * @param {string} [line.tool_name]         tool identifier, used for per-tool branches
- * @returns {string}                        rendered 1-liner suitable for body line 2
- */
-function renderPermissionInput(line) {
-	const input = line.tool_input
-	if (input === undefined || input === null) return '(no input)'
-	if (typeof input === 'string') return truncate(input, 150) || '(no input)'
-	if (line.tool_name === 'AskUserQuestion') {
-		const summary = summarizeAskUserQuestion(input)
-		if (summary) return truncate(summary, 150)
-	}
-	if (line.tool_name === 'ExitPlanMode' && typeof input.plan === 'string') {
-		const h1 = input.plan.match(/^#\s+(.+)$/m)
-		const summary = h1 ? h1[1].trim() : input.plan.split('\n', 1)[0].trim()
-		if (summary) return truncate(summary, 150)
-	}
-	if (line.tool_name === 'Bash' && typeof input.command === 'string') {
-		return truncate(input.command, 150) || '(no input)'
-	}
-	if (line.tool_name === 'Edit' && typeof input.file_path === 'string') {
-		const firstLine = typeof input.old_string === 'string'
-			? input.old_string.split('\n', 1)[0]
-			: ''
-		const rendered = firstLine ? `${input.file_path}: ${firstLine}` : input.file_path
-		return truncate(rendered, 150)
-	}
-	if (line.tool_name === 'Write' && typeof input.file_path === 'string') {
-		return truncate(input.file_path, 150)
-	}
-	let s = ''
-	try { s = JSON.stringify(input) } catch { s = String(input) }
-	return truncate(s, 150) || '(no input)'
-}
-
-/**
- * Pull a one-line summary out of an AskUserQuestion tool input. Returns
- * the trimmed text of the first question, suffixed with ` (+N more)` when
- * the array carries more than one. Returns '' on any malformed shape so
- * the caller can fall back to the generic JSON path.
- *
- * @param {object} input               AskUserQuestion tool_input object
- * @param {Array<{question:string}>} [input.questions]   list of question entries
- * @returns {string}                   first question (+ overflow marker) or ''
- */
-function summarizeAskUserQuestion(input) {
-	if (!input || typeof input !== 'object') return ''
-	const qs = input.questions
-	if (!Array.isArray(qs) || qs.length === 0) return ''
-	const first = qs[0] && typeof qs[0].question === 'string'
-		? qs[0].question.trim() : ''
-	if (!first) return ''
-	const suffix = qs.length > 1 ? ` (+${qs.length - 1} more)` : ''
-	return first + suffix
 }
 
 /**

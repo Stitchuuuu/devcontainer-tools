@@ -14,6 +14,8 @@
 //   lib/consumers/flash-win.js     → FLASH_EVENT_TYPES
 //   lib/consumers/sound.js         → NATIVE_SOUND_DEFAULTS, LINUX_SOUND_CANDIDATES
 //   lib/consumers/discord-webhook  → DISCORD_WEBHOOK_URL_RE, DISCORD_TRUNCATION_LIMITS
+//   lib/smart-text.js              → TOOL_VERBS, SMART_TEXT_LIMITS, POLICY_PATHS,
+//                                    GIT_WRITE_SUBCOMMANDS, KNOWN_PATH_EXT
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -39,6 +41,73 @@ exports.TYPE_LABELS = {
 	idle_prompt:         'Idle',
 	stop:                null   // sentinel: no label, recap message is the body
 }
+
+/**
+ * Tool name → the verb opening a permission_request body. Keeps the banner
+ * readable without the jargon of the raw tool identifier ("Bash" → "Run").
+ * A tool absent from this map falls back to its own name — the tool list is
+ * not stable (Monitor, Skill and Artifact all appeared mid-corpus), so the
+ * unknown case must degrade cleanly rather than render empty.
+ */
+exports.TOOL_VERBS = {
+	Bash:            'Run',
+	Monitor:         'Watch',
+	Edit:            'Edit',
+	Write:           'Write',
+	AskUserQuestion: 'Ask',
+	ExitPlanMode:    'Plan',
+	Skill:           'Skill',
+	Artifact:        'Publish'
+}
+
+/**
+ * Budget for the composed permission line, ellipsis included. 120 is calibrated
+ * on the real corpus : the longest human-written Bash `description` observed is
+ * 97 chars, plus the verb and a short effect clause. Anything lower silently
+ * truncated descriptions that were already notification-shaped.
+ */
+exports.SMART_TEXT_LIMITS = {
+	line_cap:   120,
+	anchor_cap:  30,   // Edit : quoted anchor of the enclosing scope
+	question_min: 24   // Ask : floor for the question once the suffix is reserved
+}
+
+/**
+ * Files whose modification changes a CAPABILITY rather than content. They get a
+ * category prefix instead of the generic Edit/Write verb, because the generic
+ * one reads as a routine file change : "Edit · settings.local.json" hides that
+ * the agent is widening its own permission allowlist.
+ *
+ * Ordered — first match wins.
+ */
+exports.POLICY_PATHS = [
+	[/(^|\/)\.claude\/settings[^/]*\.json$/, 'Permissions'],
+	[/(^|\/)firewall\//,                     'Firewall'],
+	[/(^|\/)\.gitignore$/,                   'Gitignore'],
+	[/(^|\/)hooks\.json$/,                   'Hook'],
+	[/(^|\/)pending\/[^/]+\.sh$/,            'Host-script']
+]
+
+/**
+ * git subcommands that mutate the repository, index or refs. Membership is
+ * tested with `in`, so the values are irrelevant — only the keys matter.
+ * `stash`, `tag` and `worktree` are included : they were missing from the first
+ * iteration and hid 7 real worktree/ref mutations.
+ */
+exports.GIT_WRITE_SUBCOMMANDS = {
+	commit: 1, push: 1, checkout: 1, switch: 1, add: 1, reset: 1, revert: 1,
+	rebase: 1, merge: 1, apply: 1, am: 1, 'cherry-pick': 1, clean: 1, rm: 1,
+	mv: 1, restore: 1, init: 1, clone: 1, fetch: 1, pull: 1, stash: 1, tag: 1,
+	worktree: 1, 'update-ref': 1, 'update-index': 1
+}
+
+/**
+ * Extensions that make a bare basename credible as a filesystem path. Used by
+ * smart-text's validity gate to reject JS fragments scraped out of inline
+ * scripts. `log` and `bak` are deliberately ABSENT : `console.log` would
+ * otherwise pass the gate and be rendered as a written file.
+ */
+exports.KNOWN_PATH_EXT = /\.(js|mjs|cjs|ts|tsx|vue|json|jsonl|md|sh|py|rb|pl|txt|svg|png|jpe?g|gif|webp|css|html?|ya?ml|toml|ini|conf|lock|zip|tar|gz|ttf|otf|woff2?|wasm|asm|tsv|csv|sql|excalidraw|imf|act|gr2|grf|lub|mkv|mp4|bmp|patch|diff)$/i
 
 /**
  * Per-event-type delay (ms) applied by the watcher before firing the
