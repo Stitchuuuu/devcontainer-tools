@@ -19,9 +19,30 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 import { initialize } from '../src/commands/initialize.js'
+import { DEFAULT_CLAUDE_CODE_VERSION } from '../src/lib/docker.js'
 import type { HostProbe } from '../src/lib/platform.js'
 
 const LINUX_PROBE: HostProbe = { platform: 'linux', env: {}, procVersion: 'Linux version 6.12.76-linuxkit' }
+
+/**
+ * Run `fn` with CLAUDE_CODE_VERSION absent from the ambient environment.
+ *
+ * initialize() resolves the pin as `process.env` overlaid with the .env file,
+ * and this container exports CLAUDE_CODE_VERSION because the image bakes it.
+ * Without this, a test asserting "the default gets written" reads back the
+ * container's own pin instead — which is exactly what happened: the assertion
+ * agreed with DEFAULT_CLAUDE_CODE_VERSION by coincidence, and only diverged
+ * once the default moved.
+ */
+async function withoutAmbientPin<T>(fn: () => Promise<T>): Promise<T> {
+	const saved = process.env['CLAUDE_CODE_VERSION']
+	delete process.env['CLAUDE_CODE_VERSION']
+	try {
+		return await fn()
+	} finally {
+		if (saved !== undefined) process.env['CLAUDE_CODE_VERSION'] = saved
+	}
+}
 
 function fixture(): { projectDir: string; devcontainerDir: string; cleanup: () => void } {
 	const projectDir = mkdtempSync(join(tmpdir(), 'devc-init-'))
@@ -117,7 +138,7 @@ const read = (path: string): string | null => (existsSync(path) ? readFileSync(p
 test('non-interactive: writes the defaults and syncs the proxy variables', async () => {
 	const { projectDir, devcontainerDir, cleanup } = fixture()
 	try {
-		const code = await withStubDocker(() =>
+		const code = await withoutAmbientPin(() => withStubDocker(() =>
 			initialize({
 				devcontainerDir,
 				dryRun: false,
@@ -126,7 +147,7 @@ test('non-interactive: writes the defaults and syncs the proxy variables', async
 				probe: LINUX_PROBE,
 				...captured(),
 			}),
-		)
+		))
 
 		assert.equal(code, 0)
 		assert.equal(read(join(devcontainerDir, '.configured-auth')), 'standard\n')
@@ -138,7 +159,7 @@ test('non-interactive: writes the defaults and syncs the proxy variables', async
 		assert.equal(
 			read(join(devcontainerDir, '.env')),
 			[
-				'CLAUDE_CODE_VERSION=2.1.220',
+				'CLAUDE_CODE_VERSION=2.1.258',
 				'HTTPS_PROXY=http://127.0.0.1:8080',
 				'HTTP_PROXY=http://127.0.0.1:8080',
 				'NO_PROXY=localhost,127.0.0.0/8,host.docker.internal,.local',
@@ -224,7 +245,7 @@ test('a missing docker is no longer fatal — the version pin lands, the probe i
 	// probe, so it is present even on a docker-less host.
 	const { projectDir, devcontainerDir, cleanup } = fixture()
 	try {
-		const code = await withoutDocker(() =>
+		const code = await withoutAmbientPin(() => withoutDocker(() =>
 			initialize({
 				devcontainerDir,
 				dryRun: false,
@@ -233,9 +254,12 @@ test('a missing docker is no longer fatal — the version pin lands, the probe i
 				probe: LINUX_PROBE,
 				...captured(),
 			}),
-		)
+		))
 		assert.equal(code, 0)
-		assert.match(read(join(devcontainerDir, '.env')) ?? '', /^CLAUDE_CODE_VERSION=2\.1\.220$/m)
+		assert.match(
+			read(join(devcontainerDir, '.env')) ?? '',
+			new RegExp(`^CLAUDE_CODE_VERSION=${DEFAULT_CLAUDE_CODE_VERSION.replace(/\./g, '\\.')}$`, 'm'),
+		)
 	} finally {
 		cleanup()
 	}
