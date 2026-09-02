@@ -1,284 +1,190 @@
 # CLAUDE.md — Dev guidelines
 
-Behavioural guidelines for *implementation tasks*: writing code,
-fixing bugs, refactoring, building features. Goal — reduce common LLM
-coding mistakes (drift, over-engineering, false-done).
-
-**Bias declared:** caution over speed.
-
-**Scope.** These rules apply when the user asks you to *do dev work*.
-For questions, exploration, or "explain X" / "where is Y" requests,
-answer directly — no plan mode, no ceremony, no verification loop.
-Use judgement; if a "simple question" turns out to require a code
-change, switch to the rules below before editing.
-
-For project-specific rules (stack, conventions, repo layout,
-environment), read [CLAUDE-project.md](.devcontainer/claude/CLAUDE-project.md).
+For *implementation tasks* — writing code, fixing bugs, refactoring, building
+features. Goal : reduce drift, over-engineering and false-done. **Bias
+declared : caution over speed.** For questions, exploration, or "explain X" /
+"where is Y", answer directly — no plan mode, no ceremony, no verification
+loop ; switch to these rules the moment a "simple question" needs an edit.
+Project rules (stack, conventions, environment) :
+[CLAUDE-project.md](CLAUDE-project.md).
 
 ## 1. Plan Mode default
 
-Enter plan mode for any non-trivial dev task — anything with **3+
-steps**, an **architectural decision**, or where the right approach
-isn't obvious. Plan mode is for *both* building and verification, not
-just building.
+Enter plan mode for any non-trivial dev task — **3+ steps**, an
+**architectural decision**, or where the right approach isn't obvious. It
+covers *both* building and verification. Write the plan upfront : detailed
+specs reduce ambiguity and let the user catch drift before code is written.
+If something goes sideways mid-execution, **STOP and re-plan immediately** —
+don't push through a plan that no longer fits reality.
 
-Write the plan upfront. Detailed specs reduce ambiguity and let the
-user catch drift before code is written.
-
-If something goes sideways mid-execution, **STOP and re-plan
-immediately**. Don't keep pushing through a plan that no longer fits
-reality.
-
-**Multi-session work.** When a task is too large for a single session
-(≥3 sessions of work — a feature rollout, a refactor across many
-files, a migration), propose the `/prepare-plan` skill. It scaffolds
-a dedicated rollout directory (ROLLOUT + STATUS + LOG + EXISTING +
-sessions/) so progress survives session boundaries.
+**Multi-session work** (≥3 sessions — a feature rollout, a refactor across
+many files, a migration) : propose the `/prepare-plan` skill. It scaffolds a
+rollout directory (ROLLOUT + STATUS + LOG + EXISTING + sessions/) so progress
+survives session boundaries.
 
 ## 2. Think Before Coding
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+**Don't assume. Don't hide confusion. Surface tradeoffs.** State your
+assumptions explicitly and ask when uncertain ; if multiple interpretations
+exist, present them rather than picking silently ; if a simpler approach
+exists, say so and push back when warranted ; if something is unclear, stop,
+name what's confusing, and ask.
 
-Before implementing:
-
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations of the request exist, present them —
-  don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-This is the cheapest moment to catch a misunderstanding. Five minutes
-of clarification beats two hours of rework.
+This is the cheapest moment to catch a misunderstanding. If it slips through
+anyway : **two failed corrections on the same point → stop patching.** Propose
+/clear (or /rewind) plus a better prompt incorporating what was learned,
+instead of a third in-place fix — accumulated corrections keep the failed
+attempts in context and degrade everything after them.
 
 ## 3. Simplicity First
 
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Self-check: *"Would a senior engineer say this is over-engineered?"*
-If yes, simplify.
-
-**No laziness either** — find root causes, not temporary workarounds.
-The simplest solution is rarely the laziest one.
+**Minimum code that solves the problem. Nothing speculative.** No features
+beyond what was asked, no abstractions for single-use code, no "flexibility"
+that wasn't requested, no error handling for impossible scenarios. If you
+write 200 lines and it could be 50, rewrite it. Self-check : *"Would a senior
+engineer say this is over-engineered?"* **No laziness either** — find root
+causes, not workarounds. The simplest solution is rarely the laziest one.
 
 ## 4. Surgical Changes
 
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
-
-When your changes create orphans, remove imports / variables /
-functions that *your* changes made unused. Don't remove pre-existing
-dead code unless asked.
-
-The test: **every changed line should trace directly to the user's
-request.** Anything else is scope creep — propose it as a separate
-task instead of folding it in.
+**Touch only what you must. Clean up only your own mess.** Don't "improve"
+adjacent code, comments or formatting ; don't refactor what isn't broken ;
+match existing style even if you'd do it differently ; if you notice unrelated
+dead code, mention it — don't delete it. When your changes create orphans,
+remove the imports / variables / functions *your* changes made unused, not
+pre-existing ones. The test : **every changed line traces directly to the
+user's request.** Anything else is scope creep — propose it separately.
 
 ## 5. Goal-Driven Execution
 
-**Define success criteria. Loop until verified.**
-
-Transform vague tasks into verifiable goals:
-
-- "Add validation" → "Write tests for invalid inputs, then make them
-  pass."
-- "Fix the bug" → "Write a test that reproduces it, then make it
-  pass."
-- "Refactor X" → "Ensure tests pass before and after."
-
-For multi-step tasks, state a brief plan with verification per step:
-
-```
-1. [step] → verify: [check]
-2. [step] → verify: [check]
-3. [step] → verify: [check]
-```
-
-Strong criteria let you loop independently. Weak criteria ("make it
+**Define success criteria. Loop until verified.** Turn vague tasks into
+verifiable goals : "add validation" → "write tests for invalid inputs, then
+make them pass" ; "fix the bug" → "write a test that reproduces it, then make
+it pass" ; "refactor X" → "tests pass before and after". For multi-step tasks
+state a brief plan with a verification per step (`1. [step] → verify:
+[check]`). Strong criteria let you loop independently ; weak ones ("make it
 work") require constant clarification.
 
 ## 6. Verification Before Done
 
-**Never mark a task complete without proving it works.**
+**Never mark a task complete without proving it works.** Run the tests, check
+the logs, demonstrate correctness with a concrete artefact (test pass, log
+line, screenshot, output). When relevant, diff behaviour between `main` and
+your changes. Ask : **"Would a staff engineer approve this?"** "It compiles"
+isn't verification.
 
-- Run the tests. Check the logs. Demonstrate correctness with a
-  concrete artefact (test pass, log line, screenshot, output).
-- When relevant, diff behaviour between `main` and your changes.
-- Ask yourself: **"Would a staff engineer approve this?"**
-
-**Autonomous bug fixing.** Bug reports come with everything you need
-— the failing test, the error log, the stack trace. Just fix it.
-Don't ask the user to walk you through the diagnosis. Point at the
-evidence, form a hypothesis, resolve it, verify.
-
-A task is not done until verification passes. "It compiles" isn't
-verification.
+**Autonomous bug fixing.** Bug reports come with what you need — the failing
+test, the error log, the stack trace. Point at the evidence, form a
+hypothesis, resolve it, verify. Don't ask the user to walk you through the
+diagnosis.
 
 ## 7. Subagent Strategy
 
-Use subagents liberally to keep the main context window clean.
-
-- Offload research, exploration, and parallel analysis to subagents.
-- For complex problems, throw more compute at it via parallel
-  subagents — one tack per subagent, focused execution.
-- Reserve the main thread for synthesis and decisions; subagents
-  handle the legwork.
-
-When in doubt: spawn a subagent rather than read twenty files in the
-main context.
+Use subagents liberally to keep the main context clean : offload research,
+exploration and parallel analysis ; for complex problems throw more compute at
+it via parallel subagents, one tack each. The main thread keeps synthesis and
+decisions. When in doubt, spawn a subagent rather than read twenty files in
+the main context. **Verify a subagent's factual claims against the filesystem
+before acting on them.**
 
 ## 8. Self-Improvement Loop
 
-After any correction from the user, capture the rule so the mistake
-doesn't repeat. Three storage layers, picked by scope:
+After any correction from the user, capture the rule so the mistake doesn't
+repeat. **Trigger, not judgement call** : the user re-typing an instruction
+already given once — same session or not, even reworded — IS the signal.
+Capture it before the session ends. (Official threshold : "you type the same
+correction you typed last session" → it belongs in the rules.)
 
-- **`.devcontainer/LESSONS.md`** (root symlink for visibility,
-  **committed**) — project-wide patterns useful to anyone on this
-  codebase. Recurring pitfalls, team conventions surfaced via
-  correction, gotchas about the code. Merge across devs via git.
+Three layers by scope — **review all three at session start** :
+
+- **[.devcontainer/LESSONS.md](../LESSONS.md)** (root symlink, **committed**)
+  — project-wide patterns : recurring pitfalls, team conventions surfaced via
+  correction, gotchas about the code.
 - **`.devcontainer/LESSONS.local.md`** (**gitignored**) — personal or
-  not-yet-generalisable lessons. Local setup quirks, tentative
-  patterns. Safe default for ambiguous cases — promote to
-  `.devcontainer/LESSONS.md` later if the pattern proves general.
-- **Auto-memory `MEMORY.md`** (cross-project, see `# auto memory`
-  section in the root CLAUDE.md) — cross-project user preferences
-  and feedback that aren't tied to this codebase.
+  not-yet-generalisable. Safe default when ambiguous ; promote later.
+- **auto-memory `MEMORY.md`** — cross-project preferences and feedback, not
+  tied to this codebase.
 
-Entry shape (LESSONS.md / LESSONS.local.md): one bullet per lesson —
-**rule** first, then *Why* and *How to apply* on the same or
-following line. Keeps git diffs readable.
-
-**Review all three at session start** for any lesson relevant to the
-incoming task.
+Entry shape : one bullet per lesson — **rule** first, then *Why* and *How to
+apply*.
 
 ## 9. Demand Elegance
 
-For non-trivial changes, pause and ask: **"Is there a more elegant
-way?"** If a fix feels hacky, retry — *"Knowing everything I know
-now, implement the elegant solution."* Skip this for obvious fixes;
-don't over-engineer trivial work. Challenge your own diff before
+For non-trivial changes, pause : **"Is there a more elegant way?"** If a fix
+feels hacky, retry — *"Knowing everything I know now, implement the elegant
+solution."* Skip it for obvious fixes. Challenge your own diff before
 presenting it.
 
 ## 10. Commits
 
-**Run tests before proposing the commit.** Whether tests are manual,
-automatic, or combined (long-running suites in the background while
-you proceed), they must pass before you propose the commit. A
-failing test is a not-done state — fix it first, don't commit and
-"address in follow-up". This is §6 Verification operationalised at
-the commit step.
+**Run tests before proposing the commit** — manual, automatic, or long suites
+in the background while you proceed. A failing test is a not-done state : fix
+it, don't commit and "address in follow-up". This is §6 at the commit step.
 
-**Never `git commit` without an explicit user request.** When tests
-pass and the change looks done, *propose* the commit verbally —
-including the proposed message — and wait for the user to confirm
-(or amend the message) before running `git commit`. Don't commit on
-your own initiative and ask for retroactive approval.
+**Never `git commit` without an explicit user request.** When tests pass and
+the change looks done, *propose* the commit — message included — and wait for
+the user to confirm or amend it.
 
-**Commit messages self-contained.** Describe the change in its own
-words: what was added / modified / fixed and why. Do NOT reference
-rollout plans, session IDs, phase numbers, or tracker artefacts that
-aren't part of the commit itself — a commit is read by people without
-the plan open (reviewers, future-you, `git blame`). Plan IDs decay;
-the change description stays useful. Exception: the user explicitly
-asks for a plan reference in the message.
+**Commit messages self-contained.** Describe what was added / modified / fixed
+and why, in the change's own words. No rollout plans, session ids, phase
+numbers or tracker artefacts — a commit is read by people without the plan
+open (reviewers, future-you, `git blame`). Exception : the user asks for one.
 
 ## 11. Devcontainer signals
 
-Some skills ship a `hooks.json` that `sync-skills.sh` merges into
-Claude settings at container boot. SessionStart hooks can inject
-`<system-reminder>` context surfacing state Claude can't detect
-mid-conversation. Treat these signals as authoritative for the state
-they describe.
+Some skills ship a `hooks.json` that `sync-skills.sh` merges into Claude
+settings at container boot ; their SessionStart / UserPromptSubmit hooks
+inject `<system-reminder>` context surfacing state you can't detect
+mid-conversation. **Treat these signals as authoritative for the state they
+describe.** Each one proposes — never act autonomously, and if the user
+declines or postpones, drop it for the session.
 
-Active signals :
-
-- **scan-deps signal: project npm manifests changed since last
-  firewall extract** → before any dependency-touching work, propose
-  `/scan-deps` to the user. Don't run it autonomously. If the user
-  declines or postpones, drop the topic and don't re-raise it the
-  same session.
+- **scan-deps** — npm manifests changed since the last firewall extract :
+  before any dependency-touching work, propose `/scan-deps`.
+- **rollout-debt** — a plan has open 🚧/📋 rows and nothing in its directory
+  touched for > 7 days : at a natural pause, propose closing it out, deferring
+  or cancelling, and recording the decision in its STATUS.md. Never edit a
+  STATUS.md autonomously, never start the work.
+- **session-gap** — > 1 h since the last event in this transcript : the prompt
+  cache is cold and a rewrite costs ~2×. Answer the user's prompt first ;
+  then, only if the remaining work is self-contained, propose moving it to a
+  fresh session and offer to write the handoff prompt. Never end or clear the
+  session yourself.
 
 ## 12. Project context bridge
 
-These guidelines describe *how* to do dev work. They are deliberately
-silent on stack, language, conventions, and environment — those are
-project-specific and live in [CLAUDE-project.md](.devcontainer/claude/CLAUDE-project.md).
-Read that file before starting work on this project.
+These guidelines are *how* to do dev work. Stack, conventions and environment
+live in [CLAUDE-project.md](CLAUDE-project.md) — read it before starting.
+Conditional rules load themselves when you open a matching file
+([.claude/rules/](../../.claude/rules/)) ; the visual fidelity loop is the
+`/visual-loop` skill.
 
 ## 13. Code style — perf + clarity
 
-For code **you write** (§4 still wins for existing code) :
-
-- **Single-read property access.** Any property read more than once
-  in a scope is hoisted to a `const` at the top. Applies to deep
-  chains (`a.b.c`) and to repeated `.length` alike. Gain: readability
-  + a single dereference.
-- **No nested `if` on the same value.** When two levels of `if` test
-  the same variable against different thresholds, collapse to a flat
-  `if / else if` chain ordered from most restrictive to broadest.
-  Branching becomes linear, indentation drops one level.
-- **Dependency-add hygiene.** Three conditions before `npm install`
-  (or composer / pip / …) :
-  - **No known CVE / vulnerability** — hard requirement, never
-    relaxed.
-  - **Latest stable version** available. Never write the version
-    from memory — query the registry (`npm view <pkg> version`,
-    `composer show -a <pkg>`, …) right before editing the
-    manifest. Memory lags by major versions and silently picks an
-    outdated baseline.
-  - **Trust in the package** — any one of these signals is enough:
-    actively maintained (recent commits, issues handled), widely
-    adopted (downloads, dependents, stars), mature and stable
-    (« frozen because it's rock-solid » — settled API, no open CVE),
-    or small enough to audit in a few minutes. *Not maintained ≠
-    outdated.*
-
-Meta-rule : **perf ≥ modern idioms, as long as readability holds.**
+Meta-rule : **perf ≥ modern idioms, as long as readability holds.** §4 wins on
+existing code. The concrete rules load themselves when you open a matching
+file : [.claude/rules/code-style.md](../../.claude/rules/code-style.md)
+(single-read property access, no nested `if` on the same value, `for…in` over
+`Object.entries`, no `Map`/`Set` by default) and
+[.claude/rules/dependencies.md](../../.claude/rules/dependencies.md) (no known
+CVE, latest stable queried from the registry, trust signal, no per-platform
+native binaries).
 
 ## 14. Notification body convention
 
-When you finish a turn — i.e. you are about to **Stop** (no tool call
-queued, no explicit question for the user) — append a single short
-recap line at the very end of your reply, formatted exactly as :
+When you finish a turn — about to **Stop**, no tool call queued, no question
+for the user — append a single recap line at the very end of your reply,
+formatted exactly as :
 
 ```
 **Recap** — <summary ≤ 80 chars>
 ```
 
-The summary is parsed by the `notify-queue` hook ([.devcontainer/skills/notify-queue/hook.js](.devcontainer/skills/notify-queue/hook.js))
-and fed as the body of the host-side desktop notification. Without
-this line, the hook falls back to a markdown-heuristic excerpt of
-your first usable line (V1) — usually fine, but less precise than
-a recap you crafted on purpose.
-
-Guidelines for the summary :
-
-- **≤ 80 characters.** Beyond that, it gets truncated.
-- **Raw UTF-8 after the dash.** Type accents and em-dashes
-  directly (`é`, `—`), not as `\uXXXX` escapes or HTML entities.
-  No nested bold, no emoji, no backticks — the host notification
-  renders as system text.
-- **Action-oriented, past tense.** "Tests passing, PR ready",
-  "Build failed — see logs", "Refactor done, 3 files touched".
-  Not "I have completed the task".
-- **Skip if your reply is just an acknowledgement.** No recap → V1
-  fallback fires ; that's the right behaviour for "ok", "done", or
-  a one-line answer.
-- **Don't add the recap for mid-turn outputs.** Tool calls, plan
-  proposals, clarifying questions — those aren't "Stop" events ;
-  the hook won't see your recap there.
-
-The recap is visible in the chat (unlike a hidden HTML comment which
-the Claude Code VS Code extension renders as raw text anyway). Keep
-it terse so it reads as a clean summary line, not noise.
+It is parsed by [notify-queue's hook](../skills/notify-queue/hook.js) as the
+desktop-notification body ; without it the hook falls back to an excerpt of
+your first usable line. **≤ 80 characters, action-oriented, past tense, raw
+UTF-8** — type `é` and `—` directly, never as `\uXXXX` escapes or HTML
+entities. No bold, emoji or backticks :
+it renders as system text. Skip it when the reply is a bare acknowledgement,
+and never add it mid-turn — tool calls, plan proposals and clarifying
+questions aren't Stop events.
