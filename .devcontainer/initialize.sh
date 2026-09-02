@@ -65,6 +65,17 @@ to_host_path() {
 # stays clean. Falls back to inline xtrace (mixed into .log) on bash < 4.1
 # (macOS default 3.2 has no BASH_XTRACEFD).
 mkdir -p "$DEVCONTAINER_DIR/logs"
+
+# Record the host OS for the container to read back. This script is the only
+# code that runs ON THE HOST, so it is the only place that KNOWS the answer —
+# from inside the container the best you can do is sniff the kernel
+# (`…-linuxkit` = Docker Desktop VM, `…-microsoft` = WSL2), which infers the
+# hypervisor rather than the OS. scripts/install-cross-arch-natives.mjs reads
+# this to decide which platform's native binaries the shared node_modules must
+# carry, so that a host-side npm install and a container-side one stop pruning
+# each other's binaries. logs/ is gitignored, so this stays machine-local.
+printf '%s\n' "$HOST_KIND" > "$DEVCONTAINER_DIR/logs/host-os"
+
 TS=$(date +%Y%m%d-%H%M%S)
 INIT_LOG="$DEVCONTAINER_DIR/logs/initialize-${TS}.log"
 INIT_TRACE="$DEVCONTAINER_DIR/logs/initialize-${TS}.trace"
@@ -412,7 +423,7 @@ detect_no_cache_request() {
 # (cf. amendment 2026-05-20). All output is teed to
 # .devcontainer/logs/build-base-<version>-<ts>.log for post-mortem.
 build_base_if_missing() {
-	local version="${CLAUDE_CODE_VERSION:-2.1.145}"
+	local version="${CLAUDE_CODE_VERSION:-2.1.258}"
 	local tag="claude-devcontainer-base:${version}-${DC_PROJECT:-devcontainer-tools}"
 	set_env_var "CLAUDE_CODE_VERSION" "$version"
 

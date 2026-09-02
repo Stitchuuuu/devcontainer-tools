@@ -19,6 +19,15 @@
 # Ollama server on the host (port 11434) — used in local-direct mode
 # host:11434
 
+# Chromium DevTools Protocol on the host (`wtf browser`) — the visual design
+# loop (`wtf shot`) drives it to screenshot the running app and read back
+# getComputedStyle() values.
+#
+# This belongs here rather than in domains.txt despite the ⚠ above: CDP is an
+# HTTP handshake immediately upgraded to a WebSocket, and mitmproxy breaks the
+# upgrade. Direct TCP is the requirement, not a shortcut.
+host:9222
+
 # Nested Docker daemon (dind sidecar) — agent-side release-check suites.
 # Same shape as CDP: the Docker API is an HTTP handshake immediately
 # hijacked into a raw stream for build/exec/attach, and mitmproxy breaks the
