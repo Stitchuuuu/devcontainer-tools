@@ -9,7 +9,7 @@ FROM node:24-bookworm-slim
 ARG TZ
 ENV TZ="$TZ"
 
-ARG CLAUDE_CODE_VERSION=2.1.145
+ARG CLAUDE_CODE_VERSION=2.1.258
 ARG GIT_DELTA_VERSION=0.18.2
 
 # -----------------------------------------------

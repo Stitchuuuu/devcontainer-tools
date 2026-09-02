@@ -14,7 +14,7 @@
         // Marketplace path. Keep the version in sync with CLAUDE_CODE_VERSION
         // in .devcontainer/.env — bumping one without the other will trigger
         // a redownload of ~250 MB per container start.
-        "anthropic.claude-code@2.1.145",
+        "anthropic.claude-code@2.1.258",
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
         "eamodio.gitlens",
