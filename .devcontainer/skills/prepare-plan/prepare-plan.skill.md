@@ -1,151 +1,198 @@
 ---
-description: Route code work to the right context after a plan is built. Three modes — (1) implement in the current session, (2) produce a self-contained prompt to paste into a fresh chat (no scaffold), or (3) scaffold a multi-session rollout directory under /workspace/plans/<feature>/. Always asks first via AskUserQuestion and recommends the most fitting based on scope. AUTO-TRIGGER at Phase 4 of Plan mode (after exploration, just before writing the final plan file) to route the implementation context. Also auto-triggers on natural phrases like "fais-moi un plan", "scaffold a plan", "j'ai pas le temps".
+description: Route code work following a plan to one of 4 execution contexts by increasing persistence — (1) This session, 0 files (default) ; (2) Fresh chat prompt only, 0 files ; (3) Prompt written to .md with status, 2 files ; (4) Multi-session scaffold, 5 files. Prints a mandatory pre-question context message (complexity + sessions envisaged verbatim + escalation reason) then calls AskUserQuestion once. When the recommendation is a no-persistence mode (#1 or #2), option #3 sits in position #2 as the upgrade path. Every generated prompt carries a per-session model tier recommendation (A/B/C/D) with a fallback ladder. AUTO-TRIGGER at Phase 4 of Plan mode. Also auto-triggers on natural phrases like "fais-moi un plan", "scaffold a plan", "j'ai pas le temps".
 argument-hint: "<feature-name> [<free-text scope description>]"
 ---
 
-# /prepare-plan — scaffold a plan rollout
+# /prepare-plan — route implementation work
 
-Generates a self-contained plan directory under `/workspace/plans/<feature>/`:
-`ROLLOUT.md` + `STATUS.md` + `LOG.md` + `EXISTING.md` + `sessions/session-1-*.md`.
-Each session prompt prescribes its own DoD (update STATUS / LOG / EXISTING at the
-end), so the pattern is self-perpetuating — no companion skill, no hook.
+Routes code work following a plan to one of 4 execution contexts, from
+0-file ephemeral (implement now in current chat) to 5-file multi-session
+scaffold under `/workspace/plans/<feature>/`. Every invocation prints a
+mandatory pre-question context message then calls `AskUserQuestion` once.
 
 ## When to use
 
-**Auto-invoked at Phase 4 of Plan mode** (after exploration, just before writing
-the final plan file) to route the implementation context — Claude should call
-the skill at that moment rather than waiting for an explicit user trigger.
+**Auto-invoked at Phase 4 of Plan mode** (after exploration, just before
+writing the final plan file) to route the implementation context.
 
-Outside Plan mode, invoke whenever the user wants to **route code work to the
-right context** after a plan is done. Common triggers: "fais-moi un plan",
-"prépare un rollout", "monte un plan pour", "scaffold a plan", "prep a rollout
-for", "j'ai pas le temps de m'en occuper", "je verrai ça plus tard".
-
-The scope decision (this session / prompt only / multi-session scaffold) is the
-user's pick at step 0 — not gated by this section.
+Outside Plan mode, invoke on triggers : "scaffold a plan", "prep a rollout
+for", "route this to a plan", "make a plan for me", "I'll do it later",
+"no time to handle this now", "come back to this later".
 
 ## When NOT to use
 
-- Research / exploration without a deliverable plan → use `/prepare-research`.
-- Append to an existing plan directory → this skill only scaffolds fresh ones.
-  To extend an existing one, edit its `STATUS.md` / `LOG.md` / `sessions/` by hand.
+- Research / exploration without deliverable plan → `/prepare-research`.
+- Extend an existing plan directory → edit its `STATUS.md` / `LOG.md` /
+  `sessions/` by hand (no append mode).
 
 ## Process
 
 ### 0. Context-routing decision — mandatory AskUserQuestion
 
-**Always ask** before touching disk — whether triggered via `/prepare-plan`
-slash, auto-proposed from a natural-language phrase, or auto-invoked at Phase 4
-of Plan mode. The user picks ; the skill recommends.
+**Four options**, ordered by growing persistence :
 
-**What the question routes:** the **context budget for the code work that
-follows the plan**. The plan is built *now* ; the implementation happens
-*next*. Three options:
+| # | Mode | Files | When |
+|---|---|---|---|
+| 1 | **This session** | 0 | **Default recommended**. Implement now, ephemeral. Fits in the active chat with headroom. |
+| 2 | **Fresh chat, prompt only** | 0 | Isolation wanted, no persistence. Prompt rendered in chat 5-backtick fence, user copies to a fresh session. |
+| 3 | **Prompt written to .md (with status)** | 2 | Persistence + audit for a single-PR scope. Writes `prompt.md` + `STATUS.md` (3-row tracker). Also the natural fallback for "I'll do it later". |
+| 4 | **Multi-session scaffold** | 5 | ≥2 sessions, irreversible phases, cross-cutting refactor. Full `ROLLOUT/STATUS/LOG/EXISTING` + `sessions/session-1-*`. |
 
-- **This session** — implement in the current chat. Right for small fixes with
-  few exchanges and a chat that still has headroom. Any scaffold would be overhead.
-- **Fresh chat, prompt only** — produce a self-contained prompt shown in chat,
-  paste into a fresh session. No files written, no scaffold directory. Right
-  for one PR-worth of focused work that fits in one fresh session and won't
-  need a scoreboard to come back to.
-- **Multi-session scaffold** — scaffold 5 files under `/workspace/plans/<name>/`
-  (ROLLOUT + STATUS + LOG + EXISTING + sessions/session-1-*). Right when the
-  change spans ≥2 sessions, has irreversible phases, crosses several areas,
-  or needs an audit trail to resume on later.
+Recommendation defaults to **#1**. Escalate only on clear signal :
 
-Call `AskUserQuestion` ONCE. **Reorder the options so the recommended one is
-first** and append `(Recommended)` to its label.
-
-Recommendation heuristic:
-
-| Scope signal | Recommend |
+| Signal | Recommend |
 |---|---|
-| 1-line fix, config tweak, isolated single-file edit, ≤ ~10 exchanges expected | This session |
-| One PR-worth of work, one focused feature/refactor, fits in one fresh chat | Fresh chat, prompt only |
-| ≥2 distinct sessions, irreversible phases, cross-cutting refactor, audit trail wanted | Multi-session scaffold |
+| Persistent artifact wanted, single-PR scope | 3 |
+| "I'll do it later" / deferred tracking needed | 3 |
+| Isolation wanted, no persistence needed | 2 |
+| ≥2 sessions / irreversible phases / audit needed | 4 |
+| _(anything else)_ | **1** |
 
-```
-Question : "Where should we implement `<inferred feature name>` ?
-            (planning is done — picking the context for the code work)"
-Options (Recommended one first) :
-  - "This session"             — Implement in the active chat, no scaffold.
-  - "Fresh chat, prompt only"  — Self-contained prompt shown in chat. No files.
-  - "Multi-session scaffold"   — Scaffold 5 files, expect ≥2 sessions.
-```
+**Options-ordering rule** — when the recommended option is a
+no-persistence mode (**#1 or #2**), option **#3** (`Prompt written to
+.md`) MUST appear in position **#2** so the persistence upgrade path is
+the first alternative visible. Example : if #1 is recommended, order =
+[1 (Recommended), 3, 2, 4]. Exactly one option carries `(Recommended)` —
+never zero, never two.
 
-Exactly one option carries `(Recommended)` — never zero, never two.
+**Current-model gate** — before recommending, derive the work's tier
+(§Model tiers ; tier of session 1, or of the whole work if
+single-session) and compare it to the model this session runs on (named
+in your system prompt). Three states :
 
-**On the answer:**
+| State | Definition | Effect on the recommendation |
+|---|---|---|
+| **match / overkill** | current model ≥ tier primary, by **rank** (`opus-5` and `opus-4.8` tie) — but on a `*` tier, `fable` and `opus-5` never match, the gate excludes them by behaviour, not by rank | #1 « This session » stays recommendable (default). If overkill by ≥2 ranks (e.g. fable for tier C/D), note the wasted cost — still allowed. |
+| **in-ladder** | current model in the tier's fallback ladder, not primary | #1 allowed **with** degraded-mode directives applied to the current session. Say so in the context message. |
+| **below-ladder** | current model below the whole ladder (e.g. haiku for tier B) | #1 MUST NOT be recommended — recommend #2 or #3 (the generated prompt carries the Model line). #1 stays listed, its description names the mismatch. |
 
-- **This session** → abort cleanly, no files written. Print one line:
-  `Plan scaffold skipped — implementing in current session.`
-  Return control so Claude implements now.
-- **Fresh chat, prompt only** → branch to §"Prompt-only mode" below. Skip
-  steps 1–6 entirely.
-- **Multi-session scaffold** → proceed to step 1 with `mode = multi`.
+#### Pre-question context message — REQUIRED before `AskUserQuestion`
 
-Never call `AskUserQuestion` a second time in the same invocation.
+Skipping this = user picks blind. Print as raw markdown (not inside a
+code fence, ~20-40 lines), with these 5 blocks in order :
 
-### 0.5. Prompt-only mode (branch from step 0)
+1. **Complexity and scope** — bullet list :
+   - Files to touch (existing + new), with paths
+   - Rough total LoC and time estimate (hours, or minutes if trivial)
+   - Nature : additive / refactor / migration / cross-cutting
+   - Irreversible phases (schema migrations, data transforms, network
+     mutations) : yes / no
+2. **Sessions envisioned** — parseable list (**commitment** ; multi-session
+   uses these verbatim, no 2nd validation). Each session carries its model
+   tier, derived per §Model tiers (base + modifiers) :
+   ```
+   Sessions envisioned:
+   - session 1 (<kebab-slug>) — <one-liner of the concrete deliverable> — tier <A|B|C|D> (<primary model>)
+   - session 2 (<kebab-slug>) — <one-liner> — tier <A|B|C|D> (<primary model>)  (if >1 session)
+   ```
+   If it's a single session, still list `session 1` explicitly.
+3. **Current model** — one line, from the current-model gate above :
+   ```
+   Current model : <model> — <match | overkill (tier <X> suffices) | in-ladder fallback (degraded directives apply) | below tier <X> → fresh chat required>
+   ```
+4. **Why the recommended choice** — one paragraph linking complexity to
+   the recommendation. If escalated from #1, name the signal. If the
+   current-model gate demoted #1, name the mismatch.
+5. **What each option produces** — 4 one-liners : 0 / 0 / 2 / 5 files
+   respectively.
 
-Reached only if the user picked **"Fresh chat, prompt only"** at step 0.
-Steps 1–6 are skipped entirely — zero files are written.
+#### Branch on the answer
 
-1. Resolve `feature_name`, `feature_title`, `description` per step 1's rules
-   (kebab + title + scope text). If `description` is empty, ask for a one-line
-   scope before continuing.
-2. Build the prompt from the template in §"File templates" → "Template —
-   `prompt-only` mode". Substitute:
-   - `{{feature_title}}` → human title
-   - `{{description}}`   → scope text
-   - `{{plan_approach}}` → the design just produced (when invoked at Phase 4
-     of Plan mode) or the upstream context. If empty, leave a one-line
-     placeholder `_(no approach captured — first session will design it)_`.
-   - `{{tests}}`         → verification steps from the plan, or a generic
-     `tests pass / feature exercises end-to-end` line.
-3. **Always print the prompt directly in chat, wrapped in a 5-backtick
-   fence.** Same behavior in Plan mode and outside Plan mode — never embed
-   into the plan file, never use Unicode rules, never use 3- or 4-backtick
-   fences. 5 backticks is required because the rendered prompt contains
-   inner 3-backtick code blocks (PHP/JS/SQL snippets) ; a 4-backtick outer
-   fence breaks the moment the prompt contains a 4-backtick block, and 3
-   backticks break immediately. 5 backticks gives the VS Code "copy code"
-   button on the rendered fence — one click, full prompt copied.
+| Answer | Branch | Files |
+|---|---|---|
+| This session | Print `Plan scaffold skipped — implementing in current session.`, hand back to Claude. | 0 |
+| Fresh chat, prompt only | Go to §0.5 | 0 |
+| Prompt written to .md (with status) | Go to §0.6 | 2 |
+| Multi-session scaffold | Go to §1 with `mode = multi` | 5 |
 
-   Output exactly :
+`AskUserQuestion` is called **exactly once** — never twice in the same
+invocation.
 
-   `````
+### 0.5. Prompt-only mode — chat display, 0 files
+
+Reached when step 0 answer = "Fresh chat, prompt only". Renders the
+prompt in chat wrapped in a 5-backtick fence — user copies from the chat
+and pastes into a fresh Claude Code session.
+
+1. Resolve `feature_name` / `feature_title` / `description` per §1.
+2. Build the prompt from the `prompt-body` template (see §Templates).
+   In this mode, **omit** the "How to use this file" blockquote
+   header (no file to open).
+3. Print exactly :
+
+   ```
    ✅ Self-contained prompt ready. Use the copy button on the code block below, paste into a fresh Claude Code session.
 
-   ``````
-   <rendered prompt>
-   ``````
    `````
+   <rendered prompt>
+   `````
+   ```
 
-   (Use **6 backticks** for the outer fence when the prompt itself contains
-   a 5-backtick block — escalate as needed. Default is 5.)
+   5 backticks is required because the prompt contains inner 3-backtick
+   blocks (bash, toml, python) ; escalate to 6 backticks if the prompt
+   itself contains a 5-backtick block.
 
-   Then stop. No "next-steps" block, no file paths, no collision check, no
-   plan-file edit. The prompt lives in chat only.
+   Then stop — no next-steps block (no file to link to), no collision
+   check, no plan-file edit.
+
+Plan mode behavior : identical — chat only, never embedded in the plan
+file (zero disk writes is trivially satisfied).
+
+### 0.6. Prompt-with-status mode — light scaffold, 2 files
+
+Reached when step 0 answer = "Prompt written to .md (with status)".
+Writes exactly TWO files to `plans/<feature_name>/` : `prompt.md` (the
+self-contained prompt) + `STATUS.md` (3-row tracker). No `ROLLOUT.md` /
+`LOG.md` / `EXISTING.md` / `sessions/` — that's `Multi-session scaffold`.
+
+1. Resolve identifiers per §1.
+2. Collision check per §2 (propose `-v2` if directory exists).
+3. `mkdir -p /workspace/plans/${feature_name}/` (skipped in Plan mode).
+4. Build `prompt.md` from the `prompt-body` template with the
+   "How to use this file" blockquote header kept. Substitutions :
+   - `{{feature_title}}` → human title
+   - `{{feature_name}}`  → kebab slug
+   - `{{description}}`   → scope text
+   - `{{plan_approach}}` → Phase 4 design or upstream context. Fallback
+     `_(no approach captured — first session will design it)_`.
+   - `{{tests}}`         → verification steps, or fallback
+     `existing tests pass; new behavior verified end-to-end`.
+   - `{{model_line}}`    → tier block rendered per §Model tiers.
+   - `{{model_line_short}}` + `{{tier_legend}}` → STATUS-lite Model line
+     and tier legend, per §Model tiers.
+   - `{{subagents_block}}` → shared sub-agents block, per §Model tiers.
+5. Build `STATUS.md` from the `STATUS-lite` template.
+6. Write both files (skipped in Plan mode).
+7. Print the next-steps block as raw markdown :
+
+   > ✅ Prompt + status saved at [plans/{{feature_name}}/](plans/{{feature_name}}/)
+   >
+   > **Files** :
+   > - [prompt.md](plans/{{feature_name}}/prompt.md) — self-contained prompt ← **paste into a fresh Claude Code chat**
+   > - [STATUS.md](plans/{{feature_name}}/STATUS.md) — 3-row tracker (`prompt.md written` ✅ / `implementation` 📋 / `commit` 📋)
+   >
+   > The fresh chat flips `implementation` 📋 → ✅ then `commit` 📋 → ✅
+   > as part of its DoD.
 
 ### 1. Parse invocation and derive identifiers
 
 `/prepare-plan <feature-name> [<description>]` or the natural-language
-equivalent. Resolve:
+equivalent :
 
-- `feature_name` — kebab-case. If the first whitespace-token already matches
-  `[a-z][a-z0-9-]*`, use it. Otherwise derive from the description (lowercase,
-  strip stopwords, kebab-case, ≤ 40 chars). Reject `/`, `..`, uppercase, spaces.
-- `description` — everything after `feature_name`, trimmed. If empty, ask the
-  user for a one-line scope.
-- `feature_title` — capitalise each word of `feature_name` (split on `-`).
+- `feature_name` — kebab-case, matches `[a-z][a-z0-9-]*`. If the first
+  whitespace-token already matches, use it. Otherwise derive from the
+  description (lowercase, strip stopwords, kebab-case, ≤ 40 chars).
+  Reject `/`, `..`, uppercase, spaces. If too generic (≤ 3 chars, or
+  common verb like `fix`, `add`, `do`), ask user for explicit name.
+- `description` — everything after `feature_name`, trimmed. If empty,
+  ask for a one-line scope.
+- `feature_title` — capitalise each word (split on `-`).
 - `date` — `date +%F` (ISO `YYYY-MM-DD`).
-- `first_session_slug` — short kebab-case for the first concrete step. Default
-  `scaffold` if you cannot infer better. Examples: `scaffold`, `inventory`,
-  `baseline`, `spike`, `apply-shim`.
+- `first_session_slug` — short kebab for the first concrete step.
+  Default `scaffold`. Examples : `scaffold`, `inventory`, `baseline`,
+  `spike`, `apply-shim`.
 
-If `feature_name` is too generic (≤ 3 chars, or a common verb like `fix`,
-`add`, `do`), ask for an explicit one. Otherwise print one confirmation line:
+Print one confirmation line :
 
 ```
 → feature_name=<name>, first_session_slug=<slug>, target=/workspace/plans/<name>/
@@ -153,42 +200,32 @@ If `feature_name` is too generic (≤ 3 chars, or a common verb like `fix`,
 
 ### 2. Collision check
 
-`target = /workspace/plans/${feature_name}/`. If it does NOT exist, proceed.
-If it exists, NEVER overwrite — propose `-v2`, `-v3`, …, recompute `target`,
-and print:
+`target = /workspace/plans/${feature_name}/`. If it exists, NEVER
+overwrite — propose `-v2`, `-v3`, …, recompute `target`, and wait for
+explicit user confirmation :
 
 ```
 ⚠ /workspace/plans/<name>/ already exists. Proposing /workspace/plans/<name>-v2/ instead.
   Confirm with "yes" or provide a different name.
 ```
 
-Wait for explicit confirmation. Never silently fall through — the user may want
-to extend the existing plan by hand (not supported here).
+### 3. Exploration — fill EXISTING.md (multi-session mode)
 
-### 3. Exploration — fill EXISTING.md
-
-- **Skip** if the scope is confined (single file, named files) — `Read` them
-  directly and summarise inline.
-- **Spawn 1–3 Explore agents in parallel** if the area is broad or unfamiliar
-  (e.g. "refactor the auth layer"). Brief each with a focused question
-  (implementations / related components / tests). Thoroughness level: "quick".
-- **Default to skip** if you can't articulate a precise question. Vague
+- **Skip** if scope is confined to named files — `Read` them directly.
+- **Spawn 1–3 Explore agents in parallel** ("quick" thoroughness) if the
+  area is broad or unfamiliar (e.g. "refactor the auth layer"). Brief
+  each with a focused question.
+- **Default to skip** if you can't articulate a precise question — vague
   exploration produces noise.
 
-Aggregate into a draft EXISTING.md section. If skipped, EXISTING.md gets a
-fill-me stub and session 1 populates it.
+Aggregate findings into a draft EXISTING.md section, or fall back to a
+fill-me stub for session 1 to populate.
 
-### 4. Generate the 5 files
+### 4. Generate the 5 files (multi-session mode)
 
-> **Skip this step entirely if Plan mode is active** — disk writes are
-> forbidden in Plan mode. Instead, embed the full rendered content of all 5
-> files into the current plan file under `## Scaffold spec` with target
-> paths annotated. See §"Plan mode integration" below. The actual writes
-> happen *after* `ExitPlanMode` approval, as part of post-plan execution.
-
-`ROOT="/workspace/plans/${feature_name}"`. Run `mkdir -p "$ROOT/sessions"`,
-then write each file substituting every `{{placeholder}}` from the templates
-in §"File templates". Variables:
+`ROOT="/workspace/plans/${feature_name}"`. `mkdir -p "$ROOT/sessions"`,
+then write each file substituting every `{{placeholder}}` from
+§Templates. Variables :
 
 | Placeholder | Value |
 |---|---|
@@ -198,8 +235,12 @@ in §"File templates". Variables:
 | `{{date}}` | today ISO |
 | `{{first_session_slug}}` | first session slug |
 | `{{existing_body}}` | exploration findings, or fill-me stub |
+| `{{model_line}}` | session-1 tier block, rendered per §Model tiers |
+| `{{model_tier_cell}}` | STATUS Model cell, e.g. `B (opus-5)` |
+| `{{tier_legend}}` | legend lines for the tiers used, per §Model tiers |
+| `{{subagents_block}}` | shared sub-agents block, per §Model tiers |
 
-Write order:
+Write order :
 
 1. `$ROOT/ROLLOUT.md`
 2. `$ROOT/STATUS.md`
@@ -217,18 +258,14 @@ if grep -RE '<feature[_-]name>|<feature[_-]title>|<first[_-]session[_-]slug>|\{\
 fi
 ```
 
-If grep finds anything, wipe `$ROOT` and stop. Empty result beats broken plan.
+Empty result beats broken plan. If any placeholder remains, wipe `$ROOT`
+and stop.
 
-### 6. Print the next-steps block
+### 6. Print the next-steps block (multi-session mode)
 
-**Render as raw markdown — NOT inside a code fence.** The VS Code extension
-renders `[name](path)` as clickable links only when they're not inside a code
-block. Paths are **relative to the workspace root** (`plans/<name>/...`),
-never absolute (`/workspace/plans/...`), per the project's link convention.
-
-Output exactly this template, substituting `{{feature_name}}` and
-`{{first_session_slug}}` — and emit it as plain markdown in the chat, not
-wrapped in any fence:
+Raw markdown, NOT inside a code fence (markdown links only click through
+when outside fences). Paths workspace-relative (`plans/<name>/...`),
+never absolute (`/workspace/plans/...`).
 
 > ✅ Plan scaffolded at [plans/{{feature_name}}/](plans/{{feature_name}}/)
 >
@@ -239,46 +276,202 @@ wrapped in any fence:
 > - [EXISTING.md](plans/{{feature_name}}/EXISTING.md) — code inventory
 > - [sessions/session-1-{{first_session_slug}}.md](plans/{{feature_name}}/sessions/session-1-{{first_session_slug}}.md) — **first session prompt** ← open this and paste its content into a fresh Claude Code chat
 >
-> To add a session-2 later : edit [STATUS.md](plans/{{feature_name}}/STATUS.md) (new row) and create `sessions/session-2-<slug>.md` following the same shape as session 1.
-
-Critical : the line linking to `session-1` is the only immediate action — keep
-it bold + `←` marker so the eye lands on it first. Never print file paths
-between single backticks or inside a 4-backtick fence in this block ; both
-break click-through.
+> To add a session-2 later : edit [STATUS.md](plans/{{feature_name}}/STATUS.md) (new row) and create `sessions/session-2-<slug>.md` following session 1's shape.
 
 ## Plan mode integration
 
-When the skill is invoked **during Plan mode** (Claude knows via the system
-reminder that plan mode is active), it MUST NOT mutate disk. The skill
-produces a *spec* that Claude embeds into the current plan file
-(`/home/node/.claude/plans/<plan-name>.md`). Actual writes happen *after*
-the user approves via `ExitPlanMode`, as part of post-plan execution.
-
-**Per-mode behavior in Plan mode :**
+When invoked during Plan mode (system reminder says "Plan mode is
+active"), the skill MUST NOT mutate disk — only `Read`,
+`AskUserQuestion`, and text output are allowed. All writes are deferred
+to post-`ExitPlanMode` execution ; the spec is embedded into the current
+plan file (`/home/node/.claude/plans/<plan-name>.md`) via Claude editing
+that file.
 
 | Mode | What goes into the plan file | Post-`ExitPlanMode` action |
 |---|---|---|
-| `This session` | Nothing (just the approved plan body). Print the one-line skip message. | Claude implements directly in the current chat. |
-| `Fresh chat, prompt only` | Nothing — the rendered prompt is printed directly in chat wrapped in a 5-backtick fence (see §0.5 step 3). The plan file is NOT touched ; the user copies straight from the chat code block. | Nothing automatic — user pastes the prompt elsewhere. |
-| `Multi-session scaffold` | Append a `## Scaffold spec` section listing **each of the 5 files with its target path and full rendered content** (e.g. `### plans/<name>/ROLLOUT.md` then the body). | Claude executes the scaffold : `mkdir -p` + 5 `Write` calls + sanity grep + the step 6 next-steps block with clickable links. |
+| This session | Nothing beyond the approved plan body. | Claude implements directly. |
+| Fresh chat, prompt only | Nothing — rendered prompt goes to chat wrapped in 5-backtick fence. | User copies from chat, pastes into fresh session. |
+| Prompt written to .md (with status) | Append `## Prompt-with-status spec` section with `### plans/<name>/prompt.md` + body, then `### plans/<name>/STATUS.md` + body. | Claude runs `mkdir -p` + 2 `Write` calls + §0.6 step 7 next-steps block. |
+| Multi-session scaffold | Append `## Scaffold spec` section with `### plans/<name>/<FILE>` header + body for each of the 5 files. | Claude runs `mkdir -p` + 5 `Write` calls + §5 sanity grep + §6 next-steps block. |
 
-**Hard constraint** : during Plan mode, the skill calls only `Read`,
-`AskUserQuestion`, and text output. No `Write`, no `Edit`, no
-`Bash mkdir`, no disk mutation of any kind. The Plan mode runtime allows
-only the plan file as a write target, and that write is mediated by Claude
-embedding the spec into it.
+## Model tiers
 
-**Detection cue** : if you see "Plan mode is active" in a system reminder,
-or you've been auto-invoked at Phase 4 of the Plan mode workflow, you are
-in Plan mode. Default to deferred behavior whenever in doubt.
+Per-session model recommendation. Full catalog + rules (session-type
+table, classifier gate signal words) : [MODELS.md](MODELS.md) — same
+directory, travels with the skill.
+
+### Ladders
+
+| Tier | Role | Ladder (normal) | Ladder (`*`, classifier gate) |
+|---|---|---|---|
+| **A** | Max reasoning | `fable` → `opus-5` → `opus-4.8` → `opus-4.7` | `opus-4.8` → `opus-4.7` → `sonnet-5` |
+| **B** | Default | `opus-5` → `opus-4.8` → `opus-4.7` → `sonnet-5` | `opus-4.8` → `opus-4.7` → `sonnet-5` |
+| **C** | Specified execution | `sonnet-5` → `opus-4.7` | (same) |
+| **D** | Mechanical / sub-agents | `haiku-4.5` → `sonnet-5` | (same) |
+
+Ranking (for gates) :
+`fable > opus-5 ≈ opus-4.8 > opus-4.7 > sonnet-5 > haiku-4.5`.
+
+Opus 5 and 4.8 tie at rank 4 (same price / context / class), so they
+sit adjacent in A and B : **running on either is a match for the
+tier**, and neither triggers degraded mode — that starts at 4.7. Opus 5
+leads because it is newer ; 4.8 takes the primary slot back under `*`
+because 5 empirically refuses more on offensive-framed prompts.
+
+### Base tier by session type (compact — exhaustive table in MODELS.md)
+
+- **A** : architecture / approach decision · ambiguous exploration
+  (unreproduced bug, unknown area, RE analytical investigation).
+- **B** : specified feature · risky migration · doc prose · ops/deploy ·
+  review · hotfix · perf · refactor · exploit dev / bypass (with `*`).
+- **C** : tests-only · mechanical migration · reference doc · bulk
+  (renames, codemod) · spike · deps upgrade · config · CRUD on
+  established patterns.
+- **D** : sub-agent grep/inventory fan-out (never a main session).
+
+Unlisted → nearest case + modifiers ; nothing fits → B.
+
+### Classifier gate (adds `*` to tier)
+
+The gate fires on **offensive framing** in the session description, not
+on the topic. Full signal-word list :
+[MODELS.md § *Classifier-sensitive gate*](MODELS.md#classifier-sensitive-gate--by-framing-not-by-topic).
+Quick check — the gate fires if the description reads as :
+
+- Writing an exploit / shellcode / ROP chain / CVE PoC.
+- Bypassing anti-cheat / DRM / EDR / auth check.
+- Cracking passwords / hashes.
+- Adversarial payload (ML jailbreak, prompt injection research).
+- Stealth / evasion utility (anti-fingerprint, botting, anti-detection).
+
+Analytical RE (reverse to understand, port asm, extract state machine,
+document format) does NOT fire — Fable stays viable.
+
+When it fires : tier suffix → `A*` / `B*` / etc. ; tier **A and B**
+ladders swap to the classifier-free variant (Fable and Opus 5 dropped,
+`opus-4.8` primary in both) ; announce "classifier-sensitive framing
+detected — classifier-free ladder locked" in the pre-question context.
+
+### Modifiers (±1, clamped A..D)
+
+- **+1** if any : ambiguity · hard to reverse (prod data, deploy,
+  public schema/API) · prior failure at the current tier · pivot
+  session · no test harness.
+- **−1** if all : mechanically verifiable DoD · bounded diff, trivial
+  rollback · repeats an established pattern.
+
+### Decision procedure (per session)
+
+```
+1. Session type              → base tier
+2. Modifiers ±1              → final tier (clamped A..D)
+3. Classifier framing gate   → `*` suffix + adjust tier-A ladder
+4. Planning session ?        → Fable criteria (skip if gate fired)
+5. Render : tier[*] + ladder (+ degraded directives if fallback likely)
+```
+
+### Rendering `{{model_line}}`
+
+Always tier + full fallback ladder — never a bare model ID. Three parts,
+in order :
+
+1. The Model line (tier gets `*` if classifier gate fired) :
+
+   ```
+   > **Model : Tier B — opus-5** (fallback : opus-4.8 → opus-4.7 → sonnet-5). Run /model before pasting this prompt.
+   ```
+
+   or, gate fired :
+
+   ```
+   > **Model : Tier B* — opus-4.8** (fallback : opus-4.7 → sonnet-5, classifier-free set locked). Run /model before pasting this prompt.
+   ```
+
+2. For tiers **A/B only**, the degraded-mode sentence :
+
+   ```
+   > If running on a fallback model : keep the spec literal and explicit, and add an independent Sonnet sub-agent verification pass before the DoD.
+   ```
+
+3. For ALL tiers, the self-check gate block :
+
+   ```
+   **Model self-check (first action, before any work)** : check the model
+   you are running on (named in your system prompt) against this
+   session's tier.
+   - Primary, rank-tied with it, or above : proceed silently.
+     `opus-5` and `opus-4.8` are rank-tied — either satisfies a tier
+     A/B primary, whichever of the two the Model line names.
+     **Exception — a tier marked `*`** : the rank tie is void there.
+     `fable` and `opus-5` are excluded by the classifier gate, not by
+     rank ; on either of them, treat yourself as below the ladder.
+   - In the fallback ladder, below the primary's rank : proceed,
+     applying the degraded-mode directives.
+   - Below the ladder : do NO work yet — ask via AskUserQuestion :
+     (1) "I'll switch — /model <primary> now, then I reply 'go'"
+         (Recommended) ;
+     (2) "Continue anyway on <current model>" (degraded-mode directives
+         apply).
+     If (1) : end your turn telling the user to run /model <primary> and
+     reply "go". On their next message, RE-RUN this self-check — /model
+     applies to the next turns of the same session. Still below the
+     ladder → ask again (the switch didn't happen). Never start work on
+     the user's word alone ; the re-check is the proof.
+     If work was already started below the ladder (missed gate), do NOT
+     switch in place — fresh chat + /model + re-paste this prompt (it is
+     self-contained).
+   ```
+
+### `{{model_line_short}}` and `{{tier_legend}}`
+
+- `{{model_line_short}}` — one line, no /model sentence, no gate (for
+  STATUS files) : `Tier B — opus-5 (fallback : opus-4.8 → opus-4.7 → sonnet-5)`.
+  Add `*` after the tier letter if the classifier gate fired.
+- `{{tier_legend}}` — one line per **distinct tier used** in the file
+  (never all four unconditionally). If any listed tier carries `*`, add
+  a final line explaining the marker :
+
+  ```
+  Model tiers used here :
+  - **A*** = opus-4.8 (fallback : opus-4.7 → sonnet-5)
+  - **B** = opus-5 (fallback : opus-4.8 → opus-4.7 → sonnet-5)
+  - **C** = sonnet-5 (fallback : opus-4.7)
+  - `*` suffix = classifier-sensitive session ; classifier-free set locked (Fable and Opus 5 dropped, opus-4.8 primary).
+  ```
+
+  The `*` explainer line appears **only if** at least one tier in the
+  file uses it.
+
+### `{{subagents_block}}` (shared by prompt-body and session templates)
+
+```
+Sub-agents :
+- Exploration / localisation / inventory → fan-out of **Haiku** agents
+  (never the main tier for grep work).
+- Independent end-of-session verification → one **Sonnet** agent.
+- Next-session prompt scaffolding → one **Opus** agent, regardless of
+  this session's tier — a session prompt is a planning artifact. The
+  main session reviews the draft against the filesystem, then links it.
+- Synthesis and decisions stay in the main session — never delegated.
+- Note : Bash permissions do not propagate to sub-agents — pre-grant in
+  `settings.local.json` if the fan-out needs Bash.
+```
 
 ## File templates
 
-The five templates below are the source of truth for the generated files.
-**Substitute every `{{placeholder}}` before writing — the sanity-check at
-step 5 enforces zero leftovers.**
+Templates below are the source of truth. Substitute every `{{placeholder}}`
+before writing ; §5 sanity check enforces zero leftovers.
 
-### Template — `ROLLOUT.md`
+**Templates by mode** :
+- Multi-session scaffold (§1-6) : `ROLLOUT.md`, `STATUS.md`, `LOG.md`,
+  `EXISTING.md`, `sessions/session-1-*.md`. Optional per-session
+  `TEST-PLAN-<id>.md` for platform-visible smoke tests.
+- Modes §0.5 and §0.6 : share `prompt-body` ; if verification is
+  deferred to the host, both also write `TEST-PLAN.md` (no
+  session-id — single prompt, single session).
+- Mode §0.6 only : `STATUS-lite`.
+
+### Template — `ROLLOUT.md` (multi-session)
 
 ````markdown
 # Rollout — {{feature_title}}
@@ -304,9 +497,34 @@ step 5 enforces zero leftovers.**
 ## How to use
 
 1. **To resume work** : open [STATUS.md](STATUS.md), find the next 📋
-   session, click `→ prompt` and paste into a fresh Claude Code session.
+   session, check its **Model** column and run `/model` accordingly,
+   then click `→ prompt` and paste into a fresh Claude Code session.
 2. **To check what was done before** : read [LOG.md](LOG.md).
 3. **To understand current code state** : read [EXISTING.md](EXISTING.md).
+
+## Model tiers
+
+Each session's Model column in [STATUS.md](STATUS.md) uses these tiers.
+When adding a session-N row by hand, derive its tier here :
+
+| Tier | Role | Fallback ladder (left = primary) |
+|---|---|---|
+| **A** | Max reasoning | fable → opus-5 → opus-4.8 → opus-4.7 |
+| **B** | Default | opus-5 → opus-4.8 → opus-4.7 → sonnet-5 |
+| **C** | Specified execution | sonnet-5 → opus-4.7 |
+| **D** | Mechanical / sub-agents | haiku-4.5 → sonnet-5 |
+
+- `opus-5` and `opus-4.8` tie in rank — either one is a match for tier
+  A/B, degraded mode starts at `opus-4.7`. A classifier-sensitive
+  session is written `A*` / `B*` and drops both fable and opus-5,
+  leaving `opus-4.8 → opus-4.7 → sonnet-5`.
+- **Base** : architecture/ambiguous → A · specified code, doc prose,
+  ops, review, hotfix → B · tests-only, mechanical migration, bulk,
+  spike, deps → C · sub-agent grep fan-out → D.
+- **+1 tier** if : ambiguous · hard to reverse · prior failure at tier ·
+  pivot session · no test harness. **−1** if : mechanical DoD + bounded
+  diff + established pattern.
+- Full rationale : `.devcontainer/skills/prepare-plan/MODELS.md`.
 
 ## Update convention (end of every delivered session)
 
@@ -319,9 +537,6 @@ Every session prompt prescribes these three updates in its DoD :
    Commit (~50–150 lines).
 3. **EXISTING.md** : update if new files / structures were created.
 
-No companion skill, no automated hook — the session itself does the work
-because its prompt explicitly says so.
-
 ## Decisions (immutable unless user explicitly amends)
 
 _(Add decisions here as they are made. Each decision should explain the
@@ -331,7 +546,7 @@ settled questions.)_
 - _(none yet — first session may seed this list)_
 ````
 
-### Template — `STATUS.md`
+### Template — `STATUS.md` (multi-session)
 
 ````markdown
 # Status — Actionable sessions
@@ -341,13 +556,15 @@ settled questions.)_
 > For the detailed history (reasons, files touched, gotchas), see
 > [LOG.md](LOG.md). For current code state, see [EXISTING.md](EXISTING.md).
 
-| Session | Brief | Status | Prompt |
-|---|---|---|---|
-| 1 | {{first_session_slug}} — first concrete step | 📋 | [→ prompt](sessions/session-1-{{first_session_slug}}.md) |
+| Session | Brief | Model | Status | Prompt |
+|---|---|---|---|---|
+| 1 | {{first_session_slug}} — first concrete step | {{model_tier_cell}} | 📋 | [→ prompt](sessions/session-1-{{first_session_slug}}.md) |
 
 ## Legend
 
 ✅ delivered · 🚧 in progress · 📋 planned · ⚠️ blocked · ❌ cancelled
+
+{{tier_legend}}
 
 ## Progress
 
@@ -355,7 +572,7 @@ settled questions.)_
 - **Next focus** : session 1 ({{first_session_slug}})
 ````
 
-### Template — `LOG.md`
+### Template — `LOG.md` (multi-session)
 
 ````markdown
 # Log — {{feature_title}}
@@ -402,7 +619,7 @@ settled questions.)_
 _(no sessions delivered yet — first append will be after session 1)_
 ````
 
-### Template — `EXISTING.md`
+### Template — `EXISTING.md` (multi-session)
 
 ````markdown
 # Existing — technical inventory
@@ -430,10 +647,12 @@ sub-agents to map :
 - Known gaps / pain points the rollout will address
 ```
 
-When exploration ran, `{{existing_body}}` is the aggregated findings
-formatted as sections.
+When exploration ran, `{{existing_body}}` is the aggregated findings.
 
-### Template — `sessions/session-1-{{first_session_slug}}.md`
+### Template — `sessions/session-1-{{first_session_slug}}.md` (multi-session)
+
+The session file IS the prompt — no wrapper, no fence. The user copies
+its full content into a fresh chat.
 
 ````markdown
 # Session 1 — {{first_session_slug}}
@@ -446,12 +665,19 @@ Read also :
 - `LOG.md` (what's been done so far — empty on session 1)
 - `EXISTING.md` (current code inventory)
 
+{{model_line}}
+
 Goal : {{description}}
 
 First session focus : {{first_session_slug}}. Concretely — propose the
 shape, validate with me, then implement the first concrete step. Keep
 scope tight ; if you discover follow-up work, add a session-2 row to
-STATUS.md instead of folding it in.
+STATUS.md instead of folding it in. If we exceed ~15 exchanges on the
+same unresolved problem : stop, write the current state (hypotheses
+tested, dead ends, next lead) to LOG.md or a notes file, and propose
+splitting into a fresh session.
+
+{{subagents_block}}
 
 DoD at the end of this session :
 1. STATUS.md : flip session 1 row 📋 → ✅, prompt link → —, bump
@@ -462,29 +688,29 @@ DoD at the end of this session :
    with files touched + What / Why / Decisions / Gotchas / Tests /
    Commit.
 3. EXISTING.md : update if new files / structures were created.
-4. Propose a commit (do NOT commit without explicit user confirmation).
+4. If a next session is planned : scaffold `sessions/session-2-<slug>.md`
+   and link it from its STATUS row. Per the sub-agents rule above, the
+   draft is written by an **Opus** agent whatever this session's tier —
+   review it against the filesystem before linking, since a scaffolded
+   prompt's claims read as authoritative to the session that runs it.
+5. If any part of this session's verification is deferred to the host
+   (smoke test, visual check, platform behavior) : write
+   `TEST-PLAN-<session-id>.md` NOW, while the context is live — its
+   last section is the resume prompt for the verification session.
+   Deferring the write defeats its purpose.
+6. Propose a commit (do NOT commit without explicit user confirmation).
 ````
 
-> The session file IS the prompt — no wrapper, no fence. The user copies the
-> file's full content into a fresh chat. Effort estimates, prerequisites, and
-> per-session metadata belong in STATUS.md (extra columns if needed), not here.
+### Template — `TEST-PLAN-<session-id>.md` (optional per session)
 
-### Template — `TEST-PLAN-<session-id>.md` (optional, scaffolded per session)
+Scaffold only for sessions that ship **user-visible or platform-specific
+behavior that the container can't validate** (macOS UN center, Windows
+toast, Linux D-Bus, browser UI, host-installed CLI, etc.). Pure
+container-testable code (refactors, backend logic, unit-testable
+modules) doesn't need one.
 
-**When to use** — sessions that ship **user-visible or
-platform-specific behavior that the container can't validate** (macOS
-UN center, Windows toast, Linux D-Bus, browser UI, CLI installed on
-the host, etc.). Sessions that ship pure container-testable code
-(refactors, backend logic, unit-testable modules) don't need one.
-
-**Where** — `plans/<feature>/TEST-PLAN-<session-id>.md` alongside
-`sessions/session-<id>-<slug>.md`. Session ID matches the LOG entry
-(`7b`, `3.5`, etc.).
-
-**Scaffolding trigger** — proposed at session-end alongside the LOG
-back-fill, when the session shipped platform-visible behavior. The
-same convention lets the LOG entry's `**Smoke results**` reference the
-plan file by name.
+Path : `plans/<feature>/TEST-PLAN-<session-id>.md`. Session ID matches
+the LOG entry (`7b`, `3.5`, etc.).
 
 ````markdown
 # Test Plan — session <session-id> end-to-end smoke
@@ -492,11 +718,11 @@ plan file by name.
 > **Scope** : validate what session <session-id> shipped —
 > <one-line summary>.
 >
-> **Durée estimée totale** : ~<n> min (dont ~<n> min de bootstrap +
-> <specific-waits, e.g. "35s pour § X idle-timeout">).
+> **Total estimated duration** : ~<n> min (of which ~<n> min bootstrap +
+> <specific-waits, e.g. "35s for § X idle-timeout">).
 >
-> **Scenarios indépendants** — tu peux stopper après le § <n> et
-> reprendre plus tard sans perte de contexte.
+> **Independent scenarios** — you can stop after § <n> and resume later
+> without losing context.
 >
 > **Shipped commits** on `main` :
 >
@@ -543,98 +769,133 @@ which scenario found it.
 
 ---
 
-## Reprise dans un fresh chat
+## Resume in a fresh chat
 
-Quand tu smoke-testes plus tard, colle ceci dans une nouvelle
-conversation. Le `@` déclenche l'inclusion du fichier (feature VS Code
-extension) :
+When you smoke-test later, paste this into a new conversation. The `@`
+triggers file inclusion (VS Code extension feature):
 
 ​```
-Reprise du rollout <feature-name> après smoke test <session-id>.
+Resuming rollout <feature-name> after smoke test <session-id>.
 
-Contexte :
-- @plans/<feature-name>/LOG.md § <session-id> — décisions + gotchas
-- @plans/<feature-name>/TEST-PLAN-<session-id>.md — le plan que je viens de suivre
+Context:
+- @plans/<feature-name>/LOG.md § <session-id> — decisions + gotchas
+- @plans/<feature-name>/TEST-PLAN-<session-id>.md — the plan I just followed
 
-Résultats de mes tests (à compléter) :
-- [ ] 1 <scenario> : 
-- [ ] 2 <scenario> : 
+My test results (to fill in):
+- [ ] 1 <scenario>:
+- [ ] 2 <scenario>:
 - [ ] <...>
 
-Bugs observés :
-- <colle ici, ou "aucun" si tout passe>
+Bugs observed:
+- <paste here, or "none" if all passed>
 
-Environnement : macOS <version>, <binary-name> <version>
+Environment: macOS <version>, <binary-name> <version>
 ​```
 ````
 
-Substitute `<placeholder>` with the actual session-specific values
-before writing the file. The fresh-chat prompt inline stays in
-French per the user's `feedback-fresh-chat-prompt-inline.md` memory
-even when the surrounding TEST-PLAN sections are in English — the
-prompt IS the user-facing artifact, the rest is documentation.
+### Template — `prompt-body` (shared by §0.5 chat display and §0.6 file write)
 
-### Template — `prompt-only` mode (no file, displayed in chat or embedded in plan)
+Same body used in both modes ; only delivery differs (chat 5-backtick
+fence in §0.5, `prompt.md` file in §0.6). In §0.5, omit the blockquote
+header ; in §0.6, keep it.
 
 ````markdown
 # {{feature_title}}
 
-Goal : {{description}}
+> **How to use this file**: open it, copy its full content, paste into
+> a fresh Claude Code session. This prompt is self-contained — the fresh
+> session needs no prior context. (Include this blockquote ONLY in §0.6
+> file-write mode; omit it in §0.5 chat display.)
 
-Approach :
+{{model_line}}
+
+## Goal
+
+{{description}}
+
+## Approach
+
 {{plan_approach}}
 
-DoD :
+{{subagents_block}}
+
+## DoD
+
 1. Implement the change described above.
 2. Verify : {{tests}}
-3. Propose a commit (do NOT commit without explicit user confirmation).
+3. If any part of this session's verification is deferred to the host
+   (smoke test, visual check, platform behavior) : write
+   `plans/{{feature_name}}/TEST-PLAN.md` NOW, while the context is
+   live — its last section is the resume prompt for the verification
+   session. Deferring the write defeats its purpose.
+4. Propose a commit (do NOT commit without explicit user confirmation).
+5. **§0.6 only** — update `plans/{{feature_name}}/STATUS.md` : flip the
+   `implementation` row 📋 → ✅, then after commit flip `commit` row
+   📋 → ✅.
 ````
 
-Fallback when `{{plan_approach}}` is unavailable (skill invoked outside Plan
-mode, no upstream design captured) : replace the *Approach* block with the
-single line `_(no approach captured — first session will design it)_`.
+### Template — `STATUS-lite` (§0.6 only, `plans/<feature_name>/STATUS.md`)
 
-Fallback when `{{tests}}` is unavailable : replace with the generic line
-`existing tests pass; new behavior verified end-to-end`.
+Distinct from the multi-session `STATUS.md` (session table with prompt
+links). This 3-row version tracks a single-PR-worth of deferred work.
 
-The user copies this prompt verbatim into a fresh Claude Code chat — no
-ROLLOUT/STATUS/LOG references, no scoreboard to maintain. Pure one-shot
-context.
+````markdown
+# Status — {{feature_title}}
+
+> **Scope** : {{description}}
+>
+> **Scaffolded on** : {{date}}
+>
+> **Prompt** : [prompt.md](prompt.md) — paste into a fresh Claude Code
+> session to implement.
+>
+> **Model** : {{model_line_short}}
+
+| Step | Status |
+|---|---|
+| `prompt.md` written | ✅ |
+| implementation | 📋 |
+| commit | 📋 |
+
+## Legend
+
+✅ done · 📋 pending · ⚠️ blocked · ❌ cancelled
+
+{{tier_legend}}
+
+## Notes
+
+_(Add follow-ups, gotchas, or deferred concerns here as you go.)_
+````
 
 ## Constraints
 
-- Output path for scaffolded plans is always `/workspace/plans/<feature_name>/`.
-  Never elsewhere.
+Only invariants that don't already appear inline in §0-§6 :
+
+- Output path is always `/workspace/plans/<feature_name>/`. Never elsewhere.
 - Never overwrite an existing plan directory — propose `-v2`, `-v3`, …
-- `feature_name` must match `[a-z][a-z0-9-]*`. Reject `/`, `..`, uppercase,
-  spaces.
-- Every generated file has resolved placeholders. Step 5 enforces this.
-- Generated files are in **English** per the project's CLAUDE.md rule, even
-  when the conversation is in French.
-- Multi-session scaffold writes **exactly 5 files** (4 top-level + 1 session-1).
-  No `docs/`, no extra sessions — added on demand by later sessions.
-- `AskUserQuestion` is called ONCE at step 0. Never a second time.
-- Mode **"This session"** writes zero files and prints one line.
-- Mode **"Fresh chat, prompt only"** writes zero files in all cases. The
-  rendered prompt is ALWAYS printed in chat wrapped in a 5-backtick fence —
-  identical behavior in or out of Plan mode. Never embed into the plan file.
-- **Inside Plan mode**, the skill writes ONLY through Claude into the plan
-  file. No direct disk mutation (no `Write`, no `Edit`, no `Bash mkdir`).
-  Disk writes are deferred to post-`ExitPlanMode` execution.
-- The final message after a Multi-session scaffold uses **clickable markdown
-  links with workspace-relative paths** (`plans/<name>/...`), never inside a
-  code fence — see step 6.
+- `feature_name` matches `[a-z][a-z0-9-]*`. Reject `/`, `..`, uppercase, spaces.
+- Every generated file has resolved placeholders (§5 enforces).
+- Generated files are in **English** per project CLAUDE.md rule, even when
+  the conversation is in French.
+- Inside Plan mode : NO direct disk mutation (no `Write`, no `Edit`, no
+  `Bash mkdir`). Only `Read`, `AskUserQuestion`, text output, and plan-file
+  edits by Claude. All writes deferred to post-`ExitPlanMode`.
+- Every generated prompt (modes 2/3/4) carries a Model line : tier + full
+  fallback ladder, never a bare model ID. Tiers derived per §Model tiers.
+  Both STATUS variants name the model (column / dedicated line) and list
+  the used tiers in their legend.
 
 ## Failure modes
 
 | Symptom | Cause | Mitigation |
 |---|---|---|
-| `feature_name` directory already exists | Repeat invocation or pre-existing plan | Refuse, propose `-v2`, wait for user confirmation. Never overwrite. |
-| Derived `feature_name` too generic (≤ 3 chars, common verb) | Description was too vague | Ask the user for an explicit name before continuing. |
-| Exploration agent times out or returns nothing | Scope mis-bounded for Explore | Fall back to the stub EXISTING.md. The first session can fill it. |
-| Sanity-check at step 5 finds a `{{placeholder}}` | Substitution missed a token in the templates | Wipe the output directory and abort. Better empty than broken. |
-| User picks "This session" at step 0 | Scope small enough that scaffolding is overhead | Print "Plan scaffold skipped — implementing in current session." and stop. No files. Return control so Claude implements now. |
-| User picks "Fresh chat, prompt only" but no plan approach was captured | Skill invoked outside Plan mode, no upstream design | Use the fallback `Approach` line in the template, warn the user the prompt is thin. |
-| Skill invoked during Plan mode | Plan mode active, disk writes forbidden | Produce the spec into the plan file (see §"Plan mode integration"); defer the actual scaffold to post-`ExitPlanMode` execution. Never call `Write` / `Edit` / `Bash mkdir` during Plan mode. |
-| User wants to extend an existing plan instead of starting `-v2` | This skill does NOT support append mode | Tell the user to edit `STATUS.md` / `LOG.md` / `sessions/` by hand. |
-| Recommendation feels wrong to the user | Scope judgment was off | The user simply picks a different option in the AskUserQuestion. The recommendation is non-binding. |
+| `feature_name` directory exists | Repeat or pre-existing plan | Propose `-v2`, wait for confirmation. Never overwrite. |
+| `feature_name` too generic (≤ 3 chars, or verb `fix` / `add` / `do`) | Vague description | Ask user for explicit name. |
+| Explore agent times out / returns nothing | Scope mis-bounded | Fallback to `EXISTING.md` stub. Session 1 fills it. |
+| Sanity check finds `{{placeholder}}` | Substitution miss | Wipe output, abort. Empty beats broken. |
+| No plan approach captured (skill outside Plan mode) | Upstream design not passed | Use fallback line, warn user prompt is thin. |
+| User wants to extend existing plan | No append mode | Tell user to edit `STATUS.md` / `LOG.md` / `sessions/` by hand. |
+| Recommendation feels wrong | Judgment off | Non-binding — user picks another option. |
+| Recommended model unavailable | Availability varies | The fallback ladder is already printed in the prompt. For tier A/B on a fallback model, the degraded-mode sentence applies (tighter spec + Sonnet verification sub-agent). |
+| Session pasted on a below-ladder model | User skipped /model | The prompt's self-check gate fires : blocking AskUserQuestion before any work, re-checked on the next turn after /model. |

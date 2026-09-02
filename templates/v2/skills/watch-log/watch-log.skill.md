@@ -101,7 +101,13 @@ token economy.
    #!/usr/bin/env bash
    set -e
    trap 'echo "__END__"' EXIT
-   # <body — the actual commands>
+
+   # HOST-side script: /workspace/... does NOT exist on the host. Derive the
+   # project root from $0 (script lives at <PROJECT_ROOT>/.devcontainer/pending/).
+   HERE="$(cd "$(dirname "$0")" && pwd)"
+   PROJECT_ROOT="$(cd "$HERE/../.." && pwd)"
+
+   # <body — use "$PROJECT_ROOT/..." for any workspace file, NEVER "/workspace/...">
    ```
    `chmod +x` it.
 3. Display the launch to the user as FOUR required pieces, in this order :
@@ -208,10 +214,22 @@ intermediate events.
   in the same message (source files, addons, configs, …).
 - Path is fixed : `/workspace/.devcontainer/pending/` only. Bind-mounted so
   the user can inspect the script from the host before running it.
+- **NEVER hardcode `/workspace/...` inside the script body.** The script
+  *body* runs on the HOST, where `/workspace/` does not exist — this
+  path is a container-only view of the bind-mount. Derive workspace
+  paths from `$0` instead : the `HERE` / `PROJECT_ROOT` template in step 2
+  above computes the host-side project root correctly. Wrong :
+  `mkdir -p /workspace/foo/bar` → `mkdir: /workspace: Read-only file system`
+  on the user's Mac. Right : `mkdir -p "$PROJECT_ROOT/foo/bar"`. This
+  applies to every `mkdir` / redirect / output path in the script.
+  (Exception : the Monitor `tail -F` command in step 4 runs in the
+  container, so `/workspace/.devcontainer/pending/<task-id>.log` is
+  correct there.)
 - Always inject `trap 'echo "__END__"' EXIT` — never assume the user will add
   the marker themselves.
 - Keep the script self-contained (no `cd` to an unknown dir, no implicit
-  assumptions on the caller env). Use absolute paths when relevant.
+  assumptions on the caller env). Prefer `"$PROJECT_ROOT/..."` derived
+  paths over hardcoded absolutes.
 - `tail -50` cap only applies to the Pattern A *fallback* (background
   Bash). With the preferred Monitor path you `Read` the log yourself
   and pick the slice — no built-in truncation. If you must use the
