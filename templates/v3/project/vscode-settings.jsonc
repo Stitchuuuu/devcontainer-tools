@@ -87,5 +87,12 @@
 	//
 	// ─────────────────────────────────────────────────────────────
 
-	"claudeCode.preferredLocation": "primary"
+	"claudeCode.preferredLocation": "primary",
+	// Squares off the model + Remote Control pills (5px radius, 2px 8px
+	// padding, .85em) so they match the footer buttons beside them.
+	// Needs Reload Window.
+	"claudeCode.fixStylePills": true,
+	// Our own model badge in the footer. Redundant from 2.1.258, where the
+	// pill above is restyled rather than hidden — flip to true to bring it back.
+	"claudeCode.modelBadgeFooter": false
 }
