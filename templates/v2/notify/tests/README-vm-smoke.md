@@ -344,6 +344,7 @@ node .devcontainer/notify/tests/notify-app-focus.test.js
 node .devcontainer/notify/tests/notify-app-actions.test.js
 node .devcontainer/notify/tests/notify-app-click.test.js
 node .devcontainer/notify/tests/get-notif-path.test.js
+node .devcontainer/notify/tests/watcher-perm-dedup.test.js
 ```
 
 Each script exits 0 on success and throws with non-zero on failure. These

@@ -201,4 +201,19 @@ function unmapped({ sid, eventType }) {
 	appendAction({ action: 'unmapped', sid, eventType })
 }
 
-module.exports = { init, armed, replaced, cancelled, fired, unmapped }
+/**
+ * Record an event dropped as a duplicate of the timer already pending for
+ * this sid. pendingMap is left untouched — the pending timer keeps running
+ * with its original fire_at.
+ *
+ * @param {object} evt
+ * @param {string} evt.sid                session ID
+ * @param {string} evt.eventType          event class that was dropped
+ * @param {string} evt.pendingEventType   event class holding the pending timer
+ * @returns {void}                        appends one 'suppressed' line to actions.jsonl
+ */
+function suppressed({ sid, eventType, pendingEventType }) {
+	appendAction({ action: 'suppressed', sid, eventType, pendingEventType })
+}
+
+module.exports = { init, armed, replaced, cancelled, fired, unmapped, suppressed }

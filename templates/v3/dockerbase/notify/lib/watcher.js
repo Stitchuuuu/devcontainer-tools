@@ -244,7 +244,7 @@ function readNewLines(file, offsets) {
 }
 
 /**
- * Apply one parsed JSONL event to the timer map. Five decision branches
+ * Apply one parsed JSONL event to the timer map. Six decision branches
  * (each mirrored into state.js for the audit log) :
  *
  *   1. CANCEL — `user_replied` clears any pending timer for this sid.
@@ -255,9 +255,12 @@ function readNewLines(file, offsets) {
  *      doesn't tell us the user is engaging more broadly.
  *   3. UNMAPPED — eventType has no entry in `delays` ; logged + audited,
  *      no timer change.
- *   4. REPLACE — a pending timer for this sid already exists ; clear it
+ *   4. SUPPRESS — `permission_prompt` arriving while a `permission_request`
+ *      is pending for the same sid ; dropped as a duplicate of the same
+ *      dialog (see the branch comment), no timer change.
+ *   5. REPLACE — a pending timer for this sid already exists ; clear it
  *      and arm a fresh one based on the new event ("latest wins").
- *   5. ARM — no previous timer ; setTimeout(delays[type]) and store.
+ *   6. ARM — no previous timer ; setTimeout(delays[type]) and store.
  *
  * The raw parsed `line` is passed as `payload` into `state.armed` and
  * `state.replaced` so pending.json + actions.jsonl expose the full
@@ -358,6 +361,28 @@ function handleLine(line, { timers, bus, delays, state }) {
 		log.info(`[watcher] ${event.padEnd(14)} ${sid8} — unmapped eventType "${eventType}", skipped`)
 		state?.unmapped({ sid, eventType })
 		return
+	}
+
+	// --- SUPPRESS PATH (duplicate permission signal) ---
+	// Claude Code emits TWO events for a single permission dialog : the
+	// `PermissionRequest` hook at T+0 (tool_name + tool_input + tool_use_id)
+	// and a generic `Notification` / permission_prompt ~6 s later, carrying
+	// only "Claude needs your permission to use X". Under "latest wins" the
+	// generic one always displaced the rich one, so the banner that actually
+	// fired lost the smart-text body, lost the Allow button (gated on
+	// tool_use_id in notify-app.js, absent from the Notification payload)
+	// and restarted its delay from T+6.
+	//
+	// permission_prompt stays armable on its own — it's the fallback when
+	// PermissionRequest doesn't fire — it just no longer displaces a richer
+	// permission_request already pending for the same sid.
+	if (eventType === 'permission_prompt') {
+		const pending = timers.get(sid)
+		if (pending && pending.eventType === 'permission_request') {
+			log.info(`[watcher] permission_prompt ${sid8} — SUPPRESSED, richer permission_request already pending`)
+			state?.suppressed({ sid, eventType, pendingEventType: pending.eventType })
+			return
+		}
 	}
 
 	// --- ARM / REPLACE PATH ---
