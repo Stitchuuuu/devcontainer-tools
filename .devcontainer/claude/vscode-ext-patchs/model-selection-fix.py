@@ -96,6 +96,10 @@ running the patch twice and comparing checksums.
 Self-healing v1
 ---------------
 - v1 (2026-08) : initial three fixes.
+- (2026-09) : fix 6 — the upstream footer pill, new in 2.1.258, reads
+  `modelSelection` alone and so renders the literal "Model" for as long as
+  fix 3 legitimately withholds the seed. Display-path fallback to
+  modelSetting, 2.1.258+ only (the pill does not exist before).
 
 Exit codes
 ----------
@@ -467,6 +471,61 @@ F2C258_STRIP = (
 )
 
 
+# --- Fix 6 : the footer pill has a label before the seed runs (2.1.258+) --
+# The composer footer gained an upstream model pill in 2.1.258, and it reads
+# `modelSelection` alone:
+#
+#     $1=$.modelSelection.value, … c=…:t??($1&&i.length>0?yi($1,"Model"):void 0)
+#     …
+#     D(Q$0,{label:c,…})            // button renders `children: $??"Model"`
+#
+# `modelSelection` is undefined until the seed in launchClaude() fires — and
+# fix 3 gates that seed on modelSettingReady while launchClaude() early-returns
+# on a set claudeChannelId, so a cold start that preloads before the settings
+# land never seeds at all. The pill then reads the literal "Model" for the
+# whole life of the tab, even though the pinned frame already carries
+# everything needed: `{value:"default", resolvedModel:"claude-opus-5[1m]"}`.
+#
+# Restoring the eager seed would reinstate the race fix 3 exists to close, so
+# the repair belongs on the display path — the same split this file already
+# draws: seeding must not be WRONG, displaying must not be BLANK. Falling back
+# to `modelSetting` is what the popup's own tick does two lines below
+# (`r30(i,$1||$.config.value?.modelSetting)`); the pill just never got it.
+#
+# Rebinding `$1` rather than patching the `c=` cascade makes the whole footer
+# behave exactly as it would have if the seed had run — same z1, same effort
+# capabilities, same picker round-trip — instead of leaving the label agreeing
+# with a selection the rest of the block still reads as empty.
+#
+# Anchored through `if(<entry>?.supportsEffort)`: the effort-level command
+# action opens with a byte-identical binding chain and must NOT be caught here.
+def _f6_sub(m):
+    pool, sess, sel, canon, entry, item = m.groups()
+    return (
+        f'{pool}=JH({sess}.claudeConfig.value),{sel}='
+        + '/*msf-pill*/'
+        + f'({sess}.modelSelection.value??{sess}.config.value?.modelSetting)'
+        + END + ','
+        + f'{canon}={sel}==="default"||!{sel}?"default":{sel},'
+        + f'{entry}={pool}.find(({item})=>{item}.value==={canon});'
+        + f'if({entry}?.supportsEffort)'
+    )
+
+
+F6_PAT = re.compile(
+    r'([\w$]+)=JH\(([\w$]+)\.claudeConfig\.value\),([\w$]+)=\2\.modelSelection\.value,'
+    r'([\w$]+)=\3==="default"\|\|!\3\?"default":\3,'
+    r'([\w$]+)=\1\.find\(\(([\w$]+)\)=>\6\.value===\4\);if\(\5\?\.supportsEffort\)'
+)
+F6_STRIP = (
+    re.compile(
+        r'([\w$]+)=/\*msf-pill\*/\(([\w$]+)\.modelSelection\.value\?\?'
+        r'\2\.config\.value\?\.modelSetting\)/\*msf-end\*/,'
+    ),
+    r'\1=\2.modelSelection.value,',
+)
+
+
 EXT_FIXES = [
     ("modelSettingReady", F1_PAT, _f1_sub, F1_STRIP),
     ("projectSettingsFastPath", F4_PAT, _f4_sub, F4_STRIP),
@@ -485,6 +544,7 @@ WEB_FIXES_258 = [
     ("highlightEffect258", F2B258_PAT, _f2b258_sub, F2B258_STRIP),
     ("checkIcon258", F2C258_PAT, _f2c258_sub, F2C258_STRIP),
     ("settingsPrecedence", F3_PAT, _f3_sub, F3_STRIP),
+    ("footerPillLabel258", F6_PAT, _f6_sub, F6_STRIP),
 ]
 
 
