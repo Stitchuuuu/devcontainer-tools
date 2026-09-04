@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# @patch-category: ux
+# @patch-files: package.json
+# @patch-files: extension.js
+# @patch-files: webview/index.js
+# @patch-sentinel: claude-code-disable-webview-auth-redirect-inject-v2
+# @patch-sentinel: claude-code-disable-webview-auth-redirect-gate-v1
+# @patch-sentinel: claude-code-disable-webview-auth-redirect-isauth-v2
+# @patch-summary: Adds an opt-in setting that stops the chat webview from flipping to the
+#   login screen on an authentication error.
 """
 Adds the `claudeCode.disableWebviewAuthRedirect` setting to the Claude Code
 VS Code extension. When true, the chat webview no longer redirects to the
@@ -74,7 +83,7 @@ Anchors
 
 Markers
 -------
-- `claude-code-disable-webview-auth-redirect-inject-v1` — extension-side
+- `claude-code-disable-webview-auth-redirect-inject-v2` — extension-side
   global injection.
 - `claude-code-disable-webview-auth-redirect-gate-v1` — webview call-site
   gate.
@@ -111,7 +120,17 @@ from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_f
 
 
 SETTING_KEY = "claudeCode.disableWebviewAuthRedirect"
-MARKER_INJECT = "claude-code-disable-webview-auth-redirect-inject-v1"
+# v1 emitted `<helper>("disableWebviewAuthRedirect")===!0` as literal text
+# into the webview <script>. That helper is an extension-host function — the
+# webview's own same-named symbol is unrelated, module-scoped and loaded
+# later — so the bootstrap block died on a ReferenceError, the global was
+# never set, and every gate below it silently fell through to the login
+# redirect. v2 evaluates the getter host-side inside `${…}`.
+MARKER_INJECT = "claude-code-disable-webview-auth-redirect-inject-v2"
+MARKER_INJECT_V1 = "claude-code-disable-webview-auth-redirect-inject-v1"
+V1_INJECT_LINE = re.compile(
+    r'\n[ \t]*/\*' + re.escape(MARKER_INJECT_V1) + r'\*/[^\n]*'
+)
 MARKER_GATE = "claude-code-disable-webview-auth-redirect-gate-v1"
 MARKER_ISAUTH = "claude-code-disable-webview-auth-redirect-isauth-v2"
 MARKER_ISAUTH_V1 = "claude-code-disable-webview-auth-redirect-isauth-v1"
@@ -165,10 +184,13 @@ def patch_extension_bridge(content):
     the webview HTML template literal, right after the existing
     `window.IS_SIDEBAR = ${…}` line inside the `<script nonce>` block.
     """
+    content, n_v1 = V1_INJECT_LINE.subn("", content)
     if MARKER_INJECT in content:
         n = content.count(MARKER_INJECT)
         print(f"{YELLOW}[2/4]{RESET} extension.js bridge — already patched ({n} site(s))")
         return content
+    if n_v1:
+        print(f"{YELLOW}[strip]{RESET} extension.js bridge — reverted {n_v1} v1 injection(s)")
 
     helper_match = re.search(r'([\w$]+)\("disableLoginPrompt"\)', content)
     if not helper_match:
@@ -182,23 +204,30 @@ def patch_extension_bridge(content):
     # Anchors on the raw template-literal source. Both min and pretty share
     # the same template-literal bytes (js-beautify preserves them). The
     # ternary variable (`N`, `i`, ...) floats — captured as `[^}]+`.
-    pat = re.compile(
-        r'(window\.IS_SIDEBAR\s*=\s*\$\{[^}]+\?"true":"false"\})'
-        r'(\s+window\.IS_FULL_EDITOR)'
-    )
-    m = pat.search(content)
-    if not m:
+    #
+    # Deliberately does NOT require IS_FULL_EDITOR to follow: sibling patches
+    # (fix-style-pills, model-badge-footer) inject their own globals right
+    # after this same IS_SIDEBAR line, so the two are no longer adjacent. The
+    # old two-part anchor only kept working because run-all happens to run
+    # this patch first, alphabetically — not something to depend on.
+    pat = re.compile(r'window\.IS_SIDEBAR\s*=\s*\$\{[^}]+\?"true":"false"\}')
+    matches = list(pat.finditer(content))
+    if len(matches) != 1:
         banner("DISABLE-WEBVIEW-AUTH-REDIRECT PATCH FAILED",
-               "extension.js: IS_SIDEBAR anchor in getHtmlForWebview not found",
+               f"extension.js: IS_SIDEBAR anchor in getHtmlForWebview matched "
+               f"{len(matches)} times (expected 1)",
                IMPACT_LINES)
         sys.exit(1)
+    m = matches[0]
 
+    # Evaluated host-side inside `${…}`: the getter does not exist in the
+    # webview, and emitting it bare is what broke v1.
     inject = (
         f'\n          /*{MARKER_INJECT}*/'
         f'window.__CC_disableWebviewAuthRedirect__='
-        f'{helper}("disableWebviewAuthRedirect")===!0;'
+        f'${{{helper}("disableWebviewAuthRedirect")===!0}};'
     )
-    new_content = content[:m.end(1)] + inject + content[m.end(1):]
+    new_content = content[:m.end()] + inject + content[m.end():]
     print(f"{GREEN}[2/4]{RESET} extension.js bridge — injected global (helper={helper})")
     return new_content
 

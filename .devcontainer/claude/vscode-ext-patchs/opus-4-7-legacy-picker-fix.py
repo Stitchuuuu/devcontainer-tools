@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# @patch-category: ux
+# @patch-files: extension.js
+# @patch-files: webview/index.js
+# @patch-sentinel: /*opus-fix-v8*/
+# @patch-summary: Keeps a chosen set of flagship models in the picker after the server
+#   tier filter drops them, and marks the fetch as loading.
 """
 Patches the Claude Code VS Code extension's model picker
 (webview/index.js — component name drifts: dt1 on 2.1.145, UXe on
@@ -97,7 +103,7 @@ Self-healing v1 → v2 → v3 → v4 → v5 → v6 → v7
 
 Prior shapes are stripped (revert to raw prop) before v7 applies.
 
-Idempotency at file level : MARKER = literal string `V7_TAG` (below)
+Idempotency at file level : MARKER = literal string `V8_TAG` (below)
 emitted inline right after `availableModels:`. Guaranteed absent from
 Anthropic's minified webview code and specific to v7's wrapper shape,
 so pre-v7 injections aren't misdetected as already-patched.
@@ -127,6 +133,16 @@ from _common import YELLOW, GREEN, BOLD, RESET, banner, resolve_ext_dir, check_f
 BASELINE_PINS = [
     ('claude-opus-4-7[1m]', 'Opus 4.7'),
 ]
+
+# Which family leads the picker, newest generation first. See
+# apply_display_order().
+FLAGSHIP_ORDER = ('fable', 'opus', 'sonnet')
+
+
+def _family_of(value):
+    m = re.match(r'claude-([a-z]+)-', value)
+    return m.group(1) if m else ''
+
 
 # Families pinned as legacy fallbacks, in picker tier order. Mythos is
 # deliberately absent: it is access-gated, so it shows up in the live list
@@ -174,7 +190,7 @@ _BIN_ID_RE = re.compile(
     rb'[0-9]+(?:-[0-9]{1,2})?)(?![A-Za-z0-9._-])'
 )
 
-V7_TAG = '/*opus-fix-v7*/'
+V8_TAG = '/*opus-fix-v8*/'
 TIMING_PREFIX = '[model-timing]'
 # Same knob as model-timing-probe.py's webview half. A browser context has no
 # process.env, so localStorage carries it — and toggles live, no restart.
@@ -324,7 +340,26 @@ def extract_pins(ext_dir):
     if sonnet:
         add(f'claude-sonnet-{sonnet[0]}[1m]', f'claude-sonnet-{sonnet[0]}')
 
-    return pins
+    return apply_display_order(pins)
+
+
+def apply_display_order(pins):
+    """Lead with the newest of each family, then every older generation.
+
+    extract_pins() groups by family (all Fable, then all Opus, then Sonnet),
+    which buries the current Opus behind last generation's Fable. Since v8 the
+    pin order IS the picker order, and the picker spills its tail into "More
+    models" — so the flagships have to come first. Yields Fable 5.1, Opus 5,
+    Sonnet 5, then Fable 5, Opus 4.8, Opus 4.7 … in the order built above.
+    """
+    head, taken = [], set()
+    for family in FLAGSHIP_ORDER:
+        for pin in pins:
+            if _family_of(pin[0]) == family:
+                head.append(pin)
+                taken.add(pin[0])
+                break
+    return head + [p for p in pins if p[0] not in taken]
 
 
 def _js_string(s):
@@ -361,7 +396,7 @@ def _make_avail_replacement(pins):
         # stamps each branch. Failure is swallowed — an observability probe
         # must never be able to break the picker it observes.
         return (
-            f'availableModels:{V7_TAG}((__m)=>{{'
+            f'availableModels:{V8_TAG}((__m)=>{{'
             f'try{{if({TIMING_GATE}){{'
             f'var __ts=new Date().toISOString();'
             f'var __ph=__m===void 0?"pins":"live";'
@@ -374,15 +409,30 @@ def _make_avail_replacement(pins):
             f'console.log("{TIMING_PREFIX} "+__ts+" render:"+__ph'
             f'+" n="+__n+" values="+__v);'
             f'}}}}catch(__e){{}}'
-            f'return __m===void 0?{pins_arr}:'
-            f'{pins_arr}.reduce('
-            f'(__a,__p)=>{{'
+            f'return __m===void 0?{pins_arr}:(()=>{{'
+            f'var __P={pins_arr};'
             f'var __c=(__v)=>(__v||"").replace(/\\[1m\\]$/,"");'
-            f'var __pc=__c(__p.value);'
-            f'return __a.some((__x)=>__c(__x.value)===__pc||'
-            f'(__x.value!=="default"&&__c(__x.resolvedModel)===__pc))'
-            f'?__a:[...__a,__p];'
-            f'}},__m);'
+            f'var __hit=(__p,__x)=>{{var __pc=__c(__p.value);'
+            f'return __c(__x.value)===__pc||'
+            f'(__x.value!=="default"&&__c(__x.resolvedModel)===__pc);}};'
+            f'var __merged=__P.reduce((__a,__p)=>'
+            f'__a.some((__x)=>__hit(__p,__x))?__a:[...__a,__p],__m);'
+            # v8: the pins array is the display order, not just a safety net.
+            # The reduce seeds from the server list, so a pin the server no
+            # longer lists was appended LAST — which is what put Opus 4.8
+            # (still tier-current) ahead of Opus 5 and pushed Opus 5 into
+            # "More models". Rank by pin index instead; models absent from
+            # the pins keep their server order behind them, since Array#sort
+            # is stable as of ES2019.
+            # `default` is not a model but the account policy row, and it led
+            # the server list before v8 imposed an order. Keep it leading:
+            # without this it is unpinned, so it would sort to the bottom.
+            f'var __rank=(__x)=>{{'
+            f'if(__x.value==="default")return -1;'
+            f'var __i=__P.findIndex((__p)=>__hit(__p,__x));'
+            f'return __i<0?__P.length:__i;}};'
+            f'return __merged.slice().sort((__x,__y)=>__rank(__x)-__rank(__y));'
+            f'}})();'
             f'}})'
             f'({ident}.claudeConfig.value?.models)'
         )
@@ -392,7 +442,7 @@ def _make_avail_replacement(pins):
 def _make_unavail_replacement(m):
     ident = m.group(1)
     return (
-        f'unavailableModels:{V7_TAG}((__u)=>{ident}.claudeConfig.value===void 0'
+        f'unavailableModels:{V8_TAG}((__u)=>{ident}.claudeConfig.value===void 0'
         f'?[...(__u??[]),{{value:"__loading__",displayName:"Loading models…"}}]'
         f':__u)'
         f'({ident}.claudeConfig.value?.unavailable_models)'
@@ -402,8 +452,8 @@ def _make_unavail_replacement(m):
 def patch_webview_index_js(js_path, pins):
     content = js_path.read_text()
 
-    if V7_TAG in content:
-        print(f"{YELLOW}[1/1]{RESET} webview/index.js — already patched v7 (marker found)")
+    if V8_TAG in content:
+        print(f"{YELLOW}[1/1]{RESET} webview/index.js — already patched v8 (marker found)")
         return
 
     n_strip_avail = len(STRIP_AVAIL_PAT.findall(content))
