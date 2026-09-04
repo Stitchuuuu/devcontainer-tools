@@ -20,7 +20,7 @@ artifacts. This directory no longer holds everything :
   `firewall/{dnsmasq.conf,tests,addons}`, `Dockerfile.base` and the five
   stack Dockerfile variants — now lives in the standalone repo
   **`packages/devcontainer-base/`** (its own git history, published as
-  `ghcr.io/stitchuuuu/devcontainer-base`, gitignored here). The stack
+  `ghcr.io/stitchuuuu/devcontainer-claude-code`, gitignored here). The stack
   variants became documented blocks under its `stacks/`.
 - **`cli-devcontainer/`** — pointer only ; the CLI is
   `packages/devcontainer-cli/` (tracked in this repo).

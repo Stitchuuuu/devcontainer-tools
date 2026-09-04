@@ -9,7 +9,7 @@ services:
       # version pin and the rollback knob (see Dockerfile header).
       dockerfile: Dockerfile
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-ghcr.io/stitchuuuu/devcontainer-base:0.1.0-cc2.1.220}
+        BASE_IMAGE: ${BASE_IMAGE:-ghcr.io/stitchuuuu/devcontainer-claude-code:0.6.0-cc2.1.258}
         # Whether the build bakes firewall/domains.local.txt and
         # firewall/policy.local.d/ into the image. Hardened default is 0 :
         # those files are gitignored and container-writable, so a rebuild

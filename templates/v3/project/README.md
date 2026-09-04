@@ -1,7 +1,7 @@
 # v3 project `.devcontainer/` — copy-paste template
 
 The thin project layer that consumes the published base image
-`ghcr.io/stitchuuuu/devcontainer-base:<base>-cc<cc>`. Everything heavy
+`ghcr.io/stitchuuuu/devcontainer-claude-code:<base>-cc<cc>`. Everything heavy
 (toolchain, Claude Code patché, firewall machinery, lifecycle hooks) lives
 in the image ; this folder owns only what is project-specific : the
 firewall allowlist, the config, and the extension points.
