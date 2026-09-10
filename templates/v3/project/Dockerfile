@@ -1,13 +1,13 @@
 # -----------------------------------------------
 # Project DevContainer — slim layer over the published base image
-# ghcr.io/meitogi/devcontainer-claude-code (repo: meitogi/devcontainer-claude-code).
+# ghcr.io/meitogi/devcontainer-sandbox (repo: meitogi/devcontainer-sandbox).
 # Compose pulls it — nothing is built locally except this thin layer.
 #
 # To bump Claude or the base: set BASE_IMAGE in .devcontainer/.env (tag
 # scheme <base-version>-cc<claude-code-version>, published pairs listed in
 # the base repo's cc-versions.json), then "Rebuild Container" in VS Code.
 # -----------------------------------------------
-ARG BASE_IMAGE=ghcr.io/meitogi/devcontainer-claude-code:0.1.0-cc2.1.258
+ARG BASE_IMAGE=ghcr.io/meitogi/devcontainer-sandbox:0.1.0-cc2.1.258
 
 # -----------------------------------------------
 # Stage 1 — firewall bake (throwaway)

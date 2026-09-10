@@ -61,3 +61,8 @@ zshrc.local
 .zsh-custom/
 
 tmp/
+# Caches — fetched or derived, never committed. In particular
+# cache/ext-patchs/<ref>/ holds patchers the 45-ext-patches hook fetched from
+# a private repository: committing them would republish exactly what moving
+# them out of this tree was meant to stop.
+cache/

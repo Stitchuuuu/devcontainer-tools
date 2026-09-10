@@ -1,6 +1,6 @@
 // Docker orchestration: volume/image helpers and the rebuild-vs-reopen probe.
 // The base image is not built here — compose pulls the published
-// ghcr.io/stitchuuuu/devcontainer-base tag, and bumping that tag is what an
+// ghcr.io/meitogi/devcontainer-sandbox tag, and bumping that tag is what an
 // upgrade means.
 
 import { join } from 'node:path'
@@ -13,7 +13,7 @@ import { hasCommand, runCapture } from './proc.js'
  * Fallback Claude Code version when `.env` does not pin one.
  *
  * Lives here rather than in the command so there is one place to change when
- * the pin moves. The published matrix is owned by the devcontainer-base repo
+ * the pin moves. The published matrix is owned by the devcontainer-sandbox repo
  * (`cc-versions.json`, tag scheme `<base-version>-cc<cc-version>`); this
  * fallback must name a version that repo publishes.
  */

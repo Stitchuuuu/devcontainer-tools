@@ -44,7 +44,7 @@ order:
 5. Creates the Claude credentials volume.
 6. Decides whether this is a Rebuild, a Reopen or a first run (the
    container-presence probe) and logs which. Nothing is built locally — the
-   base image is `ghcr.io/stitchuuuu/devcontainer-base:<base>-cc<cc>`, pulled
+   base image is `ghcr.io/meitogi/devcontainer-sandbox:<base>-cc<cc>`, pulled
    by compose; bumping that tag is what an upgrade means.
 7. Prompts for the Claude mode on first run, writes the flag files, aligns the
    proxy variables in `.env` with the firewall mode, prints a summary, and spawns

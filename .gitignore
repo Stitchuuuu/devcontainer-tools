@@ -38,8 +38,10 @@ packages/*/dist/
 packages/*/*.tgz
 
 # Standalone git repos nested under packages/ (same pattern as apps/*).
-# devcontainer-base has its own history + GitHub remote — never tracked here.
-packages/devcontainer-base/
+# devcontainer-sandbox has its own git history — never tracked here.
+packages/devcontainer-sandbox/
+packages/claude-ext-patchs/
+packages/ext-patch-starter/
 
 # Scratch / experimentation
 .tmp/
@@ -51,5 +53,4 @@ packages/devcontainer-base/
 # Build / OS
 .env.dev
 .DS_Store
-vendor/anthropic.claude-code/
 vendor/ms-vscode-remote.remote-containers/

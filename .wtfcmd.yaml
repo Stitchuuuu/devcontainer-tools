@@ -66,7 +66,7 @@
   desc: |
     Every base-image suite, according to the detected context.
     Replay on both sides (container then host) at each minor/major bump.
-  cmd: bash ./packages/devcontainer-base/test/run-all.sh
+  cmd: bash ./packages/devcontainer-sandbox/test/run-all.sh
 
 - group: image
   name: release-check
@@ -97,7 +97,7 @@
         PARTIEL, exit 2.
       default: ""
       test: "$bool"
-  cmd: bash ./packages/devcontainer-base/test/release-check.sh{{ if .no_purge }} --no-purge{{ end }}
+  cmd: bash ./packages/devcontainer-sandbox/test/release-check.sh{{ if .no_purge }} --no-purge{{ end }}
 
 # ---- shareglaude — receive a shared Claude Code token (user B side) --------
 # Runs INSIDE the devcontainer: it writes ~/.claude/.credentials.json and needs

@@ -2,6 +2,18 @@
 
 <!-- devcontainer version: 2.1.0 -->
 
+> **v2 is frozen and unmaintained.** New work goes to `templates/v3/`, which
+> consumes the published `devcontainer-sandbox` base image instead of building
+> everything per project. v2 is kept because projects still run it; it receives
+> no fixes and no new features.
+>
+> In particular, `claude/vscode-ext-patchs/` here is a **stale copy** — fewer
+> patchers than the set it was forked from, and an older `run-all.sh` that
+> predates the selection vocabulary. It is not resynchronised: the patchers
+> moved to a separate repository when the base image stopped shipping them, and
+> mirroring them back into this tree is exactly what that move undid. Treat the
+> directory as historical.
+
 This devcontainer runs Claude Code under a default-deny outbound firewall. Niveau 1 strict (the default) blocks every outbound connection that is not in an explicit allowlist, filters paths and methods via mitmproxy, and bounds POST body sizes per endpoint. The container can read code and talk to `api.anthropic.com`; it cannot push, cannot create PRs, and cannot reach arbitrary third-party APIs.
 
 This README is the maintainer's handbook. Skim it once to understand what's where; consult [RUNBOOK.md](RUNBOOK.md) for step-by-step operations and [SECURITY.md](SECURITY.md) for the threat model. AI-modifiable internals live in [knowledge/INDEX.md](knowledge/INDEX.md).

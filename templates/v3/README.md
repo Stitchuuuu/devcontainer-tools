@@ -19,8 +19,8 @@ artifacts. This directory no longer holds everything :
   `skills/`, `knowledge/`, `zshrc-base`, `claude/vscode-ext-patchs/`,
   `firewall/{dnsmasq.conf,tests,addons}`, `Dockerfile.base` and the five
   stack Dockerfile variants — now lives in the standalone repo
-  **`packages/devcontainer-base/`** (its own git history, published as
-  `ghcr.io/meitogi/devcontainer-claude-code`, gitignored here). The stack
+  **`packages/devcontainer-sandbox/`** (its own git history, published as
+  `ghcr.io/meitogi/devcontainer-sandbox`, gitignored here). The stack
   variants became documented blocks under its `stacks/`.
 - **`cli-devcontainer/`** — pointer only ; the CLI is
   `packages/devcontainer-cli/` (tracked in this repo).
