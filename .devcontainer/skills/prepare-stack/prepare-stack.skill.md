@@ -1,14 +1,26 @@
+---
+description: |
+  Wire a project onto the devcontainer-claude-code base image : an extending
+  Dockerfile whose firewall bake stage is mandatory, an allowlist DISCOVERED
+  from firewall-blocks rather than guessed, lifecycle fragments that reuse
+  devc-hook instead of reinventing it, and lint/test declared so the commit
+  gate returns a measured verdict. Refuses to infer the stack from a manifest
+  — it asks. Acceptance is zero firewall-blocks entries plus escalation.sh
+  still passing on the extended image.
+
+  Auto-trigger : "set up a devcontainer for this project", "adapte le
+  devcontainer à ma stack", "add PHP/Python/Go/Rust to the container",
+  "prépare un Dockerfile pour ce projet", "my install fails behind the
+  firewall", "wire lint and test for the gate".
+argument-hint: "[stack, e.g. \"php 8.3 + symfony\" — omit and I will ask]"
+---
+
 # prepare-stack — a dedicated devcontainer for THIS project's stack
 
 Turn a bare project into one that boots on `ghcr.io/meitogi/devcontainer-claude-code`
 with its own toolchain, its own firewall allowlist, and a commit gate Claude can
 actually read. Four artefacts, in this order — each one depends on the previous
 being right.
-
-Auto-trigger : "set up a devcontainer for this project", "adapte le devcontainer
-à ma stack", "add PHP/Python/Go/Rust to the container", "prépare un Dockerfile
-pour ce projet", "my install fails behind the firewall", "wire lint and test for
-the gate".
 
 ---
 
