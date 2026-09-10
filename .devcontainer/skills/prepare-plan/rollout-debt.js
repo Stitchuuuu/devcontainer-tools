@@ -28,7 +28,7 @@
 // signal firing, which is the definition of debt.
 //
 // Self-contained per the v1.3.0 hook pattern (each hook lives in its skill
-// dir, no shared library) — same as scan-deps-suggest-stale.sh.
+// dir, no shared library) — every hook script here is self-contained.
 //
 // ⚠️ sync-skills.sh is APPEND-ONLY : it merges hooks.json into
 // ~/.claude/settings.json, dedups by exact command string, and never

@@ -21,7 +21,7 @@ for", "route this to a plan", "make a plan for me", "I'll do it later",
 
 ## When NOT to use
 
-- Research / exploration without deliverable plan → `/prepare-research`.
+- Research / exploration without a deliverable plan → not this skill ; say so and stop.
 - Extend an existing plan directory → edit its `STATUS.md` / `LOG.md` /
   `sessions/` by hand (no append mode).
 
@@ -465,7 +465,10 @@ before writing ; §5 sanity check enforces zero leftovers.
 **Templates by mode** :
 - Multi-session scaffold (§1-6) : `ROLLOUT.md`, `STATUS.md`, `LOG.md`,
   `EXISTING.md`, `sessions/session-1-*.md`. Optional per-session
-  `TEST-PLAN-<id>.md` for platform-visible smoke tests.
+  `TEST-PLAN-<id>.md` for platform-visible smoke tests, and — whenever
+  that plan has a Part 1 — `suites/<name>.mjs`, the browser scenarios it
+  automates. Suites are plan-scoped and gitignored like `fixtures/` ;
+  only the driver is committed.
 - Modes §0.5 and §0.6 : share `prompt-body` ; if verification is
   deferred to the host, both also write `TEST-PLAN.md` (no
   session-id — single prompt, single session).
@@ -694,10 +697,14 @@ DoD at the end of this session :
    review it against the filesystem before linking, since a scaffolded
    prompt's claims read as authoritative to the session that runs it.
 5. If any part of this session's verification is deferred to the host
-   (smoke test, visual check, platform behavior) : write
-   `TEST-PLAN-<session-id>.md` NOW, while the context is live — its
-   last section is the resume prompt for the verification session.
-   Deferring the write defeats its purpose.
+   (smoke test, visual check, platform behavior) : **triage it through
+   E2E first** — sort every scenario into machine-assertable vs
+   judgement, and when the surface is browser-driven write the suite
+   under `plans/<feature>/suites/` and run it. Then write
+   `TEST-PLAN-<session-id>.md` NOW, while the context is live, split
+   Part 1 (automated) / Part 2 (human), every Part 2 item carrying its
+   `Why the harness cannot`. Its last section is the resume prompt for
+   the verification session. Deferring the write defeats its purpose.
 6. Propose a commit (do NOT commit without explicit user confirmation).
 ````
 
@@ -711,6 +718,47 @@ modules) doesn't need one.
 
 Path : `plans/<feature>/TEST-PLAN-<session-id>.md`. Session ID matches
 the LOG entry (`7b`, `3.5`, etc.).
+
+#### Triage through E2E FIRST — before writing a single manual step
+
+*host vs container* is only the first axis. The second one decides how
+much of the human's evening this costs, and it is the one that gets
+skipped : **is this scenario machine-assertable, or is it a judgement?**
+
+Sort every scenario before writing it up :
+
+| Bucket | Test is | Goes in |
+|---|---|---|
+| **Machine-assertable** | a DOM query, a natural dimension, an HTTP status, a row count, a SQL result — no judgement call | **Part 1**, as a scenario in `plans/<feature>/suites/<name>.mjs`, run by `wtf claude-live e2e` |
+| **Already covered lower** | an L1/L2/L5 test asserts it | nowhere — cite the test name and move on |
+| **Human judgement** | is it the *right* image, is the message *understandable*, does the motion jar, does the OS drag actually paint | **Part 2**, manual |
+
+**Write Part 1 first, and actually run it.** A browser E2E harness
+already exists — [.devcontainer/claude/scripts/e2e.mjs](../../claude/scripts/e2e.mjs)
+drives the host Chromium over CDP holding one socket across steps, and
+asserts against the DOM *and* the browser's own PGlite mirror
+(`window.sqliteQuery`). Suites live per plan under
+`plans/<feature>/suites/` because they are scoped to one session ; only
+the driver is committed.
+
+**A TEST-PLAN that is all-manual means the E2E pass was never
+attempted.** That is the smell this section exists to catch : the
+precedent behind this section shipped 14 manual scenarios, and most of
+them turned out to be machine-checkable once someone tried.
+
+**Every Part 2 item carries a `**Why the harness cannot**` line.** This
+is the forcing function — it makes an unattempted automation visible,
+because a vague reason is a reason you have not looked. Real ones read
+like : *"it asserts `naturalWidth > 0`, which proves the bytes decoded ;
+a thumbnail of the wrong document passes that check perfectly"*, or
+*"it asserts the three strings are distinct — three distinct but equally
+useless messages pass"*.
+
+**A third verdict, SKIP, is not bureaucracy.** Some properties are only
+opportunistically observable (a state the worker leaves in
+milliseconds). PASS would claim an observation nobody made ; FAIL would
+blame the product for the harness's vantage point. Say which layer
+covers it instead.
 
 ````markdown
 # Test Plan — session <session-id> end-to-end smoke
@@ -744,23 +792,64 @@ the LOG entry (`7b`, `3.5`, etc.).
 
 <commands + expected output>
 
-## 1. <first scenario name>  (~<n> min)
+# Part 1 — E2E automatable  (~<n> min, you only read the output)
 
-Goal : <one-liner>.
+Driven by the harness over CDP. Everything here is a **machine-checkable
+assertion** : a DOM query, a natural dimension, an HTTP status, a count.
+No judgement calls. Nothing to do by hand — run this and copy the
+verdicts across.
 
-<commands>
+​```sh
+wtf claude-live e2e -- --suite plans/<feature>/suites/<name>.mjs
+# one scenario only, while chasing a failure :
+wtf claude-live e2e -- --suite plans/<feature>/suites/<name>.mjs --only <ID>
+​```
 
-**Expect** : <observable outcome>.
+One `PASS` / `FAIL` / `SKIP` line per scenario with its evidence.
+**SKIP is not a failure** — the property was not observable on that run,
+and the line says which layer covers it instead.
 
-## <n>. <last scenario>  (~<n> min)
+### <ID> — <what it proves>
 
-<...>
+<one line of setup, if any>
+
+- **Pass** — <the observable outcome>.
+- **Fail** — <what the failure looks like, so it is recognised>.
+- **Why it matters** — <the bug this catches ; skip when obvious>.
+
+## <n>. <...>
+
+# Part 2 — Not automatable  (~<n> min, needs your eyes)
+
+## 2a. Human judgement or a real device
+
+### M1 — <what a machine cannot judge>
+
+<one drag, one look>
+
+- **Pass** — <what "right" looks like, concretely>.
+- **Why the harness cannot** — <the specific assertion it CAN make, and
+  the wrong outcome that would still pass it>. Mandatory. A vague
+  reason here means the automation was not attempted.
+
+## 2b. Design / visual validation
+
+### D1 — <the fidelity question>
+
+- **Pass** — <matches the mockup on the axis that matters>.
+- **Why the harness cannot** — <e.g. it asserts the token resolved, not
+  that the result reads as intended at a glance>.
 
 ## Result checklist
 
-- [ ] **1** — <one-liner>
-- [ ] **2** — <one-liner>
-- [ ] <...>
+Part 1 — copy from the harness output :
+
+- [ ] **<ID>** — <one-liner>
+
+Part 2 — filled by hand, **OK / FAIL / N/A** :
+
+- [ ] **M1** — <one-liner>
+- [ ] **D1** — <one-liner>
 
 If all pass, the session's `**Smoke results**` entry in LOG.md is
 back-filled with a `<date> — <env>. All N scenarios green.` line.
@@ -824,10 +913,13 @@ header ; in §0.6, keep it.
 1. Implement the change described above.
 2. Verify : {{tests}}
 3. If any part of this session's verification is deferred to the host
-   (smoke test, visual check, platform behavior) : write
-   `plans/{{feature_name}}/TEST-PLAN.md` NOW, while the context is
-   live — its last section is the resume prompt for the verification
-   session. Deferring the write defeats its purpose.
+   (smoke test, visual check, platform behavior) : **triage it through
+   E2E first** — machine-assertable scenarios become a suite under
+   `plans/{{feature_name}}/suites/`, run by `wtf claude-live e2e` ; only
+   what needs human judgement stays manual, each item saying why the
+   harness cannot. Then write `plans/{{feature_name}}/TEST-PLAN.md` NOW,
+   while the context is live — its last section is the resume prompt for
+   the verification session. Deferring the write defeats its purpose.
 4. Propose a commit (do NOT commit without explicit user confirmation).
 5. **§0.6 only** — update `plans/{{feature_name}}/STATUS.md` : flip the
    `implementation` row 📋 → ✅, then after commit flip `commit` row

@@ -321,16 +321,21 @@ allowlists the host, `firewall/policy.d/ollama.internal.yaml` defines
 the L7 policy. You just need to open the host port once, then toggle
 the routing vars whenever you want to switch.
 
-1. Edit `.devcontainer/.env` and uncomment :
-   ```env
-   CLAUDE_CODE_FIREWALL_ALLOWED=host:11434
+1. Edit `.devcontainer/firewall/ports.txt` (it was called
+   `direct-tcp-allow.txt` before 2026-08-10 ; both names are still read)
+   and uncomment :
+   ```
+   host:11434
    ```
    For the [`local-proxy` mode](#mode-local-proxy-sidecar-uniclaudeproxy)
-   (sidecar UniClaudeProxy translates Ollama thinking blocks), append
-   `claude-bridge:9223` to the same comma-separated value :
-   ```env
-   CLAUDE_CODE_FIREWALL_ALLOWED=host:11434,claude-bridge:9223
+   (sidecar UniClaudeProxy translates Ollama thinking blocks), add
+   `claude-bridge:9223` on its own line :
    ```
+   host:11434
+   claude-bridge:9223
+   ```
+   This file is **baked into the image at build**, not read at runtime —
+   which is why the rebuild below is not optional.
    The two entries coexist — you can hold both open and only the active
    `ANTHROPIC_BASE_URL` decides which path Claude Code uses.
 2. Rebuild the container (Cmd+Shift+P → "Dev Containers: Rebuild
@@ -531,8 +536,8 @@ Claude Code  ──▶  mitmproxy (audit)  ──▶  claude-bridge:9223
 
 The sidecar service ships in compose — no install step. To activate :
 
-1. From the host, append `claude-bridge:9223` to
-   `CLAUDE_CODE_FIREWALL_ALLOWED` in `.env` (see
+1. From the host, add `claude-bridge:9223` to
+   `.devcontainer/firewall/ports.txt` (see
    [§ Devcontainer activation](#devcontainer-activation)) — once.
    Rebuild the container so the iptables ACCEPT rule lands.
 2. From the host :
@@ -792,15 +797,18 @@ this section will point at it instead.
 
 ## Opening additional host ports (MySQL, Redis, …)
 
-The `CLAUDE_CODE_FIREWALL_ALLOWED` syntax is comma-separated. Extend it
-for other host services :
+`ports.txt` takes one `host:<port>` per line. Extend it for
+other host services :
 
-```env
-CLAUDE_CODE_FIREWALL_ALLOWED=host:11434,host:3306,host:6379
+```
+host:11434
+host:3306
+host:6379
 ```
 
-Rebuild the container after editing. Each entry adds an iptables ACCEPT
-rule posed BEFORE the RFC1918 REJECT.
+Rebuild the container after editing — the file is baked into the image,
+so a Reload Window does not pick it up. Each entry adds an iptables
+ACCEPT rule posed BEFORE the RFC1918 REJECT.
 
 ## Troubleshooting
 
@@ -813,7 +821,7 @@ rule posed BEFORE the RFC1918 REJECT.
 | `CLAUDE.md` doesn't match the mode | `<project>/CLAUDE.md` symlink desynced (manual edit, conflicting rebuild) | `bash .devcontainer/host-helpers/claude-switch local` (or `cloud`) re-creates the right symlink — immediate, no rebuild needed for the symlink alone |
 | Switch doesn't take effect after host helper | Forgot to Rebuild Container — VS Code Server still inherits PID 1's frozen env (docker-compose reads `env_file` at creation only) | Cmd+Shift+P → "Dev Containers: Rebuild Container". Reload Window is NOT enough — it relaunches VS Code Server but PID 1 stays |
 | `Connection refused` to ollama.internal:11434 | Ollama not running on host | `ollama serve` (CLI) or launch the desktop app |
-| `Connection refused` even with Ollama running | Port not in `CLAUDE_CODE_FIREWALL_ALLOWED` | Add `host:11434` to the var + rebuild container (iptables ACCEPT applied at boot, not on Reload) |
+| `Connection refused` even with Ollama running | Port not in `.devcontainer/firewall/ports.txt` | Add `host:11434` to the file (baked into the image at build, cf. `init-firewall.sh` § *ports.txt — direct ACCEPT for non-HTTP TCP services*) + Rebuild Container (iptables ACCEPT applied at boot, not on Reload) |
 | `Connection refused` even with both above | `host.docker.internal` not resolving via Docker (Linux Docker without `host-gateway`) | `dig +short @127.0.0.11 host.docker.internal` inside the container — empty means Docker's resolver doesn't know it. On Linux Docker Engine (≠ Desktop), add `--add-host=host.docker.internal:host-gateway` to `runArgs` in `devcontainer.json` so `init-firewall.sh` can capture the IP at boot. |
 | `❌ ollama.internal (DNS resolution failed)` in `test-firewall.sh` | `init-firewall.sh` ran *before* Docker's resolver was reachable, or CNAME injection block failed | `sudo /usr/local/bin/init-firewall.sh` to re-run ; check `dbg "  injected host.docker.internal=…"` in the output. See [README.md § Local hosts — DNS-driven aliases](README.md#local-hosts--dns-driven-aliases-no-extra_hosts). |
 | `403 blocked_header:X-Stainless-…` from mitmproxy | `policy.d/ollama.internal.yaml` missing the `allowed_header_patterns` block (mirror of api.anthropic.com) | Restore the `^X-(Api\|Anthropic\|Service\|Claude\|Stainless\|App\|Client\|Organization)-?` allowlist in the file ; rebuild container so the compiled policy reloads |

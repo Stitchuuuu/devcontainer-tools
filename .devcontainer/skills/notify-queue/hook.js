@@ -71,8 +71,27 @@ function excerptV2(msg) {
 	return excerptV1(msg)
 }
 
+// A line that is machine output, not a sentence. Measured : the
+// orchestration fix planner is asked for "ONE JSON object and nothing
+// else", so `{"units": [{"id": "…` became the body of a desktop
+// banner; a review axis ends on `- **File** : services/…:144` for the
+// same reason. Any turn ending on a JSON block has this defect, which
+// is why the floor lives in the excerpt path and not in one caller.
+function looksMachine(line) {
+	if (line.startsWith('{') || line.startsWith('[')) return true
+	// A bare JSON scalar or fragment — cheap parse, only ever on the
+	// first candidate line, so this is not on any hot path.
+	try {
+		const value = JSON.parse(line)
+		return typeof value === 'object' || typeof value === 'number' || typeof value === 'boolean'
+	} catch {
+		return false
+	}
+}
+
 // V1 heuristic: extract a short, readable excerpt from a Claude
-// markdown reply. Skip headers, code fences, tables, HTML comments.
+// markdown reply. Skip headers, code fences, tables, HTML comments,
+// and any first line that is machine output rather than prose.
 // Strip the first usable line's basic markdown syntax.
 function excerptV1(msg) {
 	if (typeof msg !== 'string' || !msg) return ''
@@ -86,6 +105,7 @@ function excerptV1(msg) {
 		if (line.startsWith('#')) continue
 		if (line.startsWith('|')) continue
 		if (line.startsWith('<!--')) continue
+		if (looksMachine(line)) return ''
 		// strip markdown: links, bold, italic, inline code
 		let clean = line
 			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
@@ -439,6 +459,14 @@ function spawnCancelTailer(sid, transcriptPath) {
 
 function main() {
 	try {
+		// A machine-spawned session is not a human's. It inherits these hooks
+		// like any other session, so a fan-out — wave-run.sh, an orchestration
+		// daemon, any headless batch — writes thousands of tool_started /
+		// tool_finished lines into this queue plus a Stop banner per worker,
+		// and buries the notification the human was actually waiting on. The
+		// spawner owns its own progress reporting ; this keeps the queue for
+		// the sessions the human is sitting in front of.
+		if (process.env.NOTIFY_SUPPRESS_SESSION) return
 		const arg = process.argv[2] || ''
 		const eventName = ARG_TO_EVENT[arg]
 		if (!eventName) return

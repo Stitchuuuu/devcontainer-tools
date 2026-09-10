@@ -15,7 +15,7 @@ The main devcontainer firewall is **strict by default** (Niveau 1 strict —
 baseline fails because DNS resolution is filtered. `WebFetch` / `WebSearch`
 against arbitrary hosts will silently fail in strict and basic alike.
 
-### Trigger for `/prepare-research`
+### When a host is outside the baseline
 
 When the user asks for :
 - Up-to-date docs, web research, "explore X library", "read about Y"
@@ -74,62 +74,54 @@ fail**. Use `AskUserQuestion` to present the two sanctioned paths with a
    palette. **Remind the user to delete the marked section at end of
    session** to keep `domains.local.txt` clean across reboots.
 
-2. **`/prepare-research`** — for multi-domain exploration, third-party
-   API integration, package evaluation, anything multi-session. Spawns
-   a scoped research devcontainer with isolated allowlist + volumes.
-   No cleanup needed.
+2. **A committed entry in `domains.d/<name>.txt`** — when the host is
+   needed by the *project*, not by one person for one session. Committed,
+   so colleagues get it too. Same syntax as `domains.txt`.
 
-**Recommendation default** : **default to (1) `domains.local.txt`** with
-a marked TEMP section + cleanup reminder, for almost any ad-hoc lookup —
-even when fetching several pages of the same vendor's docs in the same
-session.
+**Default to (1) `domains.local.txt`** with a marked TEMP section +
+cleanup reminder, for almost any ad-hoc lookup — even when fetching
+several pages of the same vendor's docs in the same session. Reach for
+(2) only once the need is proven to be the project's and not yours.
 
-**Reserve (2) `/prepare-research`** for *substantial* research efforts
-where spinning up a fresh devcontainer actually pays off :
+Both require `Dev Containers: Rebuild Container` to take effect: the
+allowlist is baked at build, not read at runtime.
 
-- Full third-party API integration evaluation (multiple endpoints,
-  auth flows, error handling, tests against a sandbox)
-- Comprehensive package / library comparison (3+ vendors, side-by-side
-  trials)
-- Multi-vendor research spanning several sessions or days
-- Anything POSTing to new hosts with real test data
-
-`/prepare-research` is a **long process** (container build, isolated
-volumes, broader allowlist). It's not a quick lookup — using it for a
-2-page docs read is overkill.
-
-Always present both via `AskUserQuestion`, the recommended one marked.
+**Substantial research** — a full third-party API evaluation, a
+side-by-side comparison of 3+ vendors, anything POSTing real test data to
+new hosts — deserves an **isolated devcontainer** with its own allowlist
+and volumes rather than a widened main one. That is a deliberate,
+operator-driven setup; do not widen the project allowlist to stand in for
+it. Ask the user before going down either road.
 
 ### Adding a new dep to the project (composer / npm)
 
 When the user wants to add a NEW package they haven't chosen yet, the
-firewall + scan-deps workflow chains across three phases :
+firewall work chains across three phases :
 
-1. **Research / evaluation phase — pre-decision.** Use `/prepare-research`
-   to spawn a sidecar with access to package registries + GitHub search +
-   library docs. Compare candidates there. No edit to the main firewall
-   yet. (For a quick lookup of 1–2 known hosts you already trust, the
-   targeted `domains.local.txt` route above is acceptable but rarely
-   worth the rebuild churn.)
+1. **Research / evaluation phase — pre-decision.** Compare candidates
+   using the hosts already in the baseline where possible. For 1–2 known
+   hosts you already trust, the targeted `domains.local.txt` route above
+   is the cheapest path; a broad multi-vendor evaluation is worth an
+   isolated devcontainer instead of widening this one.
 
 2. **Install phase — after decision.** Add the package to
    `composer.json` / `package.json` and run `composer install` /
    `npm install`. The first attempt will likely hit firewall blocks if
    the new vendor/org isn't already in the lock — the `firewall-blocks`
-   output makes the missing paths visible.
+   output makes the missing paths visible, and it is the authoritative
+   list of what to allow.
 
-3. **Persistence phase — let `/scan-deps` close the loop.** Once the
-   lock file is updated (with the new dep), invoke `/scan-deps`. The
-   composer/npm extractor reads the new lock entries and emits the
-   required paths to `firewall/domains.d/<eco>.txt`. Rebuild Container
-   to load them. Re-install confirms zero blocks.
+3. **Persistence phase — commit the paths.** Add what `firewall-blocks`
+   reported to `firewall/domains.d/<eco>.txt`, one host per line, same
+   syntax as `domains.txt`. Rebuild Container to load them. Re-install
+   confirms zero blocks.
 
-**Anti-pattern** : do NOT manually add the new package's paths to
-`domains.local.txt` as a "permanent fix". `domains.local.txt` is
+**Anti-pattern** : do NOT leave the new package's paths in
+`domains.local.txt` as a "permanent fix". That file is
 personal/gitignored — your colleagues won't see those paths and their
 install will break. The committed allowlist for project deps lives in
-`domains.d/<eco>.txt`, owned by `/scan-deps`. The local layer is for
-dev-personal, single-host, single-session ad-hoc reads.
+`domains.d/<eco>.txt`. The local layer is for dev-personal, single-host,
+single-session ad-hoc reads.
 
 ---
 
@@ -208,7 +200,7 @@ iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
 So the only paths to the internet are :
 - **App → mitmproxy → external** (via HTTPS_PROXY ; mitmproxy resolves via dnsmasq, outbound gated by ipset)
-- **App → CLAUDE_CODE_FIREWALL_ALLOWED host** (direct, no UID restriction — *avoid in production*)
+- **App → `ports.txt` host** (direct, no UID restriction — *avoid in production*)
 
 ### Why force-proxy and not transparent REDIRECT
 

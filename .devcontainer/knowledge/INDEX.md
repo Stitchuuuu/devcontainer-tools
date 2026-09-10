@@ -12,7 +12,7 @@ case-by-case.
 ## Topic files
 
 - [`firewall.md`](firewall.md) — **Web search & research policy** (when to
-  propose `/prepare-research` vs `domains.local.txt` for sources outside the
+  propose `domains.local.txt` vs a committed `domains.d/` entry for sources outside the
   17-host baseline) + firewall internals (compile-policy pipeline) + strict
   mode (force-proxy, mitmproxy, ipset, HTTPS_PROXY propagation, sysctls
   pitfalls, ruamel.yaml constraint).
@@ -36,7 +36,7 @@ case-by-case.
 
 - [Lifecycle ordering + extension points](#lifecycle-ordering--extension-points)
 - [Idempotency contracts](#idempotency-contracts)
-- [Scan-deps mechanism](#scan-deps-mechanism)
+- [Per-ecosystem allowlists — `domains.d/`](#per-ecosystem-allowlists--domainsd)
 - [Local Ollama backend (host-side `claude-switch`)](#local-ollama-backend-host-side-claude-switch)
 - [Policy parity across Claude Code targets](#policy-parity-across-claude-code-targets)
 - [Meta-skill `/prepare-plan` (scaffolding)](#meta-skill-prepare-plan-scaffolding)
@@ -61,7 +61,7 @@ The devcontainer lifecycle has five hook points, executed in this order. Choosin
 | 1 | `initialize.sh` | **host**, before build | every container open (cheap if already configured) | flag files, `.env` sync, interactive menus, syncs that must happen before Docker sees the change |
 | 2 | `on-create.sh` | container, sudo-capable | **once** per container creation, before VS Code Server downloads extensions | firewall early bring-up (before any outbound is needed) |
 | 3 | `post-create.sh` | container | **once** per container creation, after on-create | symlink `/workspace/CLAUDE.md` by claude-mode, smoke-test firewall |
-| 4 | `post-start.sh` | container | **every** container start (including restarts) | banner, OAuth sync, scan-deps reminder, sync-skills, install-extensions safety net, idempotent cleanups |
+| 4 | `post-start.sh` | container | **every** container start (including restarts) | banner, OAuth sync, sync-skills, install-extensions safety net, idempotent cleanups |
 | 5 | `shell-init.sh` | container, sourced | **every** interactive terminal opens | CA env vars, gh device auth attempt, creds-conflict prompt, session banner |
 
 Sentinels that gate the lifecycle:
@@ -72,7 +72,6 @@ Sentinels that gate the lifecycle:
 | `.devcontainer/.configured-claude-mode` | `initialize.sh` menu | claude mode (`dev` / `reviewer`); `post-create.sh` symlinks accordingly |
 | `.devcontainer/.configured-firewall-mode` | `initialize.sh` (silent `strict`) | `off` / `basic` / `strict`; canonical mode source |
 | `.devcontainer/.configured-claude-rules` | Claude first-prompt analysis | one-shot setup of project conventions in CLAUDE.md |
-| `.devcontainer/scan-deps/.last-scan.json` | `/scan-deps` extractors | per-manifest `ts` + `ignored_until`; boot banner checks `manifest_mtime > ts` |
 
 ### Where to add a new behaviour
 
@@ -115,31 +114,25 @@ Every script in this devcontainer is expected to be safely re-runnable. Violatin
 
 ---
 
-## Scan-deps mechanism
+## Per-ecosystem allowlists — `domains.d/`
 
-Boot banner in `post-start.sh`:
+`init-firewall.sh` merges **every `.txt` under `domains.d/`** additively with
+the baseline `domains.txt`. That is the committed place for hosts a project's
+own dependencies need — npm registries, package CDNs, a vendor's binary host.
 
 ```
-1. Read .devcontainer/scan-deps/.last-scan.json (per-manifest ts + ignored_until)
-2. Find manifests under /workspace/: package.json, composer.json, pyproject.toml,
-   requirements.txt, Cargo.toml, go.mod
-3. For each manifest: if mtime > sentinel.ts AND sentinel.ignored_until <= now()
-   → echo cyan banner "⚠  /scan-deps recommended"
+firewall/domains.txt              the project baseline, committed
+firewall/domains.d/<eco>.txt      per-ecosystem additions, committed
+firewall/domains.local.txt        personal, gitignored, ad-hoc only
 ```
 
-When `/scan-deps` runs:
-- Step 1 invokes `extract-auto-dependencies` (deterministic bash, no AI):
-  - Walks manifest + lockfile + node_modules (npm), composer.lock, etc.
-  - Extracts `.repository.url`, `.binary.host`, `.scripts.{pre,post,}install` URLs
-  - Writes `firewall/domains.d/<eco>.txt` + `domains.d/ecosystem-docs.txt` (committed)
-  - Updates `.last-scan.json` for the scanned manifests
-- Step 2 invokes the AI review layer:
-  - Flags suspicious deps (typosquats, postinstall scrutiny, POST candidates)
-  - Suggests `/prepare-research` for scope outside baseline (POST hosts, exotic registries)
+Same syntax in all three. All are **baked at build**, so any change needs
+`Dev Containers: Rebuild Container` — they are not read at runtime.
 
-**Audit trail**: `.devcontainer/scan-deps/<unix-ts>-<eco>.md` (gitignored) holds the AI review output and proposed actions.
-
-To force a rescan: `rm scan-deps/.last-scan.json` then `/scan-deps`.
+Populating `domains.d/<eco>.txt` is manual: install the dependency, read what
+`firewall-blocks` reports as denied, and commit those hosts. `firewall-blocks`
+is the authoritative list — guessing a vendor's CDN from its `.com` almost
+never works.
 
 ---
 
@@ -158,7 +151,7 @@ Pieces wired up in the devcontainer:
 | Firewall L7 (sidecar) | `firewall/policy.d/claude-bridge.yaml` | STRICT 1:1 mirror of `api.anthropic.com.yaml` `/v1/messages` block. See [§ Policy parity](#policy-parity-across-claude-code-targets) for the invariant |
 | Translation sidecar | `docker-compose.yml` (`claude-bridge:` service) + `claude-bridge/Dockerfile` | UCP image baking apt + UCP clone + pip as cached layers (boot <10 s) ; vendored `ucp-overlay/app/` patches Ollama 0.9+ `reasoning` SSE → Anthropic `thinking` content blocks. Image tag `uniclaudeproxy:local` |
 | Sidecar config | `claude-bridge/config.example.json` (committed) + `claude-bridge/config.json` (gitignored, auto-bootstrapped by `initialize.sh`) + `claude-bridge/healthcheck.sh` (TCP probe `:9223` since UCP has no `/health`) | Maps Anthropic model names → Ollama aliases (`use_react: true, force_stream: true, enable_thinking: true`) + `system_replacements` to defuse "You are Claude Code" inside Ollama |
-| Host port open | `.env` (`CLAUDE_CODE_FIREWALL_ALLOWED=host:11434,claude-bridge:9223`) | iptables ACCEPT before RFC1918 REJECT (cf. `init-firewall.sh:361-385`) — comma-separated, both entries coexist; only the active `ANTHROPIC_BASE_URL` decides which path is used |
+| Host port open | `.devcontainer/firewall/ports.txt` (`host:11434`, `claude-bridge:9223`, one per line) | iptables ACCEPT before RFC1918 REJECT (cf. `init-firewall.sh` § *ports.txt*) — baked into the image at build ; both entries coexist, only the active `ANTHROPIC_BASE_URL` decides which path is used |
 | Routing toggle | `.env` (3 URL lines value-discriminated : `http://ollama.internal:11434`, `http://claude-bridge:9223`, `http://claude-bridge.local:9223`) + `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CONFIG_DIR`) | 3 modes (`local`, `local-proxy`, `cloud`) driven by `host-helpers/claude-switch` ; sed targets the exact URL value, not just the var name, so the inactive lines stay as data. `local-proxy` auto-starts the sidecar via the same logic as `host-helpers/claude-bridge up`. Per-profile prompt files `CLAUDE-local-<name>-dev.md` are a planned convention (current files : `CLAUDE-local-dev.md` only) — a `/tune-claude-local` skill that would land per-profile content is deferred for v1 |
 | Sidecar lifecycle wrapper | `host-helpers/claude-bridge` (host-side) | `{up\|down\|restart\|status\|logs}` — built-in healthcheck polling (`docker inspect .State.Health.Status`). Refuses inside the container. Rarely needed manually because `claude-switch local-proxy` auto-starts |
 | Manual tuning harness | `tests/diag-bridge-translation.sh` + `tests/tweak-claude-md-for-local.sh` | Cloud-as-oracle measurement + idempotent variant applier between `<!-- 1B-LIGHT-MODEL-DIRECTIVES-START/END -->` markers of `CLAUDE-local-dev.md`. Workflow documented in [ollama-local.md § Tuning](ollama-local.md#tuning-the-local-prompt-for-your-hardware-current-ad-hoc-workflow). **Future** : a `/tune-claude-local` skill could industrialize this loop ; deferred for v1 |
@@ -168,7 +161,7 @@ Pieces wired up in the devcontainer:
 
 Mechanism rationale (don't break these):
 - The `.internal` TLD is NOT in `NO_PROXY` (`localhost,127.0.0.0/8,host.docker.internal,.local`), so traffic to `ollama.internal:11434` is routed via `HTTPS_PROXY=http://127.0.0.1:8080` (mitmproxy). `.local` IS in NO_PROXY, hence the bypass alias.
-- `CLAUDE_CODE_FIREWALL_ALLOWED` rule is intentionally NOT UID-filtered — mitmproxy itself needs to dial the host. That's also why anything in the container can reach `host-gateway:11434` directly (mitigated by the policy enforcement layer when the audited alias is used).
+- The `ports.txt` rule is intentionally NOT UID-filtered — mitmproxy itself needs to dial the host. That's also why anything in the container can reach `host-gateway:11434` directly (mitigated by the policy enforcement layer when the audited alias is used).
 - Isolation via `CLAUDE_CONFIG_DIR=/home/node/.claude-local` subsumes the credentials-backup concern : Claude Code reads `.credentials.json` from that dir, not from `~/.claude/`, so cloud OAuth state is untouched. The symlink set for `commands/skills/memory/plugins/settings.json/.claude.json` ensures skills + hooks + memory propagate in both directions (cloud changes visible in local and vice-versa).
 - Host-only switch by design : the previous in-container `claude-switch` + `claude` wrapper re-read `.env` on every CLI invocation (CLI instant) but never reached the VSCode extension (VS Code Server inherits env from container PID 1, frozen at boot — Rebuild Container was already the only way to refresh the extension). It also let any in-container process flip the LLM endpoint by `sed`-ing its own `.env`. Moving to `host-helpers/claude-switch` unifies the semantics — CLI and extension now both wait for a Rebuild Container to pick up the new env vars (Reload Window relaunches VS Code Server but inherits the same frozen PID 1 env) — and removes the in-container attack surface. The CLAUDE.md symlink + `~/.claude-local` init propagate immediately via the bind mount + shell-init.sh fallback, without a rebuild.
 - Model name mapping is done via `ollama cp <local-model> claude-opus-4-7` on the host — Claude Code resolves the model from the POST body, not from `/v1/models`. The model alias list lives in [ollama-local.md](ollama-local.md); sync at every Anthropic generation bump.
@@ -290,7 +283,7 @@ Sanity check at end: grep for `{{placeholder}}` / `<feature_name>` survivors —
 | `claude-creds` volume | `external: true`, shared across projects | Don't delete without `docker volume create` recreating it; user re-logs in |
 | `mitmproxy-${DC_PROJECT}` volume | Per-project; deleting forces CA regen at next strict boot | Safe to delete; container reopen regenerates CA |
 | Adding wildcard `[*]` host in `domains.txt` committed | Defeats Layer 3 of the threat model | Use `policy.local.d/<host>.yaml` with a justification comment |
-| New POST host in `domains.txt` committed | Audit nightmare, expands main allowlist | Spawn `/prepare-research` instead |
+| New POST host in `domains.txt` committed | Audit nightmare, expands main allowlist | Use an isolated devcontainer instead |
 | Importing `import yaml` in a mitmproxy addon | PyInstaller bundle ships ruamel only, not PyYAML | Use `from ruamel.yaml import YAML; YAML(typ='safe')` |
 | `sed -i` in host scripts (initialize.sh, firewall-mode.sh) | BSD macOS vs GNU Linux mismatch | Use `awk + temp + mv` |
 | Editing `phases/` directory | Removed in A5 cleanup; superseded by the rollout sessions structure | Add new sessions to the rollout instead |

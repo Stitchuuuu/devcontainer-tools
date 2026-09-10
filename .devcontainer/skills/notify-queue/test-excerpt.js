@@ -132,8 +132,23 @@ function tmpDir() {
 		'cache should be written on successful scan')
 }
 
-// 9. Cache miss + empty history → null (no fallback).
-{
+// resolveAuthority has THREE layers: cache (L1), history scan (L2), and
+// reconstruction from HOST_WORKSPACE_PATH (L3). Any test asserting "returns
+// null" must neutralise L3, or it asserts nothing but the shape of the machine
+// it runs on: tests 9 and 10 passed where the variable is unset and failed
+// inside a devcontainer, which always sets it. L3 has its own test below.
+function withoutHostPath(fn) {
+	const saved = process.env.HOST_WORKSPACE_PATH
+	delete process.env.HOST_WORKSPACE_PATH
+	try {
+		fn()
+	} finally {
+		if (saved !== undefined) process.env.HOST_WORKSPACE_PATH = saved
+	}
+}
+
+// 9. Cache miss + empty history + no env → null.
+withoutHostPath(() => {
 	const dir = tmpDir()
 	const cache = path.join(dir, 'cache')
 	const history = path.join(dir, 'history')
@@ -142,15 +157,15 @@ function tmpDir() {
 	assert.strictEqual(url, null, `empty history should return null — got: ${url}`)
 	assert.strictEqual(fs.existsSync(cache), false,
 		'cache should not be written on scan miss')
-}
+})
 
-// 10. Cache miss + non-existent history dir → null.
-{
+// 10. Cache miss + non-existent history dir + no env → null.
+withoutHostPath(() => {
 	const dir = tmpDir()
 	const cache = path.join(dir, 'cache')
 	const url = resolveLaunchUrl(path.join(dir, 'does-not-exist'), cache)
 	assert.strictEqual(url, null, `missing history dir should return null — got: ${url}`)
-}
+})
 
 // 11. Malformed cache → falls through to scan.
 {
@@ -194,6 +209,33 @@ function tmpDir() {
 	const url = resolveLaunchUrl(history, cache)
 	assert.strictEqual(url, `vscode://vscode-remote/${REAL_AUTHORITY}/workspace`,
 		`should skip non-matching entries.json — got: ${url}`)
+}
+
+// 13b. L3 — both earlier layers miss, but HOST_WORKSPACE_PATH is set, so the
+//      authority is reconstructed from env and cached. This layer had no test
+//      at all, which is exactly why tests 9/10 could assert "no fallback"
+//      against a resolver that has one.
+{
+	const dir = tmpDir()
+	const cache = path.join(dir, 'cache')
+	const history = path.join(dir, 'history')
+	fs.mkdirSync(history)
+	const saved = process.env.HOST_WORKSPACE_PATH
+	process.env.HOST_WORKSPACE_PATH = '/Volumes/Data/dev/demo-project'
+	try {
+		const url = resolveLaunchUrl(history, cache)
+		assert.ok(url && url.startsWith('vscode://vscode-remote/dev-container+'),
+			`L3 should reconstruct from env — got: ${url}`)
+		const hex = url.slice('vscode://vscode-remote/dev-container+'.length).replace('/workspace', '')
+		const payload = JSON.parse(Buffer.from(hex, 'hex').toString('utf8'))
+		assert.strictEqual(payload.hostPath, '/Volumes/Data/dev/demo-project',
+			'reconstructed payload should carry the host path it was given')
+		assert.strictEqual(fs.readFileSync(cache, 'utf8'), `dev-container+${hex}`,
+			'L3 should write its result to the cache')
+	} finally {
+		if (saved === undefined) delete process.env.HOST_WORKSPACE_PATH
+		else process.env.HOST_WORKSPACE_PATH = saved
+	}
 }
 
 // --- readLatestFocus — session 4 focus-aware-delivery ---
@@ -359,6 +401,56 @@ const REQ_ID = 'cfa581dae6fc206ce21ce8ad3bf8d7a8'
 	}, file)
 	assert.strictEqual(perm.tool_use_id, REQ_ID,
 		'ext requestId wins even when payload provides its own tool_use_id')
+}
+
+// 27. The JSON floor. An agent asked to answer with "ONE JSON object and
+//     nothing else" — the orchestration fix planner is, by contract — used to
+//     have its whole blob rendered as a desktop banner body. A first usable
+//     line that is machine output yields nothing rather than that.
+{
+	const blob = '{"units": [{"id": "login-rate-limit-key", "tier": "B", "owns": ["services/api/src/routes/auth.ts"]}]}'
+	assert.strictEqual(excerptV2(blob), '', 'a JSON answer must not become a notification body')
+	assert.strictEqual(excerptV1('[{"finding": 1}]'), '', 'a JSON array is machine output too')
+	assert.strictEqual(excerptV1('```json\n{"a":1}\n```\nAnd then some prose.'),
+		'And then some prose.',
+		'a fenced blob is skipped by the fence rule, and the prose after it still wins')
+	// A Recap still wins over the floor : it is the authoritative body, and it
+	// is prose by construction.
+	assert.strictEqual(excerptV2('{"a":1}\n\n**Recap** — Plan written, 4 units'),
+		'Plan written, 4 units')
+	// And prose that merely mentions a brace is not machine output.
+	assert.strictEqual(excerptV1('The payload {"a":1} is what it sends.'),
+		'The payload {"a":1} is what it sends.')
+}
+
+// 28. A machine-spawned session writes nothing here at all. Measured before
+//     the marker existed : one fan-out of 51 headless sessions put thousands
+//     of tool_started / tool_finished lines and a Stop banner per session into
+//     this queue, burying the notification the human was waiting on. The hook
+//     is executed as a child, because what is under test is the early return
+//     in main(), not a helper.
+{
+	const { execFileSync } = require('child_process')
+	const sid = 'spawned-hook-guard-test'
+	const queued = path.join('/workspace/.devcontainer/notify/queue', `${sid}.jsonl`)
+	try { fs.unlinkSync(queued) } catch (_) {}
+	execFileSync(process.execPath, [path.join(__dirname, 'hook.js'), 'stop'], {
+		input: JSON.stringify({ session_id: sid, last_assistant_message: 'STATUS: done' }),
+		env: { ...process.env, NOTIFY_SUPPRESS_SESSION: 'wave/session-3-foo' },
+	})
+	assert.strictEqual(fs.existsSync(queued), false,
+		'a machine-spawned session wrote into the human notification queue')
+
+	// …and without the marker the same call still queues, so the guard is the
+	// marker and not a dead hook.
+	execFileSync(process.execPath, [path.join(__dirname, 'hook.js'), 'stop'], {
+		input: JSON.stringify({ session_id: sid, last_assistant_message: 'All good.' }),
+		env: { ...process.env, NOTIFY_SUPPRESS_SESSION: '' },
+	})
+	assert.strictEqual(fs.existsSync(queued), true, 'a human session must still be queued')
+	const line = JSON.parse(fs.readFileSync(queued, 'utf8').trim().split('\n').pop())
+	assert.strictEqual(line.last_message_excerpt, 'All good.')
+	fs.unlinkSync(queued)
 }
 
 console.log('test-excerpt.js — all assertions passed')

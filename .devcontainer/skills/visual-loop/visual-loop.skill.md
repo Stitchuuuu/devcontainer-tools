@@ -24,8 +24,21 @@ node argument may be a pasted URL. **429 →
 
 **Output — the running app.** Everything goes through
 [`wtf claude-live`](#tooling). HOST-side prerequisites : `wtf dev` *and*
-`wtf browser` (`--install` once), window **visible** — a headed Chromium does
-not paint background tabs and captures come back stale.
+`wtf browser` (`--install` once), and the app's **tab frontmost in its own
+window**. The window may sit behind the editor — captures rasterise from the
+renderer, so an unfocused window is fine and `document.hasFocus() === false` is
+the normal, supported state. A background **tab** is not : it stops painting,
+so `cdp.mjs` refuses (**exit 9**) rather than measure a frozen frame.
+
+- **Three refusals mean "the world is not ready", not "this is broken".** Read
+  the exit code before doing anything : **9** the tab is not frontmost — say so
+  and wait, or pre-position it with `wtf claude-live front` ; **10** another
+  session holds the browser — wait and re-run the same command, or pass
+  `--wait-lock <seconds>` ; **3** the browser is not running — that is a
+  **HUMAN action** (`wtf browser`, host-side, needs a window). Relay the
+  message's own line as a markdown link or copy-pasteable command and **wait** ;
+  never retry in a loop, and never try to launch it from the container. Same
+  discipline as the Figma 429 : a failover, not a retry.
 
 - **`--login` on every deep link.** `Layout.vue` mounts only when
   authenticated ; logged out, the query string survives but nothing acts on
@@ -34,7 +47,10 @@ not paint background tabs and captures come back stale.
   1512×789, *viewport* sizes. Iterate on one, `sweep` all at the end.
   `--height` overrides a preset — raise it so the whole element fits
   unscrolled while you iterate.
-- **Clear the override when you stop measuring** (`sweep --reset`). A capture
+- **Clear the override when you stop measuring** —
+  `node .devcontainer/claude/scripts/cdp.mjs reset`, or `--reset` on a sweep
+  that also has `--url` and `--out` (both are required, so `sweep --reset`
+  alone only prints usage). A capture
   leaves it in place on purpose so a follow-up read measures what was shot —
   but the human then sees a page rendered larger than their window and
   reports it as cropped.
@@ -43,7 +59,7 @@ not paint background tabs and captures come back stale.
 
 ## Tooling
 
-[.devcontainer/claude/scripts/](.devcontainer/claude/scripts/) — the six things
+[.devcontainer/claude/scripts/](.devcontainer/claude/scripts/) — the things
 every visual session re-derives. **Use them instead of a `node -e` blob** : a
 blob re-invents the traps above and its output cannot be diffed against the last
 run. Coordinates are in **reference units** (the mockup's own numbers), so
@@ -62,7 +78,8 @@ wtf claude-live probe  -- --url '…' --login --origin .n-drawer '.field-row=gap
 `<tool> -- --help` is the reference — the scripts document themselves, this
 file only says which one to reach for.
 
-**`wtf claude-script <tool>` — offline, files only.** Chain it freely.
+**`wtf claude-script <tool>` — touches no state the human owns.** Reads image
+files and local processes. Chain it freely.
 
 | | for |
 |---|---|
@@ -74,23 +91,31 @@ Both take **`--crop right:720`** (or `left:<w>`, `x,y,w,h`) so a raw capture is
 read where it lies : no intermediate file, and every coordinate stays in the
 element's own frame — the frame the mockup is written in.
 
-**`wtf claude-live <tool>` — wakes the human's Chromium.** It brings the
-window forward and navigates it away from whatever was on screen.
+**`wtf claude-live <tool>` — drives the human's Chromium.** It does **not**
+raise the window. It does navigate their tab away from whatever was on screen
+and leave a viewport override behind, and `e2e` also clears cookies
+browser-wide and writes to the dev database.
 
 | | for |
 |---|---|
 | `shot` | the capture, `--url` as a flag and **`--scale 2` by default** |
 | `probe` | the gap table : boxes + `getComputedStyle` per selector, boxes relative to `--origin` so they read as the mockup's coordinates |
-| `sweep` | the three presets as one contact sheet, plus per-preset overflow of `--scroll <css>` |
+| `sweep` | the three presets as one contact sheet, plus per-preset overflow of `--scroll <css>`, **both axes** |
+| `e2e` | a suite of stateful scenarios over one held socket — `--suite plans/<plan>/suites/<name>.mjs`, `--only ID` to chase one. Holds the browser for 1-20 min |
+| `front` | bring the app tab to the front of its window. The ONE command here that takes the front — a pre-run step, never automatic |
 
 Three rules for the live half :
 
-- **Run it ALONE.** Never as one half of a `a && b` — the tool description
-  then names the other half, the human reads that, and the window flashes
-  with nothing on screen to explain it.
-- **Name it in the description**, in those words : "drives the browser".
 - **Batch the reads.** One `probe` with ten selectors is one navigation ; ten
-  calls are ten.
+  calls are ten. This is the rule that never stopped mattering, and it now
+  matters more : each call also takes and releases the browser lock.
+- **Name it in the description**, in those words : "drives the browser". The
+  window no longer flashes, but the human's tab still changes under them if
+  they happen to be looking at it.
+- **One browser command per Bash call.** Not for the flash — that is gone — but
+  because two of them cannot overlap : the second is refused with **exit 10**
+  while the first holds the lock, and in an `a && b` the description names only
+  one of the two.
 
 They re-navigate before every read and wrap their expression in an IIFE —
 the tab may have moved, and evals share the page context so a bare `const`
@@ -132,8 +157,9 @@ When the task is *match the mockup*, not *use the right tokens*.
 5. **One viewport while iterating, all at the end.** A second resolution
    changes what wraps and turns every diff into guesswork. Raise `--height`
    instead so the whole element fits unscrolled, then
-   `wtf claude-live sweep --reset` once it matches ; `macbook` is the
-   shortest and decides whether a modal fits.
+   `wtf claude-live sweep -- --url '…' --out plans/<slug>/shots/x.png --reset`
+   once it matches ; `macbook` is the shortest and decides whether a modal
+   fits.
 6. **A dedicated replica, not a modified demo.** The scroll demos prove
    scrolling and their tests assert row counts — put fidelity work in its
    own dev-only component behind
@@ -143,12 +169,12 @@ When the task is *match the mockup*, not *use the right tokens*.
    [services/doctor/src/ui/form/](services/doctor/src/ui/form/). If a
    replica grows its own paddings, extract them before moving on.
 8. **Side-by-side into `plans/<slug>/shots/`, then `Read` it** —
-   `wtf claude-script ab-shot --crop right:720 --out plans/<slug>/shots/…`.
+   `wtf claude-script ab-shot -- --crop right:720 --out plans/<slug>/shots/…`.
    Both sides at the same scale, a coloured bar per side ; the container has
    no fonts, so baked-in text renders as boxes. Raw captures stay in
    `.tmp/shots/`.
 9. **Close with numbers.** A visual match is not proof :
-   `wtf claude-live probe --origin <shell> '<sel>=<props>' …` over every value
+   `wtf claude-live probe -- --origin <shell> '<sel>=<props>' …` over every value
    of the gap table, and paste the output. One call with many selectors, not
    one call per selector.
 10. **Expect the mockup to be wrong somewhere.** Figma floors auto-layout
