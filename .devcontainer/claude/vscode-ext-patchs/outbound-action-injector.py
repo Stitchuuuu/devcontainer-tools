@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# @patch-category: notify
+# @patch-files: extension.js
+# @patch-sentinel: notify-queue-outbound-inject-v1
+# @patch-sentinel: notify-queue-outbound-perm-log-v2
+# @patch-sentinel: notify-queue-outbound-perm-settle-v2
+# @patch-sentinel: notify-queue-outbound-session-track-v1
+# @patch-summary: Watches an outbound JSONL file and replays permission answers into the
+#   webview, so a notification can answer a prompt.
 """
 Injects a reciprocal control channel into the Claude Code VS Code extension.
 

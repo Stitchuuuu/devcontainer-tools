@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# @patch-category: notify
+# @patch-files: extension.js
+# @patch-sentinel: notify-queue-uri-workspace-v2
+# @patch-summary: Teaches the extension's URI handler to focus a target workspace before
+#   revealing a session.
+#   1: session var    (e.g. "_", "b", "I")
+#   2: URLSearchParams var (e.g. "b", "_", "R")
+#   3: prompt var     (e.g. "w", "v")
+#   4: vscode alias   (e.g. "ke", "Se", "R0")
 """
 Patches the Claude Code VS Code extension `handleUri` for `/open` to accept
 two new query params on top of the existing `session` and `prompt` :

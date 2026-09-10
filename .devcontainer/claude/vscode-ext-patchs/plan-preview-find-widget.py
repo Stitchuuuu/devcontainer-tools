@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# @patch-category: ux
+# @patch-files: extension.js
+# @patch-sentinel: enableFindWidget:!0
+# @patch-summary: Enables the native find widget (Cmd+F) in the read-only plan preview
+#   panel.
 """
 Enables the native Cmd+F / Ctrl+F find widget inside the Claude Code
 extension's `claudePlanPreview` webview (the read-only viewer that

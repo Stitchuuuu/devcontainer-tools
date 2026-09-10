@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# @patch-category: ux
+# @patch-files: webview/index.js
+# @patch-sentinel: /*mma-v1*/
+# @patch-summary: On an empty session, picking a model also moves the permission mode to
+#   the one that model is meant for.
 """
 Patches the Claude Code VS Code extension's webview (webview/index.js) so
 that, on an EMPTY session, picking a model also moves the permission mode

@@ -5,11 +5,14 @@
 # @patch-files: webview/index.js
 # @patch-sentinel: /*mbf-v2*/
 # @patch-sentinel: /*mbf-open*/
-# @patch-sentinel: /*mbf-boot-v3*/
+# /*mbf-boot-v3*/ is deliberately NOT declared: patch_extension_js() only runs
+# from 2.1.258 on, so declaring it would make --list report this patcher dead
+# on 2.1.220. Documented in PATCHES.md instead — same shape as fix-style-pills.
 # @patch-summary: Shows the model currently in use as a read-only badge in the composer
 #   footer. From 2.1.258 it sits behind claudeCode.modelBadgeFooter (off by
 #   default) and, when on, replaces the stock model pill; older bundles always
 #   show it.
+#     n.commandRegistry.registerAction({id:"model",…},"Model",()=>{z(!0)})
 """
 Adds a small read-only badge to the composer footer of the Claude Code VS
 Code extension, showing the model currently in use — without having to open

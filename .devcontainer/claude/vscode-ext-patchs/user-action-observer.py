@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# @patch-category: notify
+# @patch-files: extension.js
+# @patch-sentinel: notify-queue-user-action-v3
+# @patch-summary: Logs every webview to extension message to the output channel and to an
+#   inbound JSONL file.
 """
 Wraps the Claude Code VS Code extension's webview→ext message chokepoint
 (`z.webview.onDidReceiveMessage` in `PanelManager.setupPanel()`) to log every

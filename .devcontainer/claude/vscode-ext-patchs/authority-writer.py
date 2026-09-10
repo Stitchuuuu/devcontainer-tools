@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# @patch-category: notify
+# @patch-files: extension.js
+# @patch-sentinel: /*__NOTIFY_QUEUE_AUTHORITY_WRITER_v1__*/
+# @patch-summary: Writes the container's remote authority to the notify queue so a
+#   notification can focus the right window.
 """
 Patches the Claude Code VS Code extension to write the container's
 remote authority string to `<workspace>/.devcontainer/notify/queue/.authority`

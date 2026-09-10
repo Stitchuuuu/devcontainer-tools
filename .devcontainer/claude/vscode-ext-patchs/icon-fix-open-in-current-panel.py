@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# @patch-category: ux
+# @patch-files: package.json
+# @patch-files: extension.js
+# @patch-sentinel: Primary Editor (Active Column)
+# @patch-summary: Adds a 'primary' window location that opens Claude in the active editor
+#   column instead of splitting.
 """
 Patches the Claude Code VS Code extension to route every Claude panel
 entry-point through the active editor column, with the new tab landing at

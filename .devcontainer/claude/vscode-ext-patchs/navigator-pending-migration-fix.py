@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# @patch-category: fix
+# @patch-files: extension.js
+# @patch-sentinel: /*__VSCODE_NAVIGATOR_PENDING_MIGRATION_FIX_v1__*/
+# @patch-critical: true
+# @patch-summary: Neutralises VS Code's throwing navigator getter, without which the
+#   extension crashes on activation.
 """
 Patches the Claude Code VS Code extension to neutralize VS Code's
 `navigator` PendingMigration getter on globalThis before any other

@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# @patch-category: notify
+# @patch-files: webview/index.js
+# @patch-sentinel: notify-queue-webview-sim-click-v2
+# @patch-sentinel: notify-queue-webview-perm-reqid-callsite-v1
+# @patch-sentinel: notify-queue-webview-perm-reqid-tag-v1
+# @patch-summary: Webview half of the control channel: turns a replayed answer into the
+#   same accept/reject a real button click performs.
 """
 Injects a `simulated_click` interceptor into the Claude Code VS Code webview
 bundle (`webview/index.js`). Companion to `outbound-action-injector.py`.

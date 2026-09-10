@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# @patch-category: ux
+# @patch-files: extension.js
+# @patch-files: webview/index.js
+# @patch-sentinel: /*mt-v2*/
+# @patch-sentinel: /*mtw-v2*/
+# @patch-summary: Instruments the model pipeline with [model-timing] log lines so picker
+#   fill latency and selection mismatches are measurable. Diagnostic: dogfood
+#   only, never baked into the published image.
 """
 Instruments the Claude Code VS Code extension's model pipeline — config
 loading (extension.js) AND model selection (webview/index.js) — with
