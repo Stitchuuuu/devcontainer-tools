@@ -130,13 +130,13 @@ never hard-coded. Anchors key off stable method names
 applyRefusalFallback), the literal probe log string, and the "config
 invalidated mid-probe" error text.
 
-Self-healing v1 → v2
---------------------
-- v1 (2026-08) : five extension.js probes.
-- v2 (current) : + four webview probes (match / seed / setModel /
-  refusal-fallback), + env and localStorage verbosity gates, + model
-  VALUES rather than mere counts — counts could not distinguish "the
-  right list arrived but nothing matched" from "the list was empty".
+Log the VALUES, not the counts
+------------------------------
+Nine probes: five in extension.js, four in the webview (match / seed /
+setModel / refusal-fallback). Each logs the model values themselves, which
+is the whole point — entry counts cannot distinguish "the right list
+arrived but nothing matched" from "the list was empty", and those two call
+for opposite fixes.
 
 Exit codes
 ----------
