@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Open a folder in its dev container from the command line, the way VS Code's
+# "Reopen in Container" does — without the palette.
+#
+#   host-helpers/open-devcontainer [folder]     (default: .)
+#   host-helpers/open-devcontainer --uri [folder]   print the URI, open nothing
+#
+# Why this exists: `code <folder>` opens the folder LOCALLY and leaves you to
+# click Reopen. To attach directly, VS Code wants a remote authority —
+# `dev-container+<hex>`, where the hex is a JSON blob naming the host path and
+# the docker context. release-check.sh builds it inline to drive its own
+# scratch project; this is the same construction, usable by hand.
+#
+# RUN THIS ON THE HOST. The path is baked into the authority, so it has to be
+# the path the Docker daemon and VS Code both see — a container path would
+# produce a URI that resolves to nothing.
+
+set -euo pipefail
+
+URI_ONLY=0
+[ "${1:-}" = "--uri" ] && { URI_ONLY=1; shift; }
+
+FOLDER="${1:-.}"
+[ -d "$FOLDER" ] || { echo "open-devcontainer: no such directory: $FOLDER" >&2; exit 1; }
+FOLDER="$(cd "$FOLDER" && pwd)"
+
+[ -f "$FOLDER/.devcontainer/devcontainer.json" ] || {
+  echo "open-devcontainer: $FOLDER has no .devcontainer/devcontainer.json" >&2
+  exit 1
+}
+
+if grep -q microsoft /proc/version 2>/dev/null || [ -f /.dockerenv ]; then
+  echo "open-devcontainer: run this on the HOST — the folder path is baked" >&2
+  echo "  into the authority, and a container path resolves to nothing." >&2
+  exit 1
+fi
+
+CONTEXT="$(docker context show 2>/dev/null || echo desktop-linux)"
+
+AUTHORITY="$(python3 - "$FOLDER" "$CONTEXT" <<'PY'
+import json, sys
+folder, context = sys.argv[1], sys.argv[2]
+cfg = folder + "/.devcontainer/devcontainer.json"
+o = {"hostPath": folder, "localDocker": False,
+     "settings": {"context": context},
+     "configFile": {"$mid": 1, "fsPath": cfg,
+                    "external": "file://" + cfg, "path": cfg, "scheme": "file"}}
+print("dev-container+" + json.dumps(o, separators=(",", ":")).encode().hex())
+PY
+)"
+
+URI="vscode-remote://${AUTHORITY}/workspace"
+
+if [ "$URI_ONLY" -eq 1 ]; then
+  printf '%s\n' "$URI"
+  exit 0
+fi
+
+command -v code >/dev/null 2>&1 || {
+  echo "open-devcontainer: the \`code\` CLI is not on PATH." >&2
+  echo "  VS Code → Command Palette → \"Shell Command: Install 'code' command\"." >&2
+  echo "  Or open this URI by hand:" >&2
+  printf '  %s\n' "$URI" >&2
+  exit 1
+}
+
+echo "→ $FOLDER  (context: $CONTEXT)"
+code --folder-uri "$URI"
