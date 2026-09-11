@@ -159,7 +159,7 @@ test('non-interactive: writes the defaults and syncs the proxy variables', async
 		assert.equal(
 			read(join(devcontainerDir, '.env')),
 			[
-				'CLAUDE_CODE_VERSION=2.1.258',
+				`CLAUDE_CODE_VERSION=${DEFAULT_CLAUDE_CODE_VERSION}`,
 				'HTTPS_PROXY=http://127.0.0.1:8080',
 				'HTTP_PROXY=http://127.0.0.1:8080',
 				'NO_PROXY=localhost,127.0.0.0/8,host.docker.internal,.local',
