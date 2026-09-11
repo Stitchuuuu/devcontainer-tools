@@ -321,3 +321,83 @@
 - **A lifecycle hook has no proxy : in strict mode it cannot reach the network unless it sources one itself.** *Why* : strict mode routes every egress through mitmproxy, and the `HTTP_PROXY`/`HTTPS_PROXY` that say so are exported by `/etc/profile.d/devcontainer-proxy.sh` — which only a **login shell** sources. `devc-hook` fragments are not login shells, so a `curl` inside one fails at the *connection*, before any HTTP status exists. The symptom is maximally misleading : the banner says « could not fetch » with no code, the same command run by hand in `docker exec ... bash -lc` works every time, and it therefore reads as a startup race. It is not — it is deterministic, and adding `--retry` does nothing. Found on `45-ext-patches.sh`, which silently booted a container with an unpatched extension ; `45-claude-update-probe.sh` has the same blind spot and nobody noticed because it is silent on failure by design. *How to apply* : any hook fragment doing network I/O must, before its first request, source `/etc/profile.d/devcontainer-proxy.sh` when `HTTPS_PROXY` is unset. Test a network hook by running the **phase** (`devc-hook on-create`), never by running the command in a shell — a login shell hides exactly this bug.
 
 - **A build ARG feeding only a LABEL still invalidates everything below it — put labels last.** *Why* : `ARG BASE_VERSION` sat at Dockerfile line 35 and fed a `LABEL` two lines later, above 39 `RUN`/`COPY` steps including a 243 MB download. Changing the version rebuilt the entire image to write a metadata string, and the release process requires that bump every time. It also split the cache between people : a build that forgot `--build-arg BASE_VERSION` took the `0.0.0-dev` default and shared nothing with one that passed the real value, which reads as "the cache is broken" rather than "these are two different builds". Measured after moving the block to the end : 57 s → 0,33 s, same labels. *How to apply* : `LABEL` and the `ARG`s that feed only labels go at the **bottom** of a Dockerfile, after the last `RUN`/`COPY`. Re-declare the `ARG` there — the earlier declaration is out of scope. More generally, before adding an `ARG`, ask what it invalidates: anything that does not change the filesystem belongs below everything that does.
+
+- **A flag documented in a usage header but absent from the argument parser
+  does not do nothing — it does whatever the script does by default.** *Why* :
+  `ext-patches-sync` announced `--status  say what is configured and cached, do
+  nothing` on line 5 of its own header, from its first version, and the script
+  had **no argument parsing at all**. So the one flag whose entire promise is
+  "change nothing" fell straight through to the apply path and rewrote the
+  extension — measured, with the defect reinstated as a counter-proof: the
+  throwaway bundle went from 8 bytes to 31. Nobody noticed because every suite
+  that mentioned the binary asserted it *exists* and is executable, and none
+  asserted what it *does*. A usage header is documentation people trust more
+  than code, precisely because it sits inside the code. *How to apply* : when a
+  script grows its first flag, parse `"$@"` **and** refuse an unknown option
+  (`exit 64`) in the same commit — ignoring a flag is how one comes to mean its
+  opposite. Before trusting a flag you did not write, `grep` the script for
+  `$1`/`getopts`/`case "$@"` and check it is read at all. And when a binary is
+  only covered by "it is baked and executable", treat that as *no* coverage:
+  make the last hardcoded path in it an env seam (`RESTORE_EXT_PATCHES`, next
+  to the `TOOLKIT_DIR`/`BUILD_ENV`/`DEVC_CONFIG_DIR` that were already there)
+  so its behaviour can be driven from a suite at all.
+
+- **A patcher marked `@patch-critical` was critical against a version of the
+  *host*, not against the eternity — re-measure before letting it block a
+  release.** *Why* : `navigator-pending-migration-fix` carries a real stack
+  trace showing `PendingMigrationError` aborting activation, and the README
+  still says the accessor "throws on any access". On the VS Code actually in
+  use (1.127.0) it does not: `extensionHostProcess.js` installs a getter that
+  calls `onUnexpectedExternalError`, whose default handler throws inside a
+  `setTimeout` — asynchronously, so it never reaches the caller — and the
+  getter, having no `return`, yields `undefined` synchronously. The module load
+  completes. The claim was true when it was written, on CC 2.1.145 and an older
+  VS Code, and it silently became a release blocker for an image that ships the
+  extension unpatched. *How to apply* : a criticality marker needs the host
+  version it was measured against written next to it, and a claim about
+  upstream behaviour ("it throws") is a measurement with an expiry date, not a
+  property. Before treating one as blocking, read the current bundle — the
+  answer is usually thirty seconds of `grep` in `extensionHostProcess.js`, and
+  it is cheaper than the release decision that hangs on it.
+
+- **Un banc qui ne prouve pas qu'il a provoqué quelque chose ne mesure rien.**
+  *Why* : `bare-check.sh --login` invalidait l'`accessToken` pour forcer un
+  `authentication_failed`, et laissait le `refreshToken` valide à côté, avec
+  `refreshTokenExpiresAt` dans le futur. Claude Code prenait le 401, partait
+  sur le chemin de refresh, se ré-authentifiait — la session restait connectée
+  et le banc posait quand même ses questions. Toute une session de banc a été
+  perdue avant que l'utilisateur ne dise « je peux pas trigger le unauth ».
+  La garde humaine existait pourtant (« l'écran apparaît-il ? ») et n'a pas
+  protégé : on répond oui à une question qu'on n'a pas les moyens de vérifier.
+  *How to apply* : tout banc qui provoque un état doit **affirmer par machine
+  qu'il l'a atteint** avant de demander quoi que ce soit à un humain — ici une
+  vraie requête (`claude -p`), parce que `claude auth status` rapporte
+  `loggedIn: true` sur les dates d'expiration du fichier, jamais sur la
+  validité du jeton. Et quand on invalide un identifiant, invalider **toutes
+  les voies de récupération**, pas la première.
+
+- **Ancrer sur ce qui survit, pas sur ce qui est à côté.** *Why* : les cinq
+  ré-ancrages de 2.1.268 ont tous la même forme. `model-mode-affinity` était
+  ancré sur la tête d'une chaîne de virgules qu'upstream a réécrite, alors que
+  la queue où il injecte est byte-identique depuis 2.1.220. `model-selection-fix`
+  recopiait le préambule de `loadUserSettings` uniquement pour en extraire les
+  idents `fs`/`path` — 268 a scindé la méthode et le patch est mort pour un
+  corps auquel il ne touchait même pas. `user-action-observer` épelait
+  `JSON.stringify` alors qu'il se moque de qui sérialise.
+  *How to apply* : avant d'écrire une regex, demander « de quoi ai-je
+  réellement besoin ? ». Capturer plutôt qu'épeler (le sérialiseur, le module,
+  le nom de classe) ; tolérer les arguments en queue plutôt que compter les
+  paramètres ; préférer un site **unique dans tout le bundle**
+  (`setPreferredLocation("panel")` : exactement une occurrence sur 220, 258 et
+  268) à un site voisin plus lisible ; et injecter un prologue plutôt que
+  recopier le code d'upstream pour le réémettre.
+
+- **Un sous-correctif qu'upstream a rattrapé se retire sur ce que dit le
+  bundle, pas sur un numéro de version.** *Why* : sur 2.1.268 l'étape 4 de
+  `icon-fix-open-in-current-panel` est devenue inutile — `d1$() =
+  Si$()?.viewColumn ?? ViewColumn.Active` fait ce que notre injection faisait,
+  en mieux (repli sur le premier groupe d'onglets éligible). Une garde
+  `if version >= 2.1.268` aurait créé deux chemins de code à maintenir.
+  *How to apply* : tester la **forme lue** (« le troisième argument est-il
+  encore `ViewColumn.Active` ? ») et se retirer avec un message qui le dit.
+  Un seul chemin de code, et il reste juste quand upstream change d'avis.
