@@ -24,8 +24,9 @@ mirror the `dogfood-switchover` branch, proven by a 19/19 host smoke.
 
    (GNU sed : `sed -i` sans `''`.)
 3. `cp .env.example .env`, then set at least `DC_PROJECT=my-project`.
-   `BASE_IMAGE` is optional — the compose default pins the current
-   published tag.
+   `BASE_IMAGE` is optional — the compose default pins
+   `1.1.0-cc2.1.270`; set it to `1.1.0-cc2.1.220` for the other published
+   line.
 4. The Claude credentials volume : either let `initialize.sh` create the
    per-project one on first run, or point `CLAUDE_CREDS_VOLUME` in `.env`
    at an existing shared volume.

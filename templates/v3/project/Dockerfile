@@ -6,8 +6,9 @@
 # To bump Claude or the base: set BASE_IMAGE in .devcontainer/.env (tag
 # scheme <base-version>-cc<claude-code-version>, published pairs listed in
 # the base repo's cc-versions.json), then "Rebuild Container" in VS Code.
+# The two published lines: 1.1.0-cc2.1.270 (default), 1.1.0-cc2.1.220.
 # -----------------------------------------------
-ARG BASE_IMAGE=ghcr.io/meitogi/devcontainer-sandbox:0.1.0-cc2.1.258
+ARG BASE_IMAGE=ghcr.io/meitogi/devcontainer-sandbox:1.1.0-cc2.1.270
 
 # -----------------------------------------------
 # Stage 1 — firewall bake (throwaway)

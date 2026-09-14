@@ -17,7 +17,7 @@ import { hasCommand, runCapture } from './proc.js'
  * (`cc-versions.json`, tag scheme `<base-version>-cc<cc-version>`); this
  * fallback must name a version that repo publishes.
  */
-export const DEFAULT_CLAUDE_CODE_VERSION = '2.1.268'
+export const DEFAULT_CLAUDE_CODE_VERSION = '2.1.270'
 
 export function hasDocker(): boolean {
 	return hasCommand('docker')
