@@ -82,13 +82,16 @@ const FETCHERS = { curl: 1, wget: 1, 'yt-dlp': 1, 'youtube-dl': 1, aria2c: 1 }
 
 /**
  * Semantic labels for the project's `wtf` entry points. `wtf claude-live *`
- * wakes the human's browser (see CLAUDE-project.md) — worth naming explicitly
- * in a banner rather than showing an opaque subcommand.
+ * drives the human's browser (see CLAUDE-project.md) — it no longer raises the
+ * window, but it navigates their tab, so it is worth naming explicitly in a
+ * banner rather than showing an opaque subcommand.
  */
 const WTF_LABELS = {
 	'claude-live shot':      'screenshot (drives the browser)',
 	'claude-live probe':     'probe the live DOM (drives the browser)',
 	'claude-live sweep':     'reset the viewport (drives the browser)',
+	'claude-live e2e':       'browser E2E suite (drives the browser)',
+	'claude-live front':     'bring the app tab to the front (drives the browser)',
 	'claude-live':           'drives the browser',
 	'claude-script ab-shot': 'A/B screenshot compare',
 	'claude-script pixel':   'pixel measure',

@@ -26,7 +26,7 @@ const HELP = `sweep.mjs --url <url> --out <png> [options]
   --out <png>       contact sheet to write
   --login           authenticate first
   --crop <spec>     right:<w> | left:<w> | x,y,w,h | none   (reference units)
-  --scroll <css>    container to report overflow for, per preset
+  --scroll <css>    container to report overflow for, per preset (both axes)
   --devices <list>  comma separated                 (default desktop,laptop,macbook)
   --scale <n>       capture DPR                                     (default 2)
   --thumb <n>       width of each panel in the sheet, px            (default 480)
@@ -93,8 +93,11 @@ for (const d of devices) {
 	if (o.scroll) {
 		// Same invocation as the capture that is still on screen, so the numbers
 		// describe the frame in the sheet and not whatever the tab drifted to.
+		// BOTH axes : a grid that overflows sideways is the thing a viewport
+		// sweep is run to catch, and height alone cannot answer it.
 		const expr = `(() => { const e = document.querySelector(${JSON.stringify(o.scroll)});
-			return e ? { client: e.clientHeight, scroll: e.scrollHeight, overflows: e.scrollHeight > e.clientHeight } : { missing: true } })()`
+			return e ? { client: e.clientHeight, scroll: e.scrollHeight, overflows: e.scrollHeight > e.clientHeight,
+				clientW: e.clientWidth, scrollW: e.scrollWidth, overflowsX: e.scrollWidth > e.clientWidth } : { missing: true } })()`
 		overflow.push([d, JSON.parse(execFileSync('node', ['.devcontainer/claude/scripts/cdp.mjs', 'eval', expr], { encoding: 'utf8' }))])
 	}
 }
@@ -120,7 +123,11 @@ await sharp({ create: { width, height, channels: 3, background: '#ffffff' } })
 console.log(`${o.out}  ${width}×${height}  ${devices.map((d, i) => `${d} ${PRESETS[d].join('×')} → ${metas[i].width}px`).join(' · ')}`)
 for (const [d, r] of overflow) {
 	if (r.missing) console.log(`  ${d.padEnd(8)} ${o.scroll} — no match`)
-	else console.log(`  ${d.padEnd(8)} ${o.scroll} ${r.client} visible of ${r.scroll} → ${r.overflows ? 'scrolls' : 'fits'}`)
+	else
+		console.log(
+			`  ${d.padEnd(8)} ${o.scroll}  ↕ ${r.client} of ${r.scroll} → ${r.overflows ? 'scrolls' : 'fits'}` +
+				`  ↔ ${r.clientW} of ${r.scrollW} → ${r.overflowsX ? 'OVERFLOWS' : 'fits'}`,
+		)
 }
 
 if (o.reset) execFileSync('node', ['.devcontainer/claude/scripts/cdp.mjs', 'reset'], { stdio: 'inherit' })

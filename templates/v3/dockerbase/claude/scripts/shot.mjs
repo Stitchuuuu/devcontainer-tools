@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // `wtf shot` under the claude-live namespace.
 //
-// It exists so that EVERY command of mine that wakes the human's Chromium sits
+// It exists so that EVERY command of mine that drives the human's Chromium sits
 // behind one permission (`wtf claude-live *`) instead of two. `wtf shot` stays
 // exactly as it is for the human — this only gives me a door with the same lock
 // as probe.mjs and sweep.mjs.

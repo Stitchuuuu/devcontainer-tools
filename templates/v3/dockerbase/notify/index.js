@@ -328,8 +328,13 @@ inboundWatch.start({
 // payload carries the precise probe `reason` (e.g. `docker CLI failed: …`,
 // `no matching container`) so the daemon_stopped notif tells the user what
 // actually broke without forcing them to grep daemon.log.
-if (DOCKER_POLL_MS > 0) dockerWatch.start({ bus, projectDir, intervalMs: DOCKER_POLL_MS })
-else log.info('[docker-watch] disabled via NOTIFY_DOCKER_POLL_MS=0')
+if (DOCKER_POLL_MS > 0) {
+	dockerWatch.start({
+		bus,
+		projectDir: hostKind === 'windows' ? `\\\\wsl.localhost\\${host.getHostSignals().wslDistro || 'Debian'}${projectDir.replace(/\//g, '\\')}` : projectDir,
+		intervalMs: DOCKER_POLL_MS,
+	})
+} else log.info('[docker-watch] disabled via NOTIFY_DOCKER_POLL_MS=0')
 launcherWatch.start({ bus, launcherPid: _launcherPidArg, intervalMs: 5_000 })
 bus.on('container:gone', ({ reason } = {}) => {
 	log.info('container gone — shutting down')

@@ -21,10 +21,19 @@
 //     captured. That is the whole point of the loop ;
 //   - `login` always reloads the document. Setting the cookie is not enough —
 //     see the block comment on doLogin().
+//
+// Two refusals, both of which mean "the world is not ready", never "this is
+// broken" :
+//   - the tab is not the front tab of its window (exit 9) — a hidden tab stops
+//     painting, so a capture would be a frozen frame. The WINDOW may sit behind
+//     anything ; see assertFrontTab ;
+//   - another session holds the browser (exit 10) — there is one tab and every
+//     tool navigates it. Wait and re-run ; see the lock section.
 
 import { lookup } from 'node:dns/promises'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { isIP } from 'node:net'
+import { hostname } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -71,6 +80,8 @@ const EXIT_TIMEOUT = 5
 const EXIT_AUTH = 6
 const EXIT_EVAL = 7
 const EXIT_PROTOCOL = 8
+const EXIT_HIDDEN = 9 // the target tab is backgrounded — nothing rendered can be trusted
+const EXIT_LOCKED = 10 // another session holds the browser ; wait and retry
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 // Two copies of the same file, and the difference between them is diagnostic.
@@ -94,6 +105,24 @@ const ALLOW_FILE_SOURCE = portsFile(resolve(SCRIPT_DIR, '../../firewall'))
 // scripts/install-cross-arch-natives.mjs, which reads the same marker.
 const HOST_OS_FILE = resolve(SCRIPT_DIR, '../../logs/host-os')
 
+// Keyed on the ENDPOINT the lock guards, never on the checkout. The previous
+// repo-relative path (.tmp/cdp/.cdp-lock.json) broke under git worktrees : wtf
+// runs each worktree's own copy of this file, so every worktree derived its own
+// lock file and excluded nothing — while all of them navigated the one browser.
+// /tmp is container-wide, so every session pointing at the same host:port now
+// contends on the same file whatever directory it runs from. The suffix keeps
+// two DISTINCT endpoints from serialising each other ; CDP_LOCK_DIR relocates
+// the directory (tests, mainly — so they never touch a live session's lock).
+const LOCK_DIR = process.env.CDP_LOCK_DIR || '/tmp/cdp'
+const LOCK_FILE = resolve(LOCK_DIR, `.cdp-lock-${process.env.CDP_HOST || DEFAULT_HOST}-${process.env.CDP_PORT || DEFAULT_PORT}.json`)
+// The crash window, NOT the hold limit. A healthy run refreshes every
+// LOCK_BEAT_MS and keeps the lock for as long as it needs — a 20-minute e2e
+// suite included. Sizing this off the longest suite is the mistake the
+// heartbeat exists to avoid ; it only bounds how long a `kill -9` wedges.
+const LOCK_TTL_MS = 60_000
+const LOCK_BEAT_MS = 20_000
+const LOCK_POLL_MS = 2000 // --wait re-check interval
+
 const USE_COLOR = process.stdout.isTTY && process.env.NO_COLOR !== '1'
 const C = USE_COLOR
 	? { bold: BOLD, dim: DIM, green: GREEN, red: RED, yellow: YELLOW, reset: RESET }
@@ -114,16 +143,42 @@ const C = USE_COLOR
  * loading fonts. `view` doubles as a machine-checkable read of the auth state
  * — `'layout'` proves the session cookie took, with no cookie inspection.
  */
-const RENDER_PREDICATE = `(() => {
+/** The element that proves the APP is up. Any other selector takes the generic arm. */
+const APP_ROOT = '#app'
+
+/**
+ * Built per capture rather than fixed, because this tool is not only pointed at
+ * the app : a companion page that mounts somewhere else — a dashboard on
+ * `<main id="view">`, a docs build, a Storybook — has no `#app` at all, so the
+ * app arm below would time out on a page that rendered perfectly.
+ * `#app` (the default) keeps the auth-state read — `view` is what proves the
+ * session cookie took, with no cookie inspection. Any other selector gets the
+ * same liveness checks minus that app-specific arm.
+ * @param {string} selector
+ * @returns {string} JS evaluated in the page
+ */
+function renderPredicate(selector) {
+	const shared = `
+	if (root.getBoundingClientRect().height < 8) return { ok: false, why: 'root rendered with zero height' }
+	if (document.fonts && document.fonts.status !== 'loaded') return { ok: false, why: 'webfonts still loading' }
+	for (const img of document.images) if (!img.complete) return { ok: false, why: 'images still loading' }`
+
+	if (selector !== APP_ROOT) {
+		const sel = JSON.stringify(selector)
+		return `(() => {
+	const root = document.querySelector(${sel})
+	if (!root) return { ok: false, why: 'no element matching ' + ${sel} + ' — the page never mounted, or the wrong URL' }${shared}
+	return { ok: true, view: ${sel} }
+})()`
+	}
+	return `(() => {
 	const app = document.getElementById('app')
 	if (!app) return { ok: false, why: 'no #app element — dev-server 503 page, or the wrong URL' }
 	const root = app.querySelector('.login, .layout')
-	if (!root) return { ok: false, why: 'app mounted but nothing rendered — auth.status is not "ready" yet' }
-	if (root.getBoundingClientRect().height < 8) return { ok: false, why: 'root rendered with zero height' }
-	if (document.fonts && document.fonts.status !== 'loaded') return { ok: false, why: 'webfonts still loading' }
-	for (const img of document.images) if (!img.complete) return { ok: false, why: 'images still loading' }
+	if (!root) return { ok: false, why: 'app mounted but nothing rendered — auth.status is not "ready" yet' }${shared}
 	return { ok: true, view: root.classList.contains('layout') ? 'layout' : 'login' }
 })()`
+}
 
 // ── errors ────────────────────────────────────────────────────────────────
 
@@ -138,6 +193,171 @@ class CdpError extends Error {
 		this.name = 'CdpError'
 		this.code = code
 	}
+}
+
+// ── lock ──────────────────────────────────────────────────────────────────
+
+// There is ONE debug Chromium and ONE tab, and every tool here navigates it.
+// Two sessions overlapping is not a slowdown, it is silent wrong data : a shot
+// fired mid-suite navigates the tab out from under it, a viewport override from
+// one session resizes what the other is measuring, and `fresh: true` — which
+// e2e passes unconditionally — sends Storage.clearCookies BROWSER-WIDE and logs
+// the other session out. None of that raises an error anywhere ; it just
+// produces numbers that are wrong.
+//
+// Advisory, deliberately. It guards the realistic case — several Claude
+// sessions in one devcontainer, each in its own checkout or worktree, all
+// driving the same host:9222 — and it cannot see the human driving that
+// browser by hand, or a sibling research container with its own /tmp. .figma-lock.json has exactly the same
+// property and has been worth having. Do not read it as a hard mutex.
+//
+// The two halves come from the two precedents already in the repo : the message
+// shape and the refuse-don't-wait policy from figma.mjs, the mtime-as-heartbeat
+// liveness from .devcontainer/notify/lib/lockfile.js. Not lockfile.js's
+// always-replace policy — evicting a live holder is right for a daemon slot and
+// catastrophic for a suite twelve minutes into a run.
+
+/** Best-effort JSON read — a missing or corrupt lock is not an error, it is "no lock". */
+function readLockFile() {
+	try {
+		return JSON.parse(readFileSync(LOCK_FILE, 'utf8'))
+	} catch {
+		return null
+	}
+}
+
+/** Our identity in the lock file. `pid` alone is meaningless across containers. */
+function lockSelf() {
+	return { pid: process.pid, host: hostname() }
+}
+
+/**
+ * The lock currently in force, or null when there is none or it has gone stale.
+ *
+ * Staleness is an absolute `expires` written by the holder's heartbeat, not a
+ * liveness probe : `process.kill(pid, 0)` answers about THIS container's
+ * process table, and the holder may be in another one.
+ * @returns {object|null}
+ */
+function readLock() {
+	const lock = readLockFile()
+	return lock?.expires > Date.now() ? lock : null
+}
+
+/**
+ * Refuse, in the shape figma.mjs established : what was refused and for how
+ * long, the forensic line, then `→` bullets ending in the manual escape hatch.
+ *
+ * The reader is an AGENT, so the first bullet is an instruction and not a
+ * diagnosis. Fail fast rather than block by default : a Bash call that sits
+ * silent for twenty minutes hits the tool timeout and reads as a hang, and the
+ * caller can neither report progress nor do anything else meanwhile.
+ * @param {object} lock
+ * @returns {CdpError}
+ */
+function lockedError(lock) {
+	const ageS = Math.max(0, Math.round((Date.now() - Date.parse(lock.at)) / 1000))
+	const age = ageS >= 60 ? `${Math.floor(ageS / 60)}m ${ageS % 60}s` : `${ageS}s`
+	return new CdpError(
+		`the browser is held by another session — \`${lock.owner}\`, started ${age} ago on ${lock.host}.
+  ${C.dim}pid ${lock.pid} · claimed ${lock.at} · expires ${new Date(lock.expires).toISOString()}${C.reset}
+  → WAIT and re-run this exact command. An e2e suite runs 1-20 min ; a shot or
+    probe frees it in seconds.
+  → do NOT run a second browser command in parallel — both would navigate the
+    same tab, and the readings of BOTH would be wrong.
+  → the holder refreshes its claim every ${LOCK_BEAT_MS / 1000}s. If that process died the lock
+    goes stale on its own at the time above and the next command takes it.
+  → --wait-lock <seconds> blocks here until it frees instead of failing.
+  → delete ${LOCK_FILE} only if you are certain no session is running.`,
+		EXIT_LOCKED,
+	)
+}
+
+/**
+ * Take the browser lock, or throw {@link lockedError}.
+ *
+ * `flag: 'wx'` is O_EXCL — it throws EEXIST if the file exists, and that is the
+ * whole mutex. Zero dependency, matching this file and every script beside it.
+ * The stale path is a delete-then-retry rather than an overwrite, so two racing
+ * waiters cannot both believe they took it.
+ * @param {string} owner - the argv that is claiming it, for the refusal message.
+ * @param {number} waitMs - how long to keep retrying ; 0 fails fast.
+ * @returns {Promise<() => void>} release, safe to call more than once.
+ */
+async function acquireLock(owner, waitMs) {
+	const deadline = Date.now() + waitMs
+	const self = lockSelf()
+	mkdirSync(dirname(LOCK_FILE), { recursive: true })
+
+	for (;;) {
+		const claim = { ...self, owner, at: new Date().toISOString(), expires: Date.now() + LOCK_TTL_MS }
+		try {
+			writeFileSync(LOCK_FILE, `${JSON.stringify(claim, null, 2)}\n`, { flag: 'wx' })
+			return startHeartbeat(self)
+		} catch (err) {
+			if (err?.code !== 'EEXIST') throw err
+		}
+
+		const held = readLock()
+		if (!held) {
+			// Expired. Drop it and loop : whoever wins the next `wx` owns it, and
+			// the loser sees EEXIST again rather than clobbering the winner.
+			try {
+				unlinkSync(LOCK_FILE)
+			} catch {
+				/* another waiter got there first — fine, retry */
+			}
+			continue
+		}
+		if (Date.now() >= deadline) throw lockedError(held)
+		await sleep(Math.min(LOCK_POLL_MS, Math.max(0, deadline - Date.now())))
+	}
+}
+
+/**
+ * Keep the claim fresh, and hand back a release that only ever deletes OUR
+ * lock. Blind unlink would let a session that just stole an expired lock have
+ * it deleted by the previous holder's late exit.
+ * @param {{pid: number, host: string}} self
+ * @returns {() => void}
+ */
+function startHeartbeat(self) {
+	let released = false
+	const beat = setInterval(() => {
+		const lock = readLockFile()
+		if (lock?.pid !== self.pid || lock.host !== self.host) return
+		lock.expires = Date.now() + LOCK_TTL_MS
+		try {
+			writeFileSync(LOCK_FILE, `${JSON.stringify(lock, null, 2)}\n`)
+		} catch {
+			/* a lock we cannot refresh will go stale on its own — not worth dying for */
+		}
+	}, LOCK_BEAT_MS)
+	// unref so the timer never keeps the process alive past its work.
+	beat.unref()
+
+	const release = () => {
+		if (released) return
+		released = true
+		clearInterval(beat)
+		const lock = readLockFile()
+		if (lock?.pid !== self.pid || lock.host !== self.host) return
+		try {
+			unlinkSync(LOCK_FILE)
+		} catch {
+			/* already gone */
+		}
+	}
+	process.on('exit', release)
+	// SIGINT/SIGTERM do not run `exit` handlers on their own. Re-raise with the
+	// handler removed so the caller still sees a signal death, not exit 0.
+	for (const sig of ['SIGINT', 'SIGTERM']) {
+		process.once(sig, () => {
+			release()
+			process.kill(process.pid, sig)
+		})
+	}
+	return release
 }
 
 // ── transport ─────────────────────────────────────────────────────────────
@@ -262,11 +482,15 @@ function unreachableHint(ep, err) {
   → the firewall allows it, so nothing is answering on the Windows side.
   → if the Chromium window IS open, Windows Firewall is blocking chrome.exe on ${ep.port} —
     re-run \`wtf browser\` in the WSL2 shell and answer the prompt (private networks only).
-  → otherwise run \`wtf browser\` on the HOST, in the WSL2 shell (it needs a window).`
+  → otherwise run \`wtf browser\` on the HOST, in the WSL2 shell (it needs a window).
+  → HUMAN ACTION : this cannot be done from the container. If you are an agent, relay the
+    line above and WAIT — do not retry, and do not try to launch it yourself.`
 	}
 	return `${head}
   → the firewall allows it, so Chromium is not listening. Run \`wtf browser\` on the HOST
-    (it needs a window ; it cannot run in this container).`
+    (it needs a window ; it cannot run in this container).
+  → HUMAN ACTION : this cannot be done from the container. If you are an agent, relay the
+    line above and WAIT — do not retry, and do not try to launch it yourself.`
 }
 
 /**
@@ -407,6 +631,59 @@ async function connect(wsUrl) {
 }
 
 /**
+ * Refuse a target that is not the front tab of its window.
+ *
+ * `fromSurface: false` (see cmdShot) bought back the WINDOW ; it buys nothing
+ * for the TAB. A backgrounded tab reports visibilityState 'hidden', the
+ * renderer stops rAF, CSS animations freeze and every `visibilitychange`
+ * listener takes its hidden branch — the capture then comes back as a paused
+ * frame and gets measured as if it were live, which reads as a rendering bug
+ * and is not one. `hasFocus()` is the OTHER thing entirely and is false in
+ * normal operation : both readings go into the message so that nobody "fixes"
+ * this by raising the window, which is precisely what is NOT required.
+ *
+ * Only 'visible' passes. An unreadable answer is not a state worth trusting.
+ * Pure — exported for the unit test, the only place this can be checked
+ * without a browser.
+ * @param {{visibility: string, focus: boolean, url: string}} state
+ * @returns {void}
+ */
+function assertFrontTab(state) {
+	if (state?.visibility === 'visible') return
+	throw new CdpError(
+		`the target tab is not the front tab of its window — document.visibilityState : ${state?.visibility ?? 'unreadable'}
+  → in the debug Chromium, click the tab on ${state?.url ?? 'the app'} so it is the FRONTMOST TAB of ITS window.
+  → the WINDOW may stay behind your editor : hasFocus ${state?.focus} is the normal, supported state. Do NOT
+    "fix" this by raising or focusing the window. A MINIMISED window reads hidden too — leave it open, behind.
+  → why this is fatal : a hidden tab stops painting, so the capture would be a paused frame and every
+    measurement taken from it stale.`,
+		EXIT_HIDDEN,
+	)
+}
+
+/**
+ * Print the "about to take your window" banner and wait out the grace
+ * period — the one warning every activating command in this toolchain shows
+ * BEFORE it steals the human's window, so the alert always precedes the
+ * steal instead of explaining it afterwards. Exported so `front.mjs` and
+ * `e2e.mjs` (the only two callers that ever activate a tab) share one
+ * wording instead of drifting, which they already had.
+ * @param {string} url - the tab being activated.
+ * @param {string} detail - one line explaining WHY, specific to the caller.
+ * @param {number} graceMs - wait before returning ; `<= 0` skips the wait.
+ * @returns {Promise<void>}
+ */
+async function warnBeforeActivating(url, detail, graceMs) {
+	process.stdout.write(
+		`\n${YELLOW}${BOLD}⚠  ABOUT TO TAKE YOUR WINDOW${RESET}\n` +
+			`${DIM}   ${url}${RESET}\n` +
+			`${DIM}   ${detail}${RESET}\n` +
+			`${DIM}   ${Math.round(graceMs / 1000)} s to Ctrl-C — \`--grace 0\` skips this wait${RESET}\n\n`,
+	)
+	if (graceMs > 0) await sleep(graceMs)
+}
+
+/**
  * Pick the tab to drive and attach a flat session to it.
  *
  * **Reuse over Target.createTarget**, deliberately : `eval` is useless on a
@@ -416,22 +693,42 @@ async function connect(wsUrl) {
  * @param {{send: Function}} conn
  * @returns {Promise<{targetId: string, sessionId: string, frameId: string}>}
  */
-async function attachPage(conn) {
+async function attachPage(conn, { activate = false, requireVisible = true } = {}) {
 	const { targetInfos } = await conn.send('Target.getTargets')
 	const pages = targetInfos.filter(t => t.type === 'page' && !t.url.startsWith('devtools://'))
 	const preferred = pages.find(t => URL.parse(t.url)?.hostname.endsWith(APP_HOST))
 	const targetId =
 		(preferred ?? pages[0])?.targetId ?? (await conn.send('Target.createTarget', { url: 'about:blank' })).targetId
 
-	// A headed Chromium does not paint background tabs : capturing an inactive
-	// one returns a stale or empty frame. Activating is not cosmetic.
-	await conn.send('Target.activateTarget', { targetId })
+	// Activation is NOT needed to capture : cmdShot rasterises with
+	// `fromSurface: false`, which works on a window nobody is looking at. The
+	// parameter survives for the one case where FOCUS ITSELF is under test —
+	// :focus-visible, a caret, an IME, Input.dispatchKeyEvent into a field that
+	// expects focus first — and a call site that passes it should say so in a
+	// comment, because raising the window costs the human their screen
+	// mid-sentence. It is one half of a pair : either we bring the tab to the
+	// front, or we demand that it already is (the guard below).
+	if (activate) await conn.send('Target.activateTarget', { targetId })
 
 	// flatten:true → the session is addressed by a top-level `sessionId` on every
 	// message, both directions, over this same socket. Without it each command
 	// has to be tunnelled through Target.sendMessageToTarget and unwrapped out of
 	// Target.receivedMessageFromTarget — same result, twice the JSON, deprecated.
 	const { sessionId } = await conn.send('Target.attachToTarget', { targetId, flatten: true })
+
+	// Settled HERE, once, before any navigation or login — and never in
+	// evaluate(). A suite that opens a second tab (Target.createTarget, straight
+	// on the connection, see plans/<plan>/suites/) legitimately backgrounds this
+	// one mid-run, so a per-read check would fail on its own harness. Attaching
+	// happens before any scenario, which is what makes one shot safe. Skipped
+	// when `activate` is set : that arm brings the tab to the front by
+	// construction and checking now would only race the visibilitychange.
+	// Cheap on purpose — one round-trip, before the domain enables, so a wrong
+	// tab costs a second rather than a full render wait.
+	if (requireVisible && !activate) {
+		const probe = '({ visibility: document.visibilityState, focus: document.hasFocus(), url: location.href })'
+		assertFrontTab(await evaluate(conn, sessionId, probe))
+	}
 
 	await conn.send('Page.enable', {}, sessionId)
 	await conn.send('Network.enable', {}, sessionId)
@@ -519,10 +816,11 @@ function explainHttp(status, url) {
  * @returns {Promise<{ok: true, view: string}>}
  */
 async function waitForRender(conn, sid, o) {
+	const predicate = renderPredicate(o.ready ?? APP_ROOT)
 	const deadline = Date.now() + o.timeoutMs
 	let why = 'never evaluated'
 	while (Date.now() < deadline) {
-		const r = await evaluate(conn, sid, RENDER_PREDICATE)
+		const r = await evaluate(conn, sid, predicate)
 		if (r?.ok) {
 			// Naive UI animates : the drawer slides in over ~300ms and n-modal fades.
 			// A settle beat is cheaper and far more robust than trying to detect the
@@ -703,7 +1001,7 @@ async function cmdShot(conn, sid, frameId, o) {
 	// headed browser.
 	const login = o.login ? await doLogin(conn, sid, frameId, o) : null
 	await navigate(conn, sid, frameId, o.url)
-	const rendered = await waitForRender(conn, sid, { timeoutMs: o.wait, settleMs: o.settle })
+	const rendered = await waitForRender(conn, sid, { timeoutMs: o.wait, settleMs: o.settle, ready: o.ready })
 
 	// --before : put the page into a state no url can express — a drawer opened
 	// by a click, a hover, a style override for an A/B. It runs HERE, after the
@@ -717,15 +1015,31 @@ async function cmdShot(conn, sid, frameId, o) {
 		await sleep(o.settle)
 	}
 
-	// A headed Chromium does not paint background tabs — re-activate right before
-	// capturing in case the user clicked another tab while we were waiting.
-	await conn.send('Target.activateTarget', { targetId: o.targetId })
+	// `fromSurface: false` is what makes a capture possible WITHOUT stealing the
+	// window. The default (true) grabs the OS compositor surface, which only
+	// exists for a painted, foreground window — that was the entire reason this
+	// used to call Target.activateTarget here. Rasterising from the renderer
+	// instead works on an unfocused window ; verified at both
+	// `captureBeyondViewport` settings, full fidelity, and on a browser launched
+	// WITHOUT any anti-backgrounding flags — so this line stands on its own.
+	//
+	// The trade-off is that OS-level chrome and overlays are excluded, which for
+	// capturing an app's own UI is the wanted behaviour. If a capture ever needs
+	// the real compositor output (video, some GPU paths), flip it back.
+	//
+	// ⚠️ Still required : the target must be the ACTIVE TAB in its window.
+	// Window occlusion is handled ; tab backgrounding is not — a hidden tab has
+	// visibilityState 'hidden', which stops rAF and freezes animations, and the
+	// capture then returns a paused frame that looks like a rendering bug.
+	// Enforced at attach (assertFrontTab), once, so by the time we get here the
+	// tab was painting.
+	//
 	// If a --full capture ever comes back clipped, the fix is not a CDP mystery :
 	// Page.getLayoutMetrics → cssContentSize.height → re-issue the metrics
 	// override at that height → capture → restore.
 	const shot = await conn.send(
 		'Page.captureScreenshot',
-		{ format: 'png', captureBeyondViewport: Boolean(o.full) },
+		{ format: 'png', fromSurface: false, captureBeyondViewport: Boolean(o.full) },
 		sid,
 		LOAD_TIMEOUT_MS,
 	)
@@ -771,6 +1085,10 @@ Options
   --login            log in first, then capture (idempotent)
   --email <e>        default ${DEFAULT_EMAIL}
   --password <p>     default ${DEFAULT_PASSWORD}
+  --ready <selector> element whose presence means "rendered", default ${APP_ROOT}. The
+                     default also reads the app's auth state. Point it elsewhere to
+                     capture a page that is not the app — a companion page mounting
+                     on \`<main id="view">\` needs \`--ready '#view'\`, having no #app.
   --wait <ms>        render-predicate timeout, default ${RENDER_TIMEOUT_MS}
   --settle <ms>      pause after render, default ${SETTLE_MS} (drawer/modal animation)
   --before <js>      JS to run after render and before capture, for a state no url
@@ -778,16 +1096,26 @@ Options
                      override for an A/B. Same invocation as the navigation on
                      purpose : a separate \`eval\` would hit whatever page the tab
                      has drifted to. Settles again afterwards.
+  --wait-lock <s>    seconds to wait for the browser lock, default 0 (refuse at
+                     once). There is one browser and one tab : a second session
+                     running now would navigate it out from under this one.
   --json             one JSON blob on stdout, no human output
   --                 stop flag parsing (use for \`eval -- '-1'\`)
 
 Environment
   CDP_HOST           default ${DEFAULT_HOST}
   CDP_PORT           default ${DEFAULT_PORT}
+  CDP_LOCK_DIR       browser-lock directory, default /tmp/cdp — shared by every
+                     checkout, because the lock guards the endpoint, not the repo
 
 \`reset\` clears the viewport emulation that \`shot\` deliberately leaves behind —
 run it when you are done measuring, otherwise the window keeps rendering at the
-captured size and anything taller than the real window looks cropped.
+captured size and anything taller than the real window looks cropped. It is the
+one command exempt from the front-tab check, being the undo for exactly that.
+
+The app tab must be the FRONTMOST TAB of its window ; the window itself may sit
+behind your editor. A background tab stops painting and every reading off it is
+stale, so that is refused rather than measured.
 
 Requires \`wtf dev\` AND \`wtf browser\` running on the HOST.
 A deep link into an authenticated-only view renders nothing while logged out —
@@ -819,7 +1147,15 @@ function parseArgs(argv) {
 		settle: SETTLE_MS,
 		scale: 1,
 		device: '',
+		// The element whose presence means "rendered". Default #app is the app ;
+		// point it elsewhere to capture a page that is not the app.
+		ready: APP_ROOT,
 		json: false,
+		// Milliseconds spent waiting for the browser lock. 0 = refuse at once,
+		// which is the right default for an agent : the refusal tells it to come
+		// back, and a silent twenty-minute block would just hit a tool timeout.
+		// Named --wait-lock because --wait is already the render timeout.
+		wait_lock: 0,
 	}
 	const positionals = []
 	const seen = new Set()
@@ -829,6 +1165,7 @@ function parseArgs(argv) {
 		'--password': 'password',
 		'--device': 'device',
 		'--before': 'before',
+		'--ready': 'ready',
 	}
 	const numbers = {
 		'--width': 'width',
@@ -850,6 +1187,8 @@ function parseArgs(argv) {
 			o[values[a]] = argv[++i]
 		} else if (numbers[a]) {
 			o[numbers[a]] = Number(argv[++i])
+		} else if (a === '--wait-lock') {
+			o.wait_lock = Number(argv[++i]) * 1000
 		} else if (a === '--full') {
 			o.full = true
 		} else if (a === '--login') {
@@ -967,9 +1306,23 @@ async function main() {
 	validate(o)
 
 	const ep = await resolveEndpoint()
-	const conn = await connect(await fetchBrowserWsUrl(ep))
+	// Reachability is settled BEFORE the lock : a browser that is not running is
+	// the human's problem to fix and must not leave a claim behind for them.
+	const wsUrl = await fetchBrowserWsUrl(ep)
+	const release = await acquireLock(`cdp ${o.cmd}`, o.wait_lock)
+	const conn = await connect(wsUrl)
 	try {
-		const { targetId, sessionId, frameId } = await attachPage(conn)
+		// Nothing here needs the window raised : captures go through
+		// `fromSurface: false` (see cmdShot) and every other command reads the DOM,
+		// which a background WINDOW serves fine. A background TAB does not, hence
+		// the visibility guard — waived for `reset` alone, which is the undo for
+		// the viewport override : it reads no rendered pixel, and refusing to hand
+		// the tab back because the human has already switched tabs is exactly
+		// backwards.
+		const { targetId, sessionId, frameId } = await attachPage(conn, {
+			activate: false,
+			requireVisible: o.cmd !== 'reset',
+		})
 		o.targetId = targetId
 		let out
 		switch (o.cmd) {
@@ -994,14 +1347,110 @@ async function main() {
 		else report(o.cmd, out)
 	} finally {
 		conn.close()
+		release()
 	}
 }
 
-main()
-	.then(() => process.exit(EXIT_OK))
-	.catch(err => {
-		// Errors go to stderr even under --json, so the single stdout blob is never
-		// half a JSON document.
-		process.stderr.write(`${C.red}cdp:${C.reset} ${err?.message ?? err}\n`)
-		process.exit(err instanceof CdpError ? err.code : EXIT_FAIL)
-	})
+// Only when RUN, never when imported. The primitives above (connect, evaluate,
+// navigate, doLogin…) are the reusable half — a harness that needs one socket
+// held across many steps cannot go through the CLI, which opens and closes a
+// connection per invocation. Without this guard, importing the module would
+// run the CLI and exit the importer's process.
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	main()
+		.then(() => process.exit(EXIT_OK))
+		.catch(err => {
+			// Errors go to stderr even under --json, so the single stdout blob is never
+			// half a JSON document.
+			process.stderr.write(`${C.red}cdp:${C.reset} ${err?.message ?? err}\n`)
+			process.exit(err instanceof CdpError ? err.code : EXIT_FAIL)
+		})
+}
+
+export { APP_HOST, assertFrontTab, connect }
+export { evaluate, fetchBrowserWsUrl, lockedError, readLock, reload, resolveEndpoint }
+export { warnBeforeActivating }
+
+/**
+ * One connected, attached, logged-in page session — the entry point for any
+ * multi-step harness. Mirrors main()'s wiring exactly, minus the command
+ * dispatch, so the two cannot drift.
+ * @returns {Promise<{conn: object, sid: string, frameId: string, close: () => void}>}
+ */
+export async function openSession({
+	url = APP_URL,
+	email = DEFAULT_EMAIL,
+	password = DEFAULT_PASSWORD,
+	wait = 15000,
+	settle = 250,
+	activate = false,
+	fresh = false,
+	owner = 'openSession',
+	waitLock = 0,
+} = {}) {
+	// Reachability first, so a browser that is not running never leaves a claim
+	// behind for the human to clean up.
+	const wsUrl = await fetchBrowserWsUrl(await resolveEndpoint())
+	// A harness holds this for minutes and `fresh` below clears cookies
+	// BROWSER-WIDE, so overlapping with another session is not a slowdown, it is
+	// that session being logged out mid-scenario. Held for the whole life of the
+	// returned handle and dropped by close().
+	const release = await acquireLock(owner, waitLock)
+	let conn
+	try {
+		conn = await connect(wsUrl)
+	} catch (err) {
+		release()
+		throw err
+	}
+	try {
+		const { sessionId, frameId } = await attachPage(conn, { activate })
+		// `fresh` exists because doLogin is a no-op when a session already exists
+		// (it returns `{skipped:true}` the moment it sees the layout). Asking for
+		// a SPECIFIC account therefore silently keeps whoever was logged in —
+		// which shows up as an empty app rather than as an auth error, because a
+		// user with no practices legitimately syncs nothing. Dropping the cookies
+		// first is what makes the requested identity actually take.
+		// Storage.clearCookies, not Network.clearBrowserCookies : the latter is
+		// session-scoped and needs Network.enable first, so at browser level it
+		// answers -32601 "wasn't found". This one is browser-wide by design.
+		if (fresh) await conn.send('Storage.clearCookies')
+		// The cookie is only half the identity : the app keeps a persistent
+		// client mirror per ORIGIN, and it outlives both the cookie and the
+		// server database. A database re-seeded behind the browser's back mints
+		// NEW random ids, so a stale mirror hands the suite the union of both
+		// seeds — observed as one account listing the same organisation twice
+		// with a single row server-side, and as records that no longer exist.
+		// Scoped to the target origin on
+		// purpose : browser-wide would wipe the human's own app state.
+		// Sent on the PAGE session, not at browser level (where it answers
+		// -32603), and best-effort : an origin the browser has never visited
+		// has nothing to clear, which must not abort a run. `storageTypes` is
+		// spelled out — 'all' is rejected by this build.
+		if (fresh) {
+			const origin = URL.parse(url)?.origin
+			if (origin) {
+				try {
+					await conn.send('Storage.clearDataForOrigin', { origin, storageTypes: 'indexeddb,local_storage,websql,cache_storage,service_workers,file_systems' }, sessionId)
+				} catch (err) {
+					process.stderr.write(`${YELLOW}could not clear the client mirror for ${origin} (${err.message}) — a stale mirror can carry rows from a previous seed${RESET}\n`)
+				}
+			}
+		}
+		await navigate(conn, sessionId, frameId, url)
+		await doLogin(conn, sessionId, frameId, { wait, settle, email, password })
+		return {
+			conn,
+			sid: sessionId,
+			frameId,
+			close: () => {
+				conn.close()
+				release()
+			},
+		}
+	} catch (err) {
+		conn.close()
+		release()
+		throw err
+	}
+}
