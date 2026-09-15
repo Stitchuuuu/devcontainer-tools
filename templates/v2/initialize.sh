@@ -157,8 +157,16 @@ if [ ! -e "$VSCODE_STUB" ]; then
 	echo "✓ Bootstrapped .vscode/settings.json stub (host-side bind-mount prep)"
 fi
 
-# Create volume (always needed)
-docker volume create "$CREDS_VOLUME" > /dev/null 2>&1 || true
+# Create volume (always needed). Reported, never swallowed: this volume is
+# `external: true` in compose, so a failure here is not cosmetic — it is a
+# container that will not start, several minutes later, with an error that
+# names docker-compose rather than this line.
+if ! docker volume create "$CREDS_VOLUME" > /dev/null; then
+	echo "⚠️  Could not create the '$CREDS_VOLUME' volume."
+	echo "   It is declared 'external: true' in docker-compose.yml, so the"
+	echo "   container will fail to start until it exists. Check the Docker"
+	echo "   daemon is running, then retry."
+fi
 
 # Flag files — delete to re-prompt on next rebuild.
 # FW_FLAG moved into firewall/ + renamed default-mode since session 1 (bake-only).

@@ -220,8 +220,12 @@ RUN set -u ; \
     if curl -fsSL --compressed -A 'VSCode/devcontainer' -o /tmp/claude.vsix "$URL" \
        && unzip -q /tmp/claude.vsix -d /tmp/claude-vsix \
        && [ -d /tmp/claude-vsix/extension ] ; then \
-      cp -a /tmp/claude-vsix/extension/. "$EXT_DIR/" ; \
-      echo "VSIX downloaded + extracted (${VP})" ; \
+      if cp -a /tmp/claude-vsix/extension/. "$EXT_DIR/" ; then \
+        echo "VSIX downloaded + extracted (${VP})" ; \
+      else \
+        echo "VSIX copy incomplete — partial ${EXT_DIR} discarded, runtime fallback via devcontainer.json pin" >&2 ; \
+        rm -rf "$EXT_DIR" ; \
+      fi ; \
     else \
       echo "VSIX download/extract failed — runtime fallback via devcontainer.json pin" >&2 ; \
       rm -rf "$EXT_DIR" ; \
