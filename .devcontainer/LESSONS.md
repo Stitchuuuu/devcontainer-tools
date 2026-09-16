@@ -401,3 +401,46 @@
   *How to apply* : tester la **forme lue** (« le troisième argument est-il
   encore `ViewColumn.Active` ? ») et se retirer avec un message qui le dit.
   Un seul chemin de code, et il reste juste quand upstream change d'avis.
+
+- **Un artefact qui nomme sa version cible doit être refusé, ou au minimum
+  signalé, quand on l'applique ailleurs.** *Why* : le schéma de tag
+  `cc<version>-r<n>` du dépôt de patchers DÉCLARE l'extension pour laquelle il
+  a été coupé, et `ext-patches-sync` ne lisait ce nom que comme clé de cache,
+  ligne de statut et URL de fetch — jamais comme une affirmation. Un pin resté
+  en arrière après quatre bumps CC (`cc2.1.258-r2`) a donc été appliqué tel
+  quel à une extension 2.1.272 : huit patchers ont échoué bruyamment et
+  **neuf ont réussi**. Ce sont les neuf le problème — une ancre de 2.1.258 qui
+  matche encore dans du code 2.1.272 n'est pas une ancre qui veut encore dire
+  la même chose, et `node --check` prouve seulement que le résultat parse. Le
+  seul garde-fou existant, `warn_untested_version`, comparait le mauvais
+  référentiel (le `versions.json` qui **voyage avec le jeu téléchargé**, donc
+  d'époque) et se noyait sous huit lignes rouges.
+  *How to apply* : quand un nom d'artefact encode sa cible — tag, dossier,
+  digest — lire cette cible et la comparer à la réalité, au lieu de traiter le
+  nom comme opaque. Sortir l'alerte **en dernier**, après ce qu'elle qualifie,
+  et la répéter sur le chemin du court-circuit : « déjà appliqué » est
+  précisément la phrase qui ne doit jamais rester seule quand le jeu appliqué
+  était pour une autre version.
+
+- **Une assertion ne doit jamais grep une chaîne que le correctif lui-même
+  cite.** *Why* : la garde de capability de `init-firewall.sh` explique que
+  iptables ment en disant « you must be root ». L'assertion censée prouver que
+  ce diagnostic opaque n'apparaît plus grepait… `you must be root`, et matchait
+  donc le texte du refus. Elle échouait alors que la garde marchait
+  parfaitement. Corrigée en `Could not fetch rule set generation id`, la
+  signature propre d'iptables, que rien d'autre n'émet.
+  *How to apply* : ancrer une assertion de non-régression sur une chaîne que
+  **seul le défaut** peut produire. Si le message de correction cite le
+  symptôme — ce qui est souvent la bonne rédaction — la chaîne citée est
+  disqualifiée comme sonde.
+
+- **Une suite qui lit une variable d'environnement doit la neutraliser à
+  l'entrée.** *Why* : `ext-patches-sync` préfère l'environnement au `.env`
+  (compose injecte à la création), donc `toolkit.test.sh` héritait du pin, du
+  dépôt et du token du container qui l'exécutait : 69/0 sur le host, **5
+  échecs** dans le devcontainer de dogfood, même code, même commit. La suite
+  répondait sur le container au lieu de répondre sur sa fixture.
+  *How to apply* : `unset` en tête de suite toute variable que le code sous
+  test lit depuis l'environnement, et la poser explicitement dans les seuls
+  tests qui l'éprouvent — le précédent est `run-firewall-suites.sh:26-29` avec
+  `FIREWALL_ALLOW_LOCAL_AT_REBUILD`.
