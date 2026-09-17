@@ -444,3 +444,29 @@
   test lit depuis l'environnement, et la poser explicitement dans les seuls
   tests qui l'éprouvent — le précédent est `run-firewall-suites.sh:26-29` avec
   `FIREWALL_ALLOW_LOCAL_AT_REBUILD`.
+
+- **`npm pack` jette silencieusement tout fichier nommé `.gitignore`.** *Why* :
+  le scaffold de `devc init` embarque un `.devcontainer/.gitignore` dans
+  `packages/devcontainer-cli/templates/` ; le checkout l'avait, tous les tests
+  passaient, le tarball ne le contenait pas — 24 fichiers sur 25. Le plan
+  étant construit en parcourant le dossier, une installation depuis le
+  registre aurait scaffoldé un projet **sans `.gitignore`**, sans erreur.
+  Trouvé par la passe de vérification, jamais par le checkout de dev.
+  *How to apply* : nommer le template `_gitignore` et le renommer à l'écriture
+  (convention create-vite) ; et garder un test qui compare `npm pack
+  --dry-run --json` au parcours du dossier — c'est le seul endroit où le
+  défaut est visible.
+
+- **`npx <paquet> <cmd>` sans spec de version ne lance pas la copie locale.**
+  *Why* : dans `libnpmexec` (npm 8-11), un spec sans version est un *tag* ; la
+  branche appelle `getManifest` (`preferOnline`) à chaque exécution, compare
+  l'URL du tarball résolu à celle du `node_modules` local, et **installe puis
+  lance la version plus récente** dès qu'il y en a une au registre. Un
+  `devDependencies` + lockfile ne protège donc rien sous cette forme. Un spec
+  en **plage** (`@0.x`) prend l'autre branche : arbre local interrogé,
+  `semver.satisfies`, copie locale lancée sans réseau — prouvé par un test
+  contre un registre mort (`test/npx-resolution.test.ts`).
+  *How to apply* : toute commande répétée qui passe par `npx` (un
+  `initializeCommand`, un hook) porte une plage ou une version exacte, jamais
+  le nom nu ; et éviter `^` (échappement cmd.exe) et `>` (redirection) dans la
+  chaîne — `0.x` n'a aucun métacaractère.
