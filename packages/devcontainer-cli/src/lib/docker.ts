@@ -19,6 +19,24 @@ import { hasCommand, runCapture } from './proc.js'
  */
 export const DEFAULT_CLAUDE_CODE_VERSION = '2.1.272'
 
+/** Base-image version the scaffold pins; bumps with the base repo's releases. */
+export const DEFAULT_BASE_VERSION = '1.2.0'
+
+/**
+ * The Claude Code versions the base repo currently publishes an image for —
+ * its `cc-versions.json`. A table rather than a closed type so an unlisted
+ * value is a warning, not a CLI release: a new pair upstream must not require
+ * a new CLI to be scaffolded against.
+ */
+export const PUBLISHED_CLAUDE_CODE_VERSIONS: readonly string[] = ['2.1.220', '2.1.272']
+
+export const BASE_IMAGE_REPOSITORY = 'ghcr.io/meitogi/devcontainer-sandbox'
+
+/** `ghcr.io/meitogi/devcontainer-sandbox:<base>-cc<cc>` — the tag scheme. */
+export function baseImageRef(claudeCodeVersion: string, baseVersion = DEFAULT_BASE_VERSION): string {
+	return `${BASE_IMAGE_REPOSITORY}:${baseVersion}-cc${claudeCodeVersion}`
+}
+
 export function hasDocker(): boolean {
 	return hasCommand('docker')
 }
@@ -105,4 +123,66 @@ export function detectRebuildSignals(context: DetectContext): RebuildSignals {
  */
 export function baseImageTag(version: string, projectId: string): string {
 	return `claude-devcontainer-base:${version}-${projectId}`
+}
+
+/**
+ * Volume names that hold Claude credentials.
+ *
+ * `claude-creds-*` is what `devc initialize` creates (per project) and what
+ * the design calls the shared one; `claude-credentials-*` is the default
+ * install.sh offered for years, so hosts carrying it must still see it.
+ */
+export const CREDS_VOLUME_PATTERN = /^claude-(creds|credentials)-/
+
+export interface CredsVolume {
+	name: string
+	/** Compose projects (with the `-claude-code` suffix stripped) whose containers mount it. */
+	projects: string[]
+}
+
+/**
+ * Every credentials volume on this host, most shared first.
+ *
+ * Returns null when docker is absent or the daemon does not answer, so the
+ * caller can say so instead of presenting an empty list as "none exist".
+ * Per-volume `docker ps -a --filter volume=` is the cheapest way to learn who
+ * uses a volume: an external volume carries no compose labels of its own.
+ */
+export function discoverCredsVolumes(): CredsVolume[] | null {
+	if (!hasDocker()) return null
+	const listed = runCapture(['docker', 'volume', 'ls', '--format', '{{.Name}}'])
+	if (listed === null) return null
+	const names = listed
+		.split('\n')
+		.map((line) => line.trim())
+		.filter((name) => CREDS_VOLUME_PATTERN.test(name))
+	return rankCredsVolumes(
+		names.map((name) => {
+			const users = runCapture([
+				'docker',
+				'ps',
+				'-a',
+				'--filter',
+				`volume=${name}`,
+				'--format',
+				'{{.Label "com.docker.compose.project"}}',
+			])
+			return { name, projects: (users ?? '').split('\n') }
+		}),
+	)
+}
+
+/** The pure half: dedupe project names, strip the compose suffix, sort by reach. */
+export function rankCredsVolumes(rows: readonly { name: string; projects: readonly string[] }[]): CredsVolume[] {
+	const ranked: CredsVolume[] = rows.map((row) => {
+		const projects: string[] = []
+		for (const raw of row.projects) {
+			const project = raw.trim().replace(/-claude-code$/, '')
+			if (project.length > 0 && !projects.includes(project)) projects.push(project)
+		}
+		projects.sort()
+		return { name: row.name, projects }
+	})
+	ranked.sort((a, b) => b.projects.length - a.projects.length || a.name.localeCompare(b.name))
+	return ranked
 }

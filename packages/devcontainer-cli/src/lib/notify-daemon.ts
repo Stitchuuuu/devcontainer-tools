@@ -145,7 +145,7 @@ async function spawnNotifyDaemonUnguarded(options: NotifyDaemonOptions): Promise
  * `--launcher-pid` is a divergence worth naming. Bash passed `$PPID`, the
  * parent of the shell VS Code invoked. Here it is `process.ppid`, the parent of
  * *this* process — the same thing today, but under the planned
- * `exec npx @stitchu/devcontainer-cli` shim it would name the npx process
+ * `exec npx @meitogi/devcontainer-cli` shim it would name the npx process
  * instead. `notify/lib/launcher-watch.js` already walks up the tree, so this is
  * flagged for host verification rather than worked around blind.
  */

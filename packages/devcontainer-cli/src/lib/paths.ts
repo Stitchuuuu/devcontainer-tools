@@ -4,7 +4,7 @@
 // "$0")" && pwd)"`. The script lived inside the directory it operated on, so
 // its own location was the answer.
 //
-// That shortcut dies with the port. Under `npx @stitchu/devcontainer-cli`, the
+// That shortcut dies with the port. Under `npx @meitogi/devcontainer-cli`, the
 // entry point sits in an npm cache directory that has nothing to do with the
 // project, so location has to be resolved from the working directory instead —
 // or stated outright, which is also what makes the differential test possible.
@@ -74,6 +74,21 @@ export function classifyDevcontainer(devcontainerDir: string): DevcontainerState
 }
 
 /**
+ * The one shape a project id may take: `install.sh`'s wizard regex.
+ *
+ * Narrower than what Docker accepts in a volume name (`_` and `.` are legal
+ * there) because the id also becomes the compose project name, where `.` is
+ * not — and because `devc init` validates what the user types against this
+ * while `devc initialize` derives a fallback from the directory: one charset
+ * keeps the two agreeing about the same directory.
+ */
+export const PROJECT_ID_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
+
+export function isValidProjectId(value: string): boolean {
+	return PROJECT_ID_PATTERN.test(value)
+}
+
+/**
  * Default `DC_PROJECT` when `.env` does not set one.
  *
  * @remarks
@@ -83,16 +98,24 @@ export function classifyDevcontainer(devcontainerDir: string): DevcontainerState
  * base image tag. The directory name is the obvious non-leaky default, and it
  * is what `install.sh` prompted the user for anyway.
  *
- * Sanitised to what Docker accepts in a volume name and an image tag:
- * lowercase alphanumerics, `-`, `_`, `.`, never leading with a separator.
+ * Sanitised to {@link PROJECT_ID_PATTERN}: lowercase alphanumerics and `-`,
+ * never leading or trailing with a separator.
  */
 export function defaultProjectId(projectDir: string): string {
 	const sanitised = basename(projectDir)
 		.toLowerCase()
-		.replace(/[^a-z0-9_.-]+/g, '-')
-		.replace(/^[^a-z0-9]+/, '')
-		.replace(/-+$/, '')
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
 	return sanitised.length > 0 ? sanitised : 'devcontainer'
+}
+
+/** `my-app` → `My App` — install.sh's `titlecase`, the display-name default. */
+export function titlecase(projectId: string): string {
+	return projectId
+		.split('-')
+		.filter((word) => word.length > 0)
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(' ')
 }
 
 /** Render `path` relative to `base` for log lines, mirroring `${p#$DIR/}`. */

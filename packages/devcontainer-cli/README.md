@@ -1,27 +1,73 @@
-# `@stitchu/devcontainer-cli`
+# `@meitogi/devcontainer-cli`
 
-Host-side control plane for the stitchu devcontainer stack. Runs **on the host**,
+Host-side control plane for the meitogi devcontainer sandbox. Runs **on the host**,
 before and around the container — which is what distinguishes it from the tooling
 baked into the image.
 
 ```sh
-npx @stitchu/devcontainer-cli initialize
+npx @meitogi/devcontainer-cli init
 ```
 
 ## Status
 
-`0.1.0` — skeleton plus one real command. Not published yet.
+`0.1.0` — two real commands. Not published yet.
 
 | Command | State |
 |---|---|
+| `devc init` | **implemented** — scaffold a project's `.devcontainer/` (wizard) |
 | `devc initialize` | **implemented** — host-side pre-container setup |
-| `devc init` | stub — scaffold wizard |
 | `devc update` | stub — bump base + Claude Code versions |
 | `devc doctor` | stub — diagnostics |
 
 Anything else from the design's command table (`patch`, `firewall`, `skill`,
 `notify`, `host`) is absent rather than stubbed. `devc knowledge` and
 `devc lessons` were dropped for v1 — those files are edited directly.
+
+## `devc init`
+
+One command, nothing to install first — `npx` fetches the CLI into its cache
+and runs it, the way `npm create <x>` does:
+
+```sh
+npx @meitogi/devcontainer-cli init [dir]
+```
+
+The wizard looks at what is in the directory (manifests, file extensions) to
+guess the stack, then asks — saying what each answer is used for:
+
+1. **Stack** — Node.js needs nothing; PHP, Android and Capacitor point at the
+   documented Dockerfile blocks in the base repo's `stacks/`.
+2. **Project id** — `DC_PROJECT`: the compose project name and the prefix of
+   the project's volumes.
+3. **Display name** — the devcontainer's name in VS Code.
+4. **Claude credentials volume** — every `claude-creds-*` volume on the host
+   is listed with the projects that mount it, most shared first; or a new
+   shared one, or a private per-project one.
+5. **Claude Code line** — which published `<base>-cc<claude-code>` image.
+
+Then it writes the thin project layer (~25 files: `devcontainer.json`,
+`Dockerfile`, `docker-compose.yml`, `.env`, the firewall allowlist, the hook
+and skill overlay directories, `claude/CLAUDE-*.md`, a blank `LESSONS.md`),
+appends a fragment to the root `.gitignore`, links `LESSONS.md` and
+`.claude/rules/*` at the root, adds itself as a devDependency to the root
+`package.json` and runs `npm install` — so the container's
+`initializeCommand` (`npx --yes @meitogi/devcontainer-cli@0.x initialize`)
+resolves the local, lockfile-pinned copy with no registry round-trip. Everything
+else — hooks, skills, knowledge, the firewall machinery, the toolchain — is
+inherited from `ghcr.io/meitogi/devcontainer-sandbox` at runtime.
+
+```
+devc init [dir] [--yes] [--project-id <slug>] [--display-name <name>]
+          [--creds-volume <name|none>] [--stack <id>] [--cc <x.y.z>]
+          [--no-install] [--dry-run]
+```
+
+`--yes` takes every default and is required when stdin is not a terminal.
+
+An existing `.devcontainer/` is never overwritten. A tree this CLI scaffolded
+gets a per-file report and only its missing files added; a tree made by
+`install.sh` (v1/v2) or by another tool is refused with a message saying what
+was found. Migration is a separate command, not available in this version.
 
 ## `devc initialize`
 

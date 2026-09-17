@@ -74,6 +74,31 @@ export function applyUnset(content: string, key: string): string {
 }
 
 /**
+ * Turn the first `#KEY=…` documented default into a live `KEY=VALUE`.
+ *
+ * install.sh's `generate_env` did this with `sed -E "s|^#DC_PROJECT=…|…|"`
+ * after copying .env.example: the template documents every key as a commented
+ * default, and the wizard's answers should land *on that line*, next to the
+ * comment explaining them, rather than as a bare assignment appended at the
+ * end of a 10 KB file. {@link applySet} cannot express that — it matches live
+ * keys only. Falls back to it when no commented line exists, and defers to it
+ * when a live key already exists (rewrite in place, as always).
+ *
+ * First match only: a template may document several alternatives for one key
+ * (`#ANTHROPIC_BASE_URL=` appears three times), and uncommenting all of them
+ * would be exactly the wrong thing.
+ */
+export function applyUncomment(content: string, key: string, value: string): string {
+	if (hasKey(content, key)) return applySet(content, key, value)
+	const prefix = `#${key}=`
+	const lines = content.split('\n')
+	const index = lines.findIndex((line) => line.startsWith(prefix))
+	if (index === -1) return applySet(content, key, value)
+	lines[index] = `${key}=${value}`
+	return lines.join('\n')
+}
+
+/**
  * Whether a live (non-comment) assignment for `key` exists.
  *
  * Uses a literal prefix match rather than the bash `grep "^${key}="`, whose

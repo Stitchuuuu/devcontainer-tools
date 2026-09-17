@@ -14,7 +14,6 @@ export interface StubCommand {
 }
 
 export const STUB_COMMANDS: readonly StubCommand[] = [
-	{ name: 'init', summary: 'Scaffold a new .devcontainer (wizard)' },
 	{ name: 'update', summary: 'Bump base + Claude Code versions' },
 	{ name: 'doctor', summary: 'Diagnose versions, config and warnings' },
 ]

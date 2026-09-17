@@ -1,7 +1,7 @@
 {
-  "name": "@stitchu/devcontainer-cli",
+  "name": "@meitogi/devcontainer-cli",
   "version": "0.1.0",
-  "description": "Host-side control plane for the stitchu devcontainer stack — wizard, initialize, update, doctor.",
+  "description": "Host-side control plane for the meitogi devcontainer sandbox — init wizard, initialize, update, doctor.",
   "type": "module",
   "license": "MIT",
   "author": "Kévin ʘ‿ʘ <cmoi@kevledev.fr>",
@@ -19,6 +19,7 @@
   "files": [
     "bin/",
     "dist/src/",
+    "templates/",
     "README.md",
     "LICENSE"
   ],

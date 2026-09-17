@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applySet, applyUnset, hasKey, readEnvFile } from '../src/lib/env-file.js'
+import { applySet, applyUncomment, applyUnset, hasKey, readEnvFile } from '../src/lib/env-file.js'
 
 test('appends a new key with a trailing newline', () => {
 	assert.equal(applySet('FOO=1\n', 'BAR', '2'), 'FOO=1\nBAR=2\n')
@@ -90,4 +90,17 @@ test('hasKey ignores commented and prefixed lookalikes', () => {
 
 test('readEnvFile returns {} for a missing file', () => {
 	assert.deepEqual(readEnvFile('/nonexistent/.env'), {})
+})
+
+// --- applyUncomment (devc init's .env generation) -----------------------------
+
+test('applyUncomment turns the first documented default into a live line', () => {
+	const before = '# docs\n#DC_PROJECT=old\n\n#ANTHROPIC_BASE_URL=a\n#ANTHROPIC_BASE_URL=b\n'
+	assert.equal(applyUncomment(before, 'DC_PROJECT', 'new'), '# docs\nDC_PROJECT=new\n\n#ANTHROPIC_BASE_URL=a\n#ANTHROPIC_BASE_URL=b\n')
+	assert.equal(applyUncomment(before, 'ANTHROPIC_BASE_URL', 'c'), '# docs\n#DC_PROJECT=old\n\nANTHROPIC_BASE_URL=c\n#ANTHROPIC_BASE_URL=b\n')
+})
+
+test('applyUncomment defers to applySet for a live key, and appends when nothing documents the key', () => {
+	assert.equal(applyUncomment('#K=1\nK=2\n', 'K', '3'), '#K=1\nK=3\n')
+	assert.equal(applyUncomment('A=1\n', 'K', '3'), 'A=1\nK=3\n')
 })
