@@ -470,3 +470,38 @@
   `initializeCommand`, un hook) porte une plage ou une version exacte, jamais
   le nom nu ; et éviter `^` (échappement cmd.exe) et `>` (redirection) dans la
   chaîne — `0.x` n'a aucun métacaractère.
+
+- **Ne jamais passer un chemin absolu en premier argument positionnel de
+  `npx`.** *Why* : avant de résoudre un paquet, libnpmexec teste si la
+  commande demandée existe déjà en bin local, avec
+  `resolve(<dir>/node_modules/.bin, args[0])`
+  (`libnpmexec/lib/file-exists.js`). Quand `args[0]` est absolu, `resolve`
+  jette le répertoire et rend le chemin lui-même — qui existe. npx en conclut
+  que la commande est installée, **n'installe rien**, n'atteint jamais
+  `getBinFromManifest` (qui aurait traduit le spec en nom de bin) et passe le
+  fichier à `sh` : `Permission denied` sur un `.tgz`, sans un mot sur
+  l'installation manquante. *How to apply* : pour jouer un tarball local,
+  `npx --yes --package /chemin/x.tgz -- <bin> <args>`. Un chemin **relatif**
+  marche aussi par accident (`resolve` ne court-circuite pas), mais la forme
+  `--package` est la seule qui dit ce qu'elle fait.
+
+- **Un npm imbriqué hérite des `npm_config_*` du npm parent.** *Why* :
+  `npm publish --dry-run` exporte `npm_config_dry_run=true` ; le `npm pack`
+  lancé par un test sous `prepublishOnly` l'hérite, **sort en 0 et n'écrit
+  aucun tarball**. Le test casse alors sur son propre fixture
+  (`assert.ok(tarball !== undefined)`) et l'échec accuse le test, pas la
+  cause. Vaut pour `dry_run`, `registry`, `cache`, `production`… *How to
+  apply* : tout `spawn('npm'|'npx', …)` dans un test part avec un
+  environnement nettoyé des `npm_config_*` qui changeraient son sens — et le
+  commentaire dit lequel, sinon le prochain le remet.
+
+- **Une commande shell écrite et vérifiée en bash n'est pas vérifiée pour un
+  lecteur en zsh.** *Why* : zsh ne découpe pas une expansion de variable non
+  quotée en mots. `DEVC="node /x/devc.mjs"` puis `$DEVC init` marche en bash
+  et échoue en zsh sur `no such file or directory: node /x/devc.mjs` — le
+  nom de commande est la chaîne entière. Un guide rédigé depuis ce container
+  (bash) et joué sur le Mac (zsh) tombe dessus à la première ligne, et le
+  script qui porte la même forme en interne, lui, marche — ce qui égare le
+  diagnostic. *How to apply* : dans une doc destinée à être collée dans un
+  terminal, un lanceur est une **fonction** (`devc() { node "$X" "$@"; }`),
+  jamais une variable. Dépannage sans réécrire : `${=VAR}`.
