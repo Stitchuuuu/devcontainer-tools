@@ -19,10 +19,17 @@ const hasNpm = npm.status === 0
 
 const DEAD_REGISTRY = 'http://127.0.0.1:9/'
 
+// `npm publish --dry-run` runs this suite through prepublishOnly with
+// npm_config_dry_run=true exported, and children inherit it: `npm pack` then
+// exits 0 having written no tarball, and `npm install` installs nothing. Every
+// npm the test spawns gets it scrubbed.
+const ENV = { ...process.env }
+delete ENV.npm_config_dry_run
+
 test('npx resolves the locally installed copy with no registry access', { skip: !hasNpm && 'npm not on PATH' }, () => {
 	const work = mkdtempSync(join(tmpdir(), 'devc-npx-'))
 	try {
-		const packed = spawnSync('npm', ['pack', '--pack-destination', work, '--silent'], { cwd: PACKAGE_ROOT, encoding: 'utf8' })
+		const packed = spawnSync('npm', ['pack', '--pack-destination', work, '--silent'], { cwd: PACKAGE_ROOT, encoding: 'utf8', env: ENV })
 		assert.equal(packed.status, 0, packed.stderr)
 		const tarball = readdirSync(work).find((name) => name.endsWith('.tgz'))
 		assert.ok(tarball !== undefined)
@@ -32,7 +39,7 @@ test('npx resolves the locally installed copy with no registry access', { skip: 
 		const install = spawnSync(
 			'npm',
 			['install', '--save-dev', '--no-audit', '--no-fund', '--ignore-scripts', `--registry=${DEAD_REGISTRY}`, join(work, tarball)],
-			{ cwd: work, encoding: 'utf8' },
+			{ cwd: work, encoding: 'utf8', env: ENV },
 		)
 		assert.equal(install.status, 0, install.stderr)
 		void project
@@ -40,7 +47,7 @@ test('npx resolves the locally installed copy with no registry access', { skip: 
 		const run = spawnSync('npx', ['--yes', `--registry=${DEAD_REGISTRY}`, `${CLI_NAME}@${majorRange()}`, '--version'], {
 			cwd: work,
 			encoding: 'utf8',
-			env: { ...process.env, npm_config_registry: DEAD_REGISTRY },
+			env: { ...ENV, npm_config_registry: DEAD_REGISTRY },
 		})
 		assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`)
 		assert.equal(run.stdout.trim(), CLI_VERSION)
