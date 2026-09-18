@@ -10,7 +10,7 @@ npx @meitogi/devcontainer-cli init
 
 ## Status
 
-`0.1.0` — two real commands. Not published yet.
+`0.1.0` — two real commands, published on npm.
 
 | Command | State |
 |---|---|
