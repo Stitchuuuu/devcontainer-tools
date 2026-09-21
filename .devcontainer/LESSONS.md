@@ -548,3 +548,43 @@
   s'en souvenir au moment de choisir une dépendance : un paquet à binaires
   par plateforme coûte cette gymnastique à chaque fois
   ([.claude/rules/dependencies.md](../.claude/rules/dependencies.md)).
+
+- **Publier sur npm depuis une CI : trusted publishing (OIDC) + staged
+  publishing, et `npm publish` laissé décoché.** *Why* : l'UI de npm le dit
+  elle-même à côté de la case (« Not recommended. For stronger security, leave
+  unchecked to allow staged publishing only »), et la raison est concrète, pas
+  décorative. `npm stage publish` dépose le tarball dans une zone d'attente et
+  s'arrête ; un mainteneur approuve en 2FA, ou jette avec `npm stage reject` et
+  peut re-stager la même version. Une version publiée, elle, est définitive
+  passé 72 h. **Le push du tag cesse donc d'être le point de non-retour** —
+  c'est l'approbation qui l'est, faite par un humain, après coup, avec le droit
+  de refuser. OIDC apporte le reste : aucun secret dans le dépôt, rien qui
+  expire, et l'attestation de provenance attachée **sans** `--provenance`.
+  *How to apply* : `permissions: id-token: write`, `setup-node` avec
+  `registry-url` (toujours requis, même sans jeton), `npm stage publish`. Sur
+  npmjs.com, *Trusted publishing* → GitHub Actions : le compte **sans `@`**
+  (`meitogi`, pas `@meitogi`), le dépôt sans le propriétaire, et le **nom de
+  fichier du workflow**, qui devient porteur — le renommer casse la
+  publication en `E404` qui ressemble à un paquet introuvable, et npm ne valide
+  **rien** à l'enregistrement. Planchers : npm ≥ 11.5.1 pour OIDC, ≥ 11.15.0
+  pour le staging ; épingler `node-version: '24'` **en littéral** et jamais
+  `node-version-file: package.json`, qui lirait `engines.node` et installerait
+  un Node dont le npm est antérieur à OIDC. Vérifié le 2026-09-21 : le staging
+  **préserve** la provenance, ce que la doc npm ne dit nulle part.
+
+- **Le conteneur n'a aucun credential GitHub : tout push est un geste
+  hôte.** *Why* : `gh` est installé mais non authentifié, et le relais de
+  credentials des Dev Containers ne répond **rien** pour `github.com` —
+  éprouvé avec et sans nom d'utilisateur. Le piège est qu'un `git ls-remote`
+  ou un `git fetch` sur un dépôt **public** réussit quand même, ce qui donne
+  l'illusion que l'authentification fonctionne ; le premier `git push` la
+  détruit avec `could not read Password … terminal prompts disabled`. *How to
+  apply* : l'éprouver **avant** de bâtir un plan qui suppose un push depuis le
+  conteneur (`printf 'protocol=https\nhost=github.com\n\n' | git credential
+  fill` — n'en lire que la présence, jamais la valeur). Le `.git` étant
+  bind-monté, tout ce que Claude committe localement est immédiatement
+  poussable depuis le Mac : lui donner le chemin hôte, qui est dans
+  `$HOST_WORKSPACE_PATH`. Et lui rappeler que **`git push` seul ne pousse pas
+  les tags** — il répond `Everything up-to-date`, ce qui se lit comme un
+  succès pendant que la ref est restée locale et qu'aucun run ne part.
+  `git push origin refs/tags/<tag>`.
