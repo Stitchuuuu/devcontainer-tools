@@ -165,7 +165,10 @@ export async function init(options: InitOptions): Promise<number> {
 	const wizard: WizardContext = { projectDir, options, context, interactive, say, err }
 
 	try {
-		if (state.kind === 'same') return reportExisting(wizard)
+		// `return await`, not `return`: the finally below closes the readline
+		// interface, and a bare return runs it while a question is still
+		// pending — the promise never settles and the process exits 13.
+		if (state.kind === 'same') return await reportExisting(wizard)
 
 		const answers = await collectAnswers(wizard)
 		if (answers === null) {

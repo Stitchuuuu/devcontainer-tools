@@ -163,6 +163,43 @@ test('a re-run adds a missing file and reports edited managed files without touc
 	}
 })
 
+// Every other test here injects `ask`, which leaves `readlineAsk` unused — so
+// none of them ever exercised the real interface. That seam hid a defect: the
+// state-2 path returned its promise without awaiting it, so the `finally`
+// closed readline while the question was pending, the answer was never read
+// and node exited 13 on an unsettled await. This test drives the genuine
+// readline over a TTY-shaped stream; with the defect it times out.
+test('the state-2 confirmation is read from a real readline, not a stubbed seam', { timeout: 5000 }, async () => {
+	const { dir, cleanup } = scratch()
+	try {
+		assert.equal((await runInit(dir)).code, 0)
+		const missing = join(dir, '.devcontainer', 'skills', 'disabled.txt')
+		rmSync(missing)
+
+		const out = sink()
+		const err = sink()
+		const input = Object.assign(new PassThrough(), { isTTY: true })
+		const running = init({
+			cwd: dir,
+			yes: false,
+			dryRun: false,
+			input,
+			out,
+			err,
+			probe: LINUX_PROBE,
+			discover: () => [],
+			installer: async () => 0,
+		})
+		input.write('y\n')
+
+		assert.equal(await running, 0, err.text())
+		assert.match(out.text(), /Add the missing files\? \[Y\/n\]:/)
+		assert.ok(existsSync(missing), 'the answer was read and acted on')
+	} finally {
+		cleanup()
+	}
+})
+
 test('a v2 tree is refused with exit 1 and nothing written', async () => {
 	const { dir, cleanup } = scratch()
 	try {
