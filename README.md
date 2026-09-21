@@ -1,177 +1,145 @@
 # devcontainer-tools
 
-A one-shot installer that drops a hardened **Claude Code devcontainer
-baseline** (~95 files) into a fresh project. The baseline ships a
-default-deny outbound firewall, a sandboxed Claude Code runtime, a
-sidecar for local Ollama backends, and a curated set of skills for
-PR drafting, dependency audits, scoped research, and time tracking.
+A hardened **Claude Code devcontainer** setup: a default-deny outbound
+firewall, a sandboxed Claude Code runtime, a sidecar for local Ollama
+backends, and a curated set of skills for PR drafting, dependency audits,
+scoped research, and time tracking.
+
+The current generation (v3) ships as two separately-versioned artefacts,
+each in its own repo:
+
+| Artefact | Source | Distributed via |
+|---|---|---|
+| the **image** | [`meitogi/devcontainer-sandbox`](https://github.com/meitogi/devcontainer-sandbox), tagged `v1.2.0` | `ghcr.io/meitogi/devcontainer-sandbox:<base>-cc<claude-code>` |
+| the **CLI** | [`meitogi/devcontainer-cli`](https://github.com/meitogi/devcontainer-cli) | npm, `@meitogi/devcontainer-cli` |
+
+The CLI scaffolds a thin project layer that pulls the image at container
+build time; the image carries the hooks, skills, knowledge base and
+firewall machinery. Neither is useful alone.
 
 ## Quick start
 
 ```bash
-bash /path/to/devcontainer-tools/install.sh ~/my-project
+npx @meitogi/devcontainer-cli init
 ```
 
-The wizard asks **4 questions** (down from 13 in v1.x) :
+The wizard detects the stack, asks a handful of questions (project id,
+display name, Claude credentials volume, Claude Code version), and writes
+`.devcontainer/`. Then open the project in VS Code and run *Dev Containers:
+Reopen in Container* — the first build pulls the published image;
+subsequent projects pinning the same Claude Code version reuse it.
 
-1. `PROJECT_ID` — slug used for Docker volumes, defaults to the
-   project directory basename.
-2. `PROJECT_DISPLAY_NAME` — human-readable name, defaults to the
-   title-cased basename.
-3. `PROJECT_TYPE` — `node` (default), `php`, or `custom`.
-4. **Shared Claude credentials volume** — share OAuth across
-   sibling devcontainers (default `claude-creds-shared`) or pick a
-   per-project volume.
-
-Then open the project in VS Code and run *Dev Containers : Reopen
-in Container*. The first build pulls the base image
-(`claude-devcontainer-base:${CLAUDE_CODE_VERSION}`) ; subsequent
-projects pinning the same Claude Code version reuse the cached
-base.
+See [`@meitogi/devcontainer-cli`'s own README](https://github.com/meitogi/devcontainer-cli#readme)
+for the full command reference (`devc init`, `devc initialize`).
 
 ## What ships
 
-Inside the freshly-installed `<target>/.devcontainer/` :
+Inside a scaffolded `.devcontainer/` (~25 files — everything else is
+inherited from the image at runtime):
 
-- **Lifecycle scripts** — `initialize.sh`, `on-create.sh`,
-  `post-create.sh`, `post-start.sh`, `shell-init.sh` (each
-  idempotent ; safe to replay).
-- **Firewall** — DNS + iptables + mitmproxy with 4 addons, baked
-  into the image (no runtime bind mount). Strict mode by default ;
-  `basic` and `off` modes available via `firewall-mode.sh`.
-- **Claude integration** — settings, hooks, dev vs reviewer mode,
-  bidirectional OAuth sync across sibling devcontainers via the
-  shared credentials volume.
-- **Skills** — `/prepare-pr`, `/watch-log`, `/prepare-research`,
-  `/scan-deps`, `/prepare-plan` (synced into
-  `~/.claude/commands/` at every post-start via
-  `skills/sync-skills.sh`).
-- **Host helpers** — 12 utilities the user runs on the host to
-  drive the container : `claude-switch` (cloud ↔ local Ollama),
-  `verify-slim-base`, `analyze-base-image`, `rebuild-base-image`,
-  `mitm-capture`, `bring-back-result`, etc.
-- **Knowledge base** — `.devcontainer/knowledge/` (6 files :
-  INDEX, firewall internals, wtf, extension-points, base-image
-  layout, ollama-local).
-- **Documentation** — `.devcontainer/README.md`, `RUNBOOK.md`,
-  `SECURITY.md`, `RESEARCH.md` — operations, threat model, scoped
-  research workflow.
+- `Dockerfile`, `docker-compose.yml`, `devcontainer.json`, `.env` — the
+  project layer that builds on the published base image.
+- **Firewall** — a project-level allowlist (`firewall/domains.txt`,
+  `domains.d/`, `policy.d/`) layered on top of the image's own baseline;
+  `basic`/`strict`/`off` modes, strict by default.
+- **Hooks and skills overlay dirs** — `hooks/{on-create,post-create,
+  post-start}.d/`, empty until the project adds its own; the image's own
+  fragments run regardless.
+- `claude/CLAUDE-dev.md`, `claude/CLAUDE-project.md`, a blank `LESSONS.md`.
 
-## How it works
-
-`install.sh` copies `templates/v2/` verbatim to
-`<target>/.devcontainer/`, with two `sed` replacements
-(`{{PROJECT_ID}}`, `{{PROJECT_DISPLAY_NAME}}`) and shell expansion
-(`${VAR:-default}`) for everything else. Three additional surfaces :
-
-- A **shipped `.devcontainer/.gitignore`** scoped to internal
-  artefacts (logs, scratch dirs, local overrides).
-- A **root-scope `.gitignore`** fragment appended to
-  `<target>/.gitignore` for entries that must sit at the project
-  root (`.claude/`, `.vscode/*` with `settings.json` whitelisted,
-  `.env.dev`, `.DS_Store`).
-- A **root `LESSONS.md` symlink** pointing at
-  `.devcontainer/LESSONS.md` (mode 120000), so per-project
-  lessons live inside the devcontainer tree like `CLAUDE.md`.
-
-Re-running `install.sh` against an existing project :
-
-- Detects a **v1.3 marker** (`.configured-setup` with
-  `VERSION="1.3.0"`) → aborts with a pointer to the (deferred)
-  Part 2 migration prompt — `install.sh` does **not** auto-upgrade
-  from 1.3.
-- Detects a **v2 marker** → offers `Reinstall` (overwrite) or
-  `Abort`.
+The image itself carries the toolchain, the baked-in skills, the knowledge
+base, and the firewall runtime — see
+[`meitogi/devcontainer-sandbox`](https://github.com/meitogi/devcontainer-sandbox).
 
 ## Layout
 
 ```
 .
-├── install.sh                  # the installer (4 prompts)
-├── templates/v2/               # the baseline (~95 files) shipped to projects
-├── CHANGELOG.md                # version history
-├── ROADMAP.md                  # high-level roadmap and rollout state
-├── KNOWLEDGE.md                # rollout-specific internals
+├── packages/                   # four independently-published sub-projects
+│   ├── devcontainer-cli/       # the CLI — own git history, own repo, gitignored here
+│   ├── devcontainer-sandbox/   # the image's source — own git history, own repo, gitignored here
+│   ├── claude-ext-patchs/      # own git history, own repo, gitignored here
+│   └── vscode-ext-patch-starter/  # own git history, own repo, gitignored here
+├── templates/v3/project/       # the v3 baseline source, mirrored into
+│                                # devcontainer-cli's package and drift-tested
+│                                # against it (test/template-drift.test.ts)
 ├── plans/                      # multi-session rollout journals
-│   ├── devcontainer-tools-v2-migration/      # this tool's v2 rollout
-│   ├── devcontainer-security-hardening/      # firewall write-protect rollout
-│   ├── devcontainer-security-hardening-v2/   # dnsmasq strict rollout
-│   └── INDEX.md                              # index of rollouts
+├── CHANGELOG.md                # v1/v2 version history
 └── CLAUDE.md                   # dev guidelines for working in this repo
 ```
 
-`templates/v2/` is the only versioned baseline today. A future
-`templates/v3/` (or a sibling variant under `templates/v2/`) would
-be selectable via the `TEMPLATE_VARIANT` env var — currently
-hardcoded to `v2`.
+Each `packages/*` entry is its own git repository with its own remote — this
+repo tracks none of their history; `.gitignore` excludes them.
 
 ## Requirements
 
-- **Docker** on the host (Docker Desktop on macOS / Linux ; tested
-  on Apple Silicon and Linux amd64).
+- **Docker** on the host (Docker Desktop on macOS/Linux; tested on Apple
+  Silicon and Linux amd64).
 - **VS Code** with the **Dev Containers** extension.
-- Roughly **5-10 minutes + ~1.2 GB** on the first base-image build
-  (subsequent projects pinning the same `CLAUDE_CODE_VERSION`
-  reuse the cached image).
+- Node 18+ to run the CLI via `npx`.
 
-## Migrating from v1.x
+## Migrating from v2
 
-`install.sh` v2 does **not** auto-migrate (the v1.3 `update.sh`
-full-resync proved too brittle for a major jump). Instead, a
-**Claude-driven playbook** walks the v1.x → v2.0 reconciliation
-per file-class with human-in-the-loop confirmation.
-
-```bash
-cd /path/to/v1x-project
-git clone --depth 1 --branch v2.0.0 \
-  git@github.com:<user>/devcontainer-tools.git .tmp/migrate-v2
-echo ".tmp/" >> .gitignore
-# Open Claude Code in this project, then paste :
-#   Migre ce projet d'une devcontainer v1.x vers v2.0 en suivant
-#   .tmp/migrate-v2/MIGRATION-v1-to-v2.md.
-```
-
-Full playbook : [MIGRATION-v1-to-v2.md](MIGRATION-v1-to-v2.md).
-
-If you don't migrate, projects stay on v1.3 — `install.sh` detects
-the marker and aborts cleanly.
-
-## Upgrading within v2.x
-
-For routine minor bumps (e.g. 2.0.0 → 2.0.1 → 2.1.0), the same
-Claude-driven flow applies — but lighter, because v2's `*.local`
-convention isolates user-specific config from shipped files.
-
-```bash
-cd /path/to/v2x-project
-git clone --depth 1 --branch v2.Y.Z \
-  git@github.com:<user>/devcontainer-tools.git .tmp/upgrade-v2
-grep -qxF '.tmp/' .gitignore || echo ".tmp/" >> .gitignore
-# Open Claude Code in this project, then paste :
-#   Upgrade ce projet vers v2.Y.Z en suivant
-#   .tmp/upgrade-v2/UPGRADE-v2.md.
-```
-
-Full playbook : [UPGRADE-v2.md](UPGRADE-v2.md).
+There is no automated v2 → v3 migration path. `devc init` refuses a v2
+project outright rather than attempting one — from the CLI itself: *This
+CLI does not migrate a v2 tree; "devc migrate" is not available in this
+version.* Moving a project to v3 today means re-scaffolding by hand with
+`devc init` and porting over anything project-specific.
 
 ## Security posture
 
-The baseline assumes Claude Code may be **fully prompt-injected**
-inside the main container. Three threat-model criteria hold :
+The baseline assumes Claude Code may be **fully prompt-injected** inside the
+main container. Three threat-model criteria hold:
 
-1. **No restart** — the node user can't restart the container
-   alone.
-2. **No firewall modification** — the firewall is baked into the
-   base image ; editing it requires a rebuild (the only audit
-   trail).
-3. **No exfiltration without rebuild** — default-deny outbound,
-   dnsmasq strict (no catch-all), mitmproxy with 4 L7 addons.
+1. **No restart** — the node user can't restart the container alone.
+2. **No firewall modification** — the firewall is baked into the base
+   image; editing it requires a rebuild (the only audit trail).
+3. **No exfiltration without rebuild** — default-deny outbound, dnsmasq
+   strict (no catch-all), mitmproxy with L7 addons.
 
 See `plans/devcontainer-security-hardening/` and
-`plans/devcontainer-security-hardening-v2/` for the two rollouts
-that landed this posture, and `templates/v2/SECURITY.md` for the
-threat model shipped to consumers.
+`plans/devcontainer-security-hardening-v2/` for the rollouts that landed
+this posture in v2; the same model carries into v3's image.
 
 ## Status
 
-`v2.0.0` — released 2026-05-22. See [CHANGELOG.md](CHANGELOG.md).
+- **CLI**: see [`meitogi/devcontainer-cli`'s own release history](https://github.com/meitogi/devcontainer-cli/releases) —
+  currently `0.1.1` on npm as `@meitogi/devcontainer-cli`.
+- **Image**: `v1.2.0`, published from
+  [`meitogi/devcontainer-sandbox`](https://github.com/meitogi/devcontainer-sandbox).
+
+## History: v1 → v2
+
+The sections below describe the superseded `install.sh`-based v2 baseline,
+kept for projects that haven't moved to v3 yet. See [CHANGELOG.md](CHANGELOG.md)
+for the full v1/v2 version history.
+
+### Installing v2
+
+```bash
+bash /path/to/devcontainer-tools/install.sh ~/my-project
+```
+
+The wizard asks **4 questions** (down from 13 in v1.x): `PROJECT_ID`,
+`PROJECT_DISPLAY_NAME`, `PROJECT_TYPE` (`node`/`php`/`custom`), and the
+shared Claude credentials volume. `install.sh` copies `templates/v2/`
+verbatim to `<target>/.devcontainer/`, with `sed` substitutions for the
+answers.
+
+Re-running `install.sh` against an existing project: a **v1.3 marker**
+(`.configured-setup` with `VERSION="1.3.0"`) aborts with a pointer to the
+migration playbook below; a **v2 marker** offers `Reinstall` or `Abort`.
+
+### Migrating v1.x → v2.0
+
+`install.sh` v2 does not auto-migrate — a **Claude-driven playbook** walks
+the v1.x → v2.0 reconciliation per file-class with human-in-the-loop
+confirmation. Full playbook: [MIGRATION-v1-to-v2.md](MIGRATION-v1-to-v2.md).
+If you don't migrate, projects stay on v1.3 — `install.sh` detects the
+marker and aborts cleanly.
+
+### Upgrading within v2.x
+
+For routine minor bumps, the same Claude-driven flow applies, lighter
+because v2's `*.local` convention isolates user-specific config from
+shipped files. Full playbook: [UPGRADE-v2.md](UPGRADE-v2.md).
