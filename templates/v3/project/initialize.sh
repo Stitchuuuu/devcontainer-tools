@@ -546,7 +546,7 @@ prompt_auth() {
 	echo ""
 	echo "=== GitHub Auth ==="
 	echo "  Standard: open a terminal after startup and run 'gh auth login'."
-	echo "  (gh-secure mode dropped in Phase 3 A3 — Level 1 strict blocks"
+	echo "  (gh-secure mode has been dropped — strict mode blocks"
 	echo "  POST github.com/* outside /anthropics/* at the firewall layer.)"
 	echo ""
 	echo "standard" > "$AUTH_FLAG"
@@ -572,7 +572,7 @@ prompt_claude_mode() {
 }
 
 write_firewall_default() {
-	# Default since A4 : strict (DNS allowlist + mitmproxy force-proxy + addons).
+	# Default: strict (DNS allowlist + mitmproxy force-proxy + addons).
 	# No prompt — the choice is intentional (max-security baseline). To flip to a
 	# looser mode, use `firewall-mode.sh basic` or `firewall-mode.sh off` then
 	# rebuild. Legacy mode names `paranoid`/`okeish` remain accepted as aliases.
@@ -667,7 +667,7 @@ echo "=== DevContainer Setup ==="
 
 # Each flag prompted independently — adding a new flag to an existing
 # setup will trigger only its prompt at the next rebuild.
-# Firewall has no prompt since A4 : default = strict (silent). Flip via
+# Firewall has no prompt — default = strict (silent). Flip via
 # firewall-mode.sh + rebuild.
 [ ! -f "$AUTH_FLAG" ] && prompt_auth
 [ ! -f "$MODE_FLAG" ] && prompt_claude_mode

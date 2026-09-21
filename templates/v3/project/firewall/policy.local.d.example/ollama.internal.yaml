@@ -11,7 +11,7 @@
 # Purpose: advanced rules for the local Ollama backend (Anthropic Messages
 # compat, Ollama ≥ v0.14.0). Routed via mitmproxy when the user uses the
 # `ollama.internal` alias (the default — `.local` would bypass NO_PROXY).
-# Consumed by A2 mitmproxy addons. Merged on top of methods + paths declared
+# Consumed by the mitmproxy addons. Merged on top of methods + paths declared
 # in domains.txt.
 # Body-size limit mirrors api.anthropic.com.yaml for parity with the cloud
 # endpoint — same prompts size in either mode.
