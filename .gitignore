@@ -39,9 +39,12 @@ packages/*/*.tgz
 
 # Standalone git repos nested under packages/ (same pattern as apps/*).
 # devcontainer-sandbox has its own git history — never tracked here.
+# devcontainer-cli was tracked here until 2026-09-21; its history up to
+# 1c6ade2 stays on feat/v3, and it lives on at meitogi/devcontainer-cli.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
 packages/vscode-ext-patch-starter/
+packages/devcontainer-cli/
 
 # Scratch / experimentation
 .tmp/
