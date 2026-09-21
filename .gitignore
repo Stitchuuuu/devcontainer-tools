@@ -41,7 +41,7 @@ packages/*/*.tgz
 # devcontainer-sandbox has its own git history — never tracked here.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
-packages/ext-patch-starter/
+packages/vscode-ext-patch-starter/
 
 # Scratch / experimentation
 .tmp/
