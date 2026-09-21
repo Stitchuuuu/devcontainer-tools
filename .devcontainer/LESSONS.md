@@ -505,3 +505,46 @@
   diagnostic. *How to apply* : dans une doc destinée à être collée dans un
   terminal, un lanceur est une **fonction** (`devc() { node "$X" "$@"; }`),
   jamais une variable. Dépannage sans réécrire : `${=VAR}`.
+
+- **`return <promesse>` dans un `try/finally` exécute le `finally` avant que
+  la promesse ne se résolve** — et si ce `finally` ferme une ressource, la
+  promesse ne se résout jamais. *Why* : mesuré sur `devc init`, où le chemin
+  « projet déjà scaffoldé » faisait `return reportExisting(wizard)` sans
+  `await` dans un `try { … } finally { readline?.close() }`. L'interface
+  readline était créée pendant l'appel puis fermée aussitôt, question
+  pendante : `rl.question()` ne se règle plus, la boucle d'événements se
+  vide et node sort en **13** avec `Warning: Detected unsettled top-level
+  await`. À l'écran, le prompt s'affiche et le shell reprend la main sans
+  rien lire. *How to apply* : dans un `try` qui a un `finally` libérant
+  quoi que ce soit, écrire `return await f()`, jamais `return f()` — la
+  règle vaut aussi quand le `finally` ne fait « que » du log.
+
+- **Une couture d'injection testable peut rendre un défaut de cycle de vie
+  invisible à toute la suite.** *Why* : les 129 tests de `devc init`
+  passaient `options.ask`, donc `readlineAsk()` n'était **jamais** construit
+  et le `close()` du `finally` était un no-op — le défaut ci-dessus ne
+  pouvait pas apparaître. La couture qui rend les prompts testables est
+  exactement celle qui masque la ressource qu'ils tiennent. *How to apply* :
+  quand une dépendance est injectable, garder **un** test qui prend le
+  chemin réel (ici : un `PassThrough` avec `isTTY = true` et pas de `ask`,
+  sous `{ timeout }` pour que l'échec soit une expiration lisible et non un
+  blocage). Le contrôle que le test sert à quelque chose se fait en cassant
+  le correctif dans le **compilé** et en vérifiant qu'il rougit.
+
+- **`node_modules/` est partagé entre le Mac et le container par le
+  bind-mount, et un paquet à binaire natif par plateforme ne peut pas
+  satisfaire les deux.** *Why* : `typescript@^7.0.2` livre son compilateur
+  en optionalDependencies par plateforme
+  (`@typescript/typescript-darwin-arm64`, `…-linux-arm64`, …). Le
+  `npm install` du Mac ne pose que la brique darwin ; dans le container,
+  `npm run build` meurt sur `Unable to resolve
+  @typescript/typescript-linux-arm64`. Pire : `npm install` de la brique
+  linux **supprime** la darwin (« added 1 package, and removed 1 package »),
+  donc réparer un côté casse l'autre, et npm refuse la darwin sur linux
+  (`notsup Actual cpu`). *How to apply* : pour faire coexister les deux,
+  récupérer le tarball et l'extraire à la main —
+  `npm pack @typescript/typescript-<os>-<arch>@<version>` puis
+  `tar xzf … --strip-components=1 -C node_modules/@typescript/<nom>`. Et
+  s'en souvenir au moment de choisir une dépendance : un paquet à binaires
+  par plateforme coûte cette gymnastique à chaque fois
+  ([.claude/rules/dependencies.md](../.claude/rules/dependencies.md)).
