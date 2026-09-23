@@ -80,11 +80,17 @@ repo tracks none of their history; `.gitignore` excludes them.
 
 ## Migrating from v2
 
-There is no automated v2 → v3 migration path. `devc init` refuses a v2
-project outright rather than attempting one — from the CLI itself: *This
-CLI does not migrate a v2 tree; "devc migrate" is not available in this
-version.* Moving a project to v3 today means re-scaffolding by hand with
-`devc init` and porting over anything project-specific.
+There is no automated rewrite of a v2 tree, by design: measured on three real
+projects, there is no pristine baseline to diff a v2 tree against, and the
+three files the switch must change (`Dockerfile`, `docker-compose.yml`,
+`devcontainer.json`) are the three most hand-edited. `devc init` refuses such a
+tree and points at `devc migrate`, which reads it, sorts its entries by what
+becomes of them, and prints the switch as a checklist with the project's own
+values filled in — every step a file edit git can show and revert. It writes
+nothing. Once the checklist is done, `devc init` recognises the tree and adds
+the missing files. The bash `initializeCommand` can survive the switch through
+the shim at [templates/v3/project/initialize.sh](templates/v3/project/initialize.sh),
+which hands the step to the published CLI.
 
 ## Security posture
 
