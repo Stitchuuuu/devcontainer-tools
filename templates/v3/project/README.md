@@ -6,9 +6,9 @@ The thin project layer that consumes the published base image
 in the image ; this folder owns only what is project-specific : the
 firewall allowlist, the config, and the extension points.
 
-This is the hand-assembled precursor of what `devc init` will scaffold
-(session 5). Validated shape : the fw-bake Dockerfile and compose args
-mirror the `dogfood-switchover` branch, proven by a 19/19 host smoke.
+`devc init` scaffolds this same folder — use the CLI unless you want the
+files by hand : `npx @meitogi/devcontainer-cli init`. The two trees are kept
+byte-identical by a test, so either route gives the same result.
 
 ## Install
 
@@ -25,7 +25,7 @@ mirror the `dogfood-switchover` branch, proven by a 19/19 host smoke.
    (GNU sed : `sed -i` sans `''`.)
 3. `cp .env.example .env`, then set at least `DC_PROJECT=my-project`.
    `BASE_IMAGE` is optional — the compose default pins
-   `1.2.0-cc2.1.272`; set it to `1.2.0-cc2.1.220` for the other published
+   `1.4.1-cc2.1.280`; set it to `1.4.1-cc2.1.272` for another published
    line.
 4. The Claude credentials volume : either let `initialize.sh` create the
    per-project one on first run, or point `CLAUDE_CREDS_VOLUME` in `.env`

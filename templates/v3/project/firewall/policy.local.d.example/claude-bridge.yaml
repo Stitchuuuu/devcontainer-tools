@@ -12,13 +12,13 @@
 # X-Stainless/X-Claude/... headers regardless of destination ; the policy
 # enforced here matches what Anthropic allows — no weaker, no broader.
 # If you change /v1/messages constraints here, mirror to api.anthropic.com.yaml
-# and policy.d/ollama.internal.yaml. See .devcontainer/knowledge/INDEX.md
+# and policy.d/ollama.internal.yaml. See /opt/devcontainer/base/knowledge/INDEX.md
 # "Policy parity across Claude Code targets" for the cross-target rule.
 #
 # Only enforces the AUDITED path. The `claude-bridge.local:9223` bypass alias
 # goes direct TCP (NO_PROXY .local match) — no policy applied, mirror of the
-# existing `ollama.local` bypass. Daily switch + setup : .devcontainer/knowledge/ollama-local.md
-# (the "Mode local-proxy (sidecar)" section lands in session 2).
+# existing `ollama.local` bypass. Daily switch + setup :
+# /opt/devcontainer/base/knowledge/ollama-local.md, "Mode local-proxy (sidecar)".
 
 endpoints:
   - path: "^/v1/messages$"

@@ -5,7 +5,7 @@
 # /api/tags) extend the baseline but cannot weaken /v1/messages — Claude Code
 # emits identical request shapes against both targets.
 # If you change /v1/messages constraints here, mirror to api.anthropic.com.yaml
-# and policy.d/claude-bridge.yaml. See .devcontainer/knowledge/INDEX.md
+# and policy.d/claude-bridge.yaml. See /opt/devcontainer/base/knowledge/INDEX.md
 # "Policy parity across Claude Code targets" for the cross-target rule.
 
 # Purpose: advanced rules for the local Ollama backend (Anthropic Messages
@@ -15,7 +15,7 @@
 # in domains.txt.
 # Body-size limit mirrors api.anthropic.com.yaml for parity with the cloud
 # endpoint — same prompts size in either mode.
-# Setup + daily usage: .devcontainer/knowledge/ollama-local.md
+# Setup + daily usage: /opt/devcontainer/base/knowledge/ollama-local.md
 
 endpoints:
   - path: "^/v1/messages$"
