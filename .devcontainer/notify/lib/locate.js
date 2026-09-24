@@ -1,5 +1,5 @@
 // =============================================================================
-// locate — resolve the notify/queue directory from the launch context
+// locate — resolve the tmp/notify directory from the launch context
 // =============================================================================
 //
 // The daemon is meant to be launched from one of three contexts :
@@ -31,17 +31,17 @@ function locateQueueDir(argvQueue, cwd = process.cwd()) {
 	if (argvQueue) return path.resolve(argvQueue)
 
 	if (path.basename(cwd) === '.devcontainer') {
-		return path.join(cwd, 'notify', 'queue')
+		return path.join(cwd, 'tmp', 'notify')
 	}
 
 	try {
 		if (fs.statSync(path.join(cwd, '.devcontainer')).isDirectory()) {
-			return path.join(cwd, '.devcontainer', 'notify', 'queue')
+			return path.join(cwd, '.devcontainer', 'tmp', 'notify')
 		}
 	} catch (_) { /* not a project root */ }
 
 	throw new Error(
-		`cannot auto-locate notify/queue from cwd=${cwd}. ` +
+		`cannot auto-locate tmp/notify from cwd=${cwd}. ` +
 		`Run from a project root (containing .devcontainer/) or from inside .devcontainer/, ` +
 		`or pass the queue dir explicitly: node index.js <queueDir>`
 	)

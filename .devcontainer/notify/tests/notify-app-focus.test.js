@@ -49,7 +49,7 @@ fs.mkdirSync(path.dirname(fakeNotif), { recursive: true })
 fs.writeFileSync(fakeNotif, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 
 const PROJECT_DIR = path.join(SANDBOX, 'workspace')
-fs.mkdirSync(path.join(PROJECT_DIR, '.devcontainer', 'logs'), { recursive: true })
+fs.mkdirSync(path.join(PROJECT_DIR, '.devcontainer', 'tmp', 'logs'), { recursive: true })
 
 process.on('exit', () => fs.rmSync(SANDBOX, { recursive: true, force: true }))
 

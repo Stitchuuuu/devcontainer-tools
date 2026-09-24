@@ -38,8 +38,8 @@ function findBundleRoot() {
 	return process.cwd()
 }
 const ROOT = findBundleRoot()
-const LogFile = path.join(ROOT, '.devcontainer/notify/queue/daemon.log')
-const PidFile = path.join(ROOT, '.devcontainer/notify/queue/.daemon.pid')
+const LogFile = path.join(ROOT, '.devcontainer/tmp/notify/daemon.log')
+const PidFile = path.join(ROOT, '.devcontainer/tmp/notify/.daemon.pid')
 const TestsDir = path.join(ROOT, '.devcontainer/notify/tests')
 const DaemonScript = path.join(ROOT, '.devcontainer/notify/index.js')
 

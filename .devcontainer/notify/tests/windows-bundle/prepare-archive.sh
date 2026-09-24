@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- Stage ---------------------------------------------------------------------
 STAGE_PARENT="$(mktemp -d)"
 STAGE="$STAGE_PARENT/notify-test"
-mkdir -p "$STAGE/.devcontainer/notify/queue"
+mkdir -p "$STAGE/.devcontainer/tmp/notify"
 
 echo "→ Stage : $STAGE"
 
@@ -48,12 +48,12 @@ cat > "$STAGE/.devcontainer/devcontainer.json" <<'JSON'
 { "name": "notify-test" }
 JSON
 
-# Empty .devcontainer/logs/ — inbound-watch warns ENOENT otherwise. The
+# Empty .devcontainer/tmp/logs/ — inbound-watch warns ENOENT otherwise. The
 # bundle has no VS Code extension feeding it, so the watcher sits idle
 # but at least starts cleanly.
-mkdir -p "$STAGE/.devcontainer/logs"
+mkdir -p "$STAGE/.devcontainer/tmp/logs"
 # Keep the dir in the zip (some zippers skip empty dirs)
-touch "$STAGE/.devcontainer/logs/.gitkeep"
+touch "$STAGE/.devcontainer/tmp/logs/.gitkeep"
 
 # Convenience copies at bundle root. SCRIPT_DIR is
 # .devcontainer/notify/tests/windows-bundle/, so the canonical files

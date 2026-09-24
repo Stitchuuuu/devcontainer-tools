@@ -4,7 +4,7 @@
 // =============================================================================
 //
 // Run this FROM INSIDE the devcontainer. Appends JSONL events to
-// .devcontainer/notify/queue/<sid>.jsonl with test session ids ; the host
+// .devcontainer/tmp/notify/<sid>.jsonl with test session ids ; the host
 // daemon (running on the host, watching the same dir via the /workspace
 // bind mount) picks them up and fires real desktop notifications.
 //
@@ -31,8 +31,8 @@
 //     node test-notifs.js all           # fire one of each, watch the parade
 //
 // PREREQ : the daemon must be running on the host. Verify with :
-//   cat /workspace/.devcontainer/notify/queue/.daemon.pid
-//   tail -f /workspace/.devcontainer/notify/queue/daemon.log    # on the host
+//   cat /workspace/.devcontainer/tmp/notify/.daemon.pid
+//   tail -f /workspace/.devcontainer/tmp/notify/daemon.log    # on the host
 // =============================================================================
 
 const fs = require('fs')
@@ -206,7 +206,7 @@ function checkDaemonPid() {
 	const pidFile = path.join(QUEUE_DIR, '.daemon.pid')
 	if (!fs.existsSync(pidFile)) {
 		console.warn(`⚠ ${pidFile} not found — daemon may not be running on the host.`)
-		console.warn('  Rebuild the container or check `tail .devcontainer/notify/queue/daemon.log` on the host.')
+		console.warn('  Rebuild the container or check `tail .devcontainer/tmp/notify/daemon.log` on the host.')
 		return
 	}
 	const pid = fs.readFileSync(pidFile, 'utf8').trim()
@@ -238,7 +238,7 @@ Examples:
   node test-notifs.js all cancel         # one of each, each cancelled
 
 Prereq:
-  Daemon must be running on the host. Check /workspace/.devcontainer/notify/queue/.daemon.pid.
+  Daemon must be running on the host. Check /workspace/.devcontainer/tmp/notify/.daemon.pid.
 `)
 }
 

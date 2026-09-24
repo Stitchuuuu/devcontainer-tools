@@ -8,7 +8,7 @@ the host (see [../README.md](../README.md)) and the hooks must be wired
 Watch the daemon log in another terminal for the full event trace :
 
 ```bash
-tail -f .devcontainer/notify/queue/daemon.log
+tail -f .devcontainer/tmp/notify/daemon.log
 ```
 
 Each test below shows the **prompt**, the **expected daemon log lines**, and

@@ -3,7 +3,7 @@
 // =============================================================================
 //
 // Sole producer of 'send:notification' on the bus. Reads
-// .devcontainer/notify/queue/*.jsonl incrementally, parses each event, arms a
+// .devcontainer/tmp/notify/*.jsonl incrementally, parses each event, arms a
 // timer per session id, and emits when the timer fires.
 //
 // SESSION-LEVEL DEBOUNCE
@@ -99,7 +99,7 @@ const nextEventId = () => `evt-${++_eventCounter}`
  *
  * @param {object} opts
  * @param {import('events').EventEmitter} opts.bus    receives 'send:notification' on each fire ; observed for 'cancel:notification'
- * @param {string} opts.queueDir                      absolute path to .devcontainer/notify/queue/
+ * @param {string} opts.queueDir                      absolute path to .devcontainer/tmp/notify/
  * @param {Object<string, number>} opts.delays        event-type → delay in ms (EVENT_DELAYS_MS)
  * @param {object} [opts.state]                       optional state-tracking module from lib/state.js
  * @returns {void}                                    starts watching, returns immediately

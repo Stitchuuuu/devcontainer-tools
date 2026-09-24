@@ -58,9 +58,9 @@ fs.writeFileSync(fakeNotif, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 // Fake workspace root — index.js passes this as `projectDir`. Both the
 // actions inbox and outbound.jsonl paths are derived from it.
 const PROJECT_DIR = path.join(SANDBOX, 'workspace')
-fs.mkdirSync(path.join(PROJECT_DIR, '.devcontainer', 'logs'), { recursive: true })
-const INBOX_PATH    = path.join(PROJECT_DIR, '.devcontainer', 'logs', 'notif-actions.jsonl')
-const OUTBOUND_PATH = path.join(PROJECT_DIR, '.devcontainer', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
+fs.mkdirSync(path.join(PROJECT_DIR, '.devcontainer', 'tmp', 'logs'), { recursive: true })
+const INBOX_PATH    = path.join(PROJECT_DIR, '.devcontainer', 'tmp', 'logs', 'notif-actions.jsonl')
+const OUTBOUND_PATH = path.join(PROJECT_DIR, '.devcontainer', 'tmp', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
 
 process.on('exit', () => fs.rmSync(SANDBOX, { recursive: true, force: true }))
 

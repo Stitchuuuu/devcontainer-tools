@@ -87,11 +87,11 @@ let launchUrlMissingLogged = false
 // records (see session 3 — allow-deny-actions). Set in `start()` from the
 // projectDir passed by index.js so the file colocates with the existing
 // claude-code-vscode-ext-{inbound,outbound}.jsonl channel in
-// `.devcontainer/logs/`.
+// `.devcontainer/tmp/logs/`.
 let actionsInboxPath = null
 // Path to the outbound JSONL file the VS Code extension's outbound-action-
 // injector polls for tool_permission_response commands. Same
-// `.devcontainer/logs/` dir. Written when we process an Allow click.
+// `.devcontainer/tmp/logs/` dir. Written when we process an Allow click.
 let outboundPath = null
 // Byte offset into actionsInboxPath — advanced as we drain new lines. At
 // start() we seek to the current file size so we skip lines from prior
@@ -120,7 +120,7 @@ const PERMISSION_TTL_MS = 10 * 60 * 1000
  * @param {object} opts
  * @param {import('events').EventEmitter} opts.bus   listens for send + cancel events
  * @param {string} [opts.projectDir]                 workspace root — used to resolve
- *                                                    `.devcontainer/logs/` paths for the
+ *                                                    `.devcontainer/tmp/logs/` paths for the
  *                                                    Allow action inbox + outbound.jsonl
  * @returns {{ status: 'ok'|'skipped', diag: object }}
  */
@@ -147,15 +147,15 @@ function start({ bus, projectDir, projectName = '' }) {
 	const registerDiag = registerClaudeCodeSender()
 
 	// Session 3 — resolve the Allow action inbox + outbound.jsonl paths. Both
-	// live under the workspace's `.devcontainer/logs/`, alongside the existing
+	// live under the workspace's `.devcontainer/tmp/logs/`, alongside the existing
 	// claude-code-vscode-ext-{inbound,outbound}.jsonl channel that ext.js polls.
 	// projectDir is passed by index.js (post session 3) ; when it's absent
 	// (older index.js callers, standalone tests), Allow simply won't fire —
 	// the action arg is skipped and the notif shows Body-click only.
 	let inboxDiag = { actions_inbox: 'disabled-no-projectDir' }
 	if (projectDir) {
-		actionsInboxPath = path.join(projectDir, '.devcontainer', 'logs', 'notif-actions.jsonl')
-		outboundPath    = path.join(projectDir, '.devcontainer', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
+		actionsInboxPath = path.join(projectDir, '.devcontainer', 'tmp', 'logs', 'notif-actions.jsonl')
+		outboundPath    = path.join(projectDir, '.devcontainer', 'tmp', 'logs', 'claude-code-vscode-ext-outbound.jsonl')
 		inboxDiag       = startActionsInboxWatcher()
 	}
 

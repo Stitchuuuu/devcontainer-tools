@@ -25,13 +25,13 @@
 #   ./fake-hook.sh stop                       # end of Claude message turn
 #   ./fake-hook.sh invariant                  # full-flow combo test
 #
-# The queue dir defaults to `.devcontainer/notify/queue/` relative to
+# The queue dir defaults to `.devcontainer/tmp/notify/` relative to
 # the current working directory. Override with $QUEUE_DIR if the daemon
 # writes elsewhere on your host.
 
 set -euo pipefail
 
-QUEUE_DIR="${QUEUE_DIR:-.devcontainer/notify/queue}"
+QUEUE_DIR="${QUEUE_DIR:-.devcontainer/tmp/notify}"
 mkdir -p "$QUEUE_DIR"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%S.000Z" ; }
@@ -150,7 +150,7 @@ Subcommands (user-facing lifecycle) :
   invariant                  combo scenario : perm → wait 32 s → send
 
 Environment overrides :
-  QUEUE_DIR   default: .devcontainer/notify/queue
+  QUEUE_DIR   default: .devcontainer/tmp/notify
   SID         default: fresh UUID per invocation
 
 Examples :

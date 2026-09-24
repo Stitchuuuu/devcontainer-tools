@@ -80,7 +80,7 @@ Tail the log on the host (or in the devcontainer — the queue dir is
 bind-mounted) :
 
 ```bash
-tail -f .devcontainer/notify/queue/daemon.log
+tail -f .devcontainer/tmp/notify/daemon.log
 ```
 
 For real-world scenarios that exercise the hook end-to-end (not just

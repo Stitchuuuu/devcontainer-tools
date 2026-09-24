@@ -13,7 +13,7 @@ bundle (`webview/index.js`). Companion to `outbound-action-injector.py`.
 The extension-side watcher posts `{type:"from-extension", message:{type:
 "simulated_click", requestId, result:{behavior, updatedInput,
 updatedPermissions}}}` to `panel.webview.postMessage()` whenever an entry
-lands in `.devcontainer/logs/claude-code-vscode-ext-outbound.jsonl`. This
+lands in `.devcontainer/tmp/logs/claude-code-vscode-ext-outbound.jsonl`. This
 patch intercepts that message on the WEBVIEW side (before the normal
 message dispatcher runs) and calls `Q.accept(...)` / `Q.reject(...)` on the
 matching pending `Gn` permission-request instance — which is the SAME

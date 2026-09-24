@@ -6,7 +6,7 @@
 #   notification can focus the right window.
 """
 Patches the Claude Code VS Code extension to write the container's
-remote authority string to `<workspace>/.devcontainer/notify/queue/.authority`
+remote authority string to `<workspace>/.devcontainer/tmp/notify/.authority`
 at extension load, so the notify-queue hook can produce a `launchUrl`
 on the JSONL queue line and the notify-app consumer's `--on-click`
 body-click routing focuses the emitting VS Code window on user click.
@@ -49,7 +49,7 @@ Prepend a self-contained IIFE to extension.js. The IIFE :
      try/catch means a future breakage in either can never brick the
      extension.
   2. Reads `vscode.workspace.workspaceFolders[0].uri.authority` and
-     writes it to `<workspaceFsPath>/.devcontainer/notify/queue/.authority`
+     writes it to `<workspaceFsPath>/.devcontainer/tmp/notify/.authority`
      if it looks like `dev-container+<hex>`. Uses `mkdirSync(recursive)`
      to survive a fresh clone where the queue dir doesn't yet exist.
      Immediate attempt covers the common case where the extension
@@ -93,7 +93,7 @@ PRELUDE = MARKER + (
             "if(!wf||!wf[0]||!wf[0].uri)return false;"
             "var a=wf[0].uri.authority;"
             "if(!a||a.indexOf('dev-container+')!==0)return false;"
-            "var d=p.join(wf[0].uri.fsPath,'.devcontainer/notify/queue');"
+            "var d=p.join(wf[0].uri.fsPath,'.devcontainer/tmp/notify');"
             "f.mkdirSync(d,{recursive:true});"
             "f.writeFileSync(p.join(d,'.authority'),a);"
             "return true;"
@@ -117,7 +117,7 @@ IMPACT_LINES = [
     "Likely cause: extension.js structure changed such that a top-of-",
     "  file prelude no longer runs before other code that touches",
     "  `require('vscode')`. Verify by checking",
-    "  `<workspace>/.devcontainer/notify/queue/.authority` after a",
+    "  `<workspace>/.devcontainer/tmp/notify/.authority` after a",
     "  fresh boot ; if absent after 30s, re-inspect this patch against",
     "  the installed extension.js head.",
 ]

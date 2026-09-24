@@ -12,7 +12,7 @@ const path   = require('path')
 const state = require('../lib/state')
 
 // Spin up an isolated queue dir under tmpdir/ so this test never touches the
-// real .devcontainer/notify/queue/state/ files.
+// real .devcontainer/tmp/notify/state/ files.
 const queueDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-state-test-'))
 const stateDir = path.join(queueDir, 'state')
 const pendingPath = path.join(stateDir, 'pending.json')

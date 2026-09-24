@@ -33,9 +33,9 @@
 //   --queue-dir PATH        where to write the queue file (default: sibling
 //                           `../queue/` — the daemon's watched dir)
 //   --inbound-log PATH      where to append inbound events (default: standard
-//                           `.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl`)
+//                           `.devcontainer/tmp/logs/claude-code-vscode-ext-inbound.jsonl`)
 //   --pending-perms-log PATH  where to append pending-perms events (default:
-//                           standard `.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl`)
+//                           standard `.devcontainer/tmp/logs/claude-code-vscode-ext-pending-perms.jsonl`)
 //   --no-inbound            skip inbound events
 //   --no-pending-perms      skip pending-perms events
 //   --dry-run               print the schedule, write nothing

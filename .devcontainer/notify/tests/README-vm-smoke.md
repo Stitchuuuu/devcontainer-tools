@@ -61,7 +61,7 @@ $env:NOTIFY_DOCKER_POLL_MS = "0"
 node .devcontainer\notify\index.js
 ```
 
-Expected log lines (visible on stdout and in `.devcontainer/notify/queue/daemon.log`) :
+Expected log lines (visible on stdout and in `.devcontainer/tmp/notify/daemon.log`) :
 
 ```
 daemon started — platform=<darwin|win32|linux> host=<macos|windows|linux> pid=<n> project="<name>" queue=<abs>
@@ -83,7 +83,7 @@ or set `NOTIF_BIN` and restart.
   fallback and stays in standby. Fixture replay is the only producer.
 
 **What's still on** : the `fs.watch` on
-`.devcontainer/notify/queue/*.jsonl`, which is all the smoke harness needs.
+`.devcontainer/tmp/notify/*.jsonl`, which is all the smoke harness needs.
 
 ---
 
@@ -98,7 +98,7 @@ node .devcontainer/notify/tests/replay-fixture.js permission_request 1
 [`replay-fixture.js`](./replay-fixture.js) reads
 [`fixtures/permission_request/1.jsonl`](./fixtures/permission_request/1.jsonl),
 substitutes a fresh `sid` (UUID) and `ts` (now), then writes the result to
-`.devcontainer/notify/queue/<sid>.jsonl`. The running daemon picks it up
+`.devcontainer/tmp/notify/<sid>.jsonl`. The running daemon picks it up
 within a few `fs.watch` ticks.
 
 Expected on the VM : a system banner reading
@@ -153,9 +153,9 @@ time (the script prints the exact projection at boot). The three streams
 snapshots — are merged into a single timeline sorted by `ts`, then each
 event is written to the same path the live devcontainer uses :
 
-- Queue events → `.devcontainer/notify/queue/<fresh-sid>.jsonl` (daemon watches via `fs.watch`).
-- Inbound → `.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl` (appended).
-- Pending-perms → `.devcontainer/logs/claude-code-vscode-ext-pending-perms.jsonl` (appended).
+- Queue events → `.devcontainer/tmp/notify/<fresh-sid>.jsonl` (daemon watches via `fs.watch`).
+- Inbound → `.devcontainer/tmp/logs/claude-code-vscode-ext-inbound.jsonl` (appended).
+- Pending-perms → `.devcontainer/tmp/logs/claude-code-vscode-ext-pending-perms.jsonl` (appended).
 
 Every occurrence of the captured `sid` / `sessionId` is rewritten to a
 fresh UUID per invocation (string-level replacement, so deeply nested
@@ -211,7 +211,7 @@ audit the sequence of events a fixture will produce before committing to
 a real replay.
 
 For fully isolated smokes (no risk of appending to the real
-`.devcontainer/logs/` files that VS Code may be reading) :
+`.devcontainer/tmp/logs/` files that VS Code may be reading) :
 
 ```bash
 node .devcontainer/notify/tests/replay-session.js b-balanced \
@@ -243,7 +243,7 @@ record to the actions inbox and the notify-app consumer's tail watcher
 picks it up. Tail the file in a third terminal :
 
 ```bash
-tail -f .devcontainer/logs/notif-actions.jsonl
+tail -f .devcontainer/tmp/logs/notif-actions.jsonl
 ```
 
 Expected new line after each click, shape :
@@ -364,7 +364,7 @@ run without a binary installed.
 - **Missing `notif` binary** — the daemon boots fine and reports
   `STATUS notify skipped reason=notif-binary-not-found` in the status
   line. Fix the discovery paths from §1 or set `NOTIF_BIN=<abs-path>`.
-- **Daemon already running** — `.devcontainer/notify/queue/.daemon.pid`
+- **Daemon already running** — `.devcontainer/tmp/notify/.daemon.pid`
   is a single-instance lockfile ; a second `node index.js` will exit 0
   with `another daemon already running (pid=N) — exiting`. Kill the
   first instance or wait for its 30 s heartbeat to expire (stale
@@ -380,7 +380,7 @@ run without a binary installed.
   `wmctrl` if it's missing (`sudo apt install wmctrl`).
 - **`replay-session.js` appends to the live logs by default** — the
   `--inbound-log` and `--pending-perms-log` defaults point at the
-  standard `.devcontainer/logs/claude-code-vscode-ext-*.jsonl` files.
+  standard `.devcontainer/tmp/logs/claude-code-vscode-ext-*.jsonl` files.
   If the VS Code extension is actively reading those (devcontainer up,
   session live), a replay can inject events the extension will treat as
   real. On a VM smoke there's nothing to interfere with, so the

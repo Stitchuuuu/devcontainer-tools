@@ -14,7 +14,7 @@ Two patches applied to `extension.js`:
 
 1. **Outbound file watcher** — singleton, injected at the top of
    `PanelManager.setupPanel()`. Guarded by `this._outboundStarted` so only
-   the first panel to open kicks it off. Polls `.devcontainer/logs/
+   the first panel to open kicks it off. Polls `.devcontainer/tmp/logs/
    claude-code-vscode-ext-outbound.jsonl` every 200 ms; for each new line
    `{"cmd":"tool_permission_response","sessionId","requestId","behavior",
    "updatedInput","updatedPermissions"}` it looks up the target panel in
@@ -153,7 +153,7 @@ WATCHER_BLOCK = (
         'const wf=vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
         'if(wf){'
           'const path=require("path"),fs=require("fs");'
-          'const dir=path.join(wf,".devcontainer","logs");'
+          'const dir=path.join(wf,".devcontainer","tmp","logs");'
           'const file=path.join(dir,"claude-code-vscode-ext-outbound.jsonl");'
           'const dbgFile=path.join(dir,"claude-code-vscode-ext-watcher-debug.jsonl");'
           # Tailable debug log gated by DEBUG=1 (or CLAUDE_OUTBOUND_DEBUG) —
@@ -313,7 +313,7 @@ def patch_sendrequest(content):
             'const wf=vs.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
             'if(wf){'
               'const path=require("path"),fs=require("fs");'
-              'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
+              'const file=path.join(wf,".devcontainer","tmp","logs","claude-code-vscode-ext-pending-perms.jsonl");'
               # `focused` / `active` snapshot at request time — lets consumers
               # know whether the user was even looking at VS Code when the
               # prompt fired (useful to auto-answer when the window has been
@@ -352,7 +352,7 @@ def patch_sendrequest(content):
             'const wf=vs.workspace.workspaceFolders?.[0]?.uri?.fsPath;'
             'if(wf){'
               'const path=require("path"),fs=require("fs");'
-              'const file=path.join(wf,".devcontainer","logs","claude-code-vscode-ext-pending-perms.jsonl");'
+              'const file=path.join(wf,".devcontainer","tmp","logs","claude-code-vscode-ext-pending-perms.jsonl");'
               'const ws=vs.window?.state;'
               f'const rec={{ts:new Date().toISOString(),sessionId:this._currentSessionId??null,channelId:{sid_var},requestId:{rid_var},focused:ws?.focused??null,active:ws?.active??null,settled:true,outcome:{resolve_arg}?.result?.behavior??"unknown"}};'
               'fs.promises.appendFile(file,JSON.stringify(rec)+"\\n").catch(()=>{});'

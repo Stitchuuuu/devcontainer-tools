@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// notify daemon — host-side consumer of .devcontainer/notify/queue/*.jsonl
+// notify daemon — host-side consumer of .devcontainer/tmp/notify/*.jsonl
 // =============================================================================
 //
 // Spawned by .devcontainer/initialize.sh on container open/build. Watches the
@@ -199,7 +199,7 @@ for (const a of process.argv.slice(2)) {
 }
 const _launcherPidArg = Number.isFinite(_argvFlags.launcherPid) ? _argvFlags.launcherPid : process.ppid
 
-// queueDir = <project>/.devcontainer/notify/queue → projectDir is 3 levels up
+// queueDir = <project>/.devcontainer/tmp/notify → projectDir is 3 levels up
 const queueDir    = locateQueueDir(_argvPositional[0])
 const projectDir  = path.resolve(queueDir, '..', '..', '..')
 const projectName = readProjectName(projectDir)
@@ -321,7 +321,7 @@ writeStatusFile(path.join(queueDir, '.daemon.startup'), statusLines)
 // fallback message and stays in standby.
 inboundWatch.start({
 	bus,
-	logFile: path.join(projectDir, '.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl')
+	logFile: path.join(projectDir, '.devcontainer/tmp/logs/claude-code-vscode-ext-inbound.jsonl')
 })
 
 // LIFECYCLE — exit cleanly when the devcontainer is gone. The container:gone

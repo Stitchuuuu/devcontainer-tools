@@ -43,7 +43,7 @@ const dockerWatch = require('../lib/docker-watch')
 const { locateQueueDir, readProjectName } = require('../lib/locate')
 
 const queueDir   = locateQueueDir()
-// queueDir = <project>/.devcontainer/notify/queue → projectDir is 3 levels up
+// queueDir = <project>/.devcontainer/tmp/notify → projectDir is 3 levels up
 const projectDir = path.resolve(queueDir, '..', '..', '..')
 
 // Default raw bus payload used by the notifier + webhook tests. Mirrors

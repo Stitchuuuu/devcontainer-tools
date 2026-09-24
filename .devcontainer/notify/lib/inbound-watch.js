@@ -2,7 +2,7 @@
 // inbound-watch — tail VS Code extension inbound JSONL → cancel signals
 // =============================================================================
 //
-// Tails .devcontainer/logs/claude-code-vscode-ext-inbound.jsonl (written by
+// Tails .devcontainer/tmp/logs/claude-code-vscode-ext-inbound.jsonl (written by
 // the user-action observer patch in the Claude Code VS Code extension) and
 // emits 'cancel:notification' on the bus when the user takes an action that
 // makes a pending notif obsolete.

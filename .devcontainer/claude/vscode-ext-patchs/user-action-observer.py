@@ -9,7 +9,7 @@ Wraps the Claude Code VS Code extension's webview→ext message chokepoint
 (`z.webview.onDidReceiveMessage` in `PanelManager.setupPanel()`) to log every
 user → claude message to BOTH the « Claude VSCode » output channel (structured
 `[user-action]` prefix) AND a JSONL file at
-`<workspace>/.devcontainer/logs/claude-code-vscode-ext-inbound.jsonl`.
+`<workspace>/.devcontainer/tmp/logs/claude-code-vscode-ext-inbound.jsonl`.
 The parent dir is created at every container start by .devcontainer/post-start.sh,
 which also wipes the JSONL on each boot (observation data, no retention).
 
@@ -101,7 +101,7 @@ REPLACEMENT_TEMPLATE = (
       'const wf=vscode.workspace.workspaceFolders;'
       'if(wf&&wf[0]){'
         'const path=require("path"),fs=require("fs");'
-        'const file=path.join(wf[0].uri.fsPath,".devcontainer","logs","claude-code-vscode-ext-inbound.jsonl");'
+        'const file=path.join(wf[0].uri.fsPath,".devcontainer","tmp","logs","claude-code-vscode-ext-inbound.jsonl");'
         'fs.promises.appendFile(file,JSON.stringify(record)+"\\n").catch((e)=>this.output.warn(`[user-action] jsonl append failed: ${e?.message??e}`));'
       '}'
     '}catch(e){this.output.warn(`[user-action] log failed: ${e?.message??e}`);};'

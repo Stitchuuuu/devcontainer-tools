@@ -2,7 +2,7 @@
 // smart-text.test.js — the permission banner must be DECIDABLE.
 //
 // Every case below is built on a real record from
-// .devcontainer/logs/claude-code-vscode-ext-pending-perms*.jsonl (3 400
+// .devcontainer/tmp/logs/claude-code-vscode-ext-pending-perms*.jsonl (3 400
 // permission requests). The bar is not "is the line short" but "seeing only
 // this line, with an Allow button next to it, does the human understand what
 // they authorise".
