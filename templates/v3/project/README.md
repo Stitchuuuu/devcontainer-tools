@@ -25,7 +25,7 @@ byte-identical by a test, so either route gives the same result.
    (GNU sed : `sed -i` sans `''`.)
 3. `cp .env.example .env`, then set at least `DC_PROJECT=my-project`.
    `BASE_IMAGE` is optional — the compose default pins
-   `1.4.1-cc2.1.280`; set it to `1.4.1-cc2.1.272` for another published
+   `1.5.0-cc2.1.280`; set it to `1.5.0-cc2.1.272` for another published
    line.
 4. The Claude credentials volume : either let `initialize.sh` create the
    per-project one on first run, or point `CLAUDE_CREDS_VOLUME` in `.env`
