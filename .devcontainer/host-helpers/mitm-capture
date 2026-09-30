@@ -8,7 +8,7 @@
 # the sentinel without needing to docker exec into the container.
 #
 # Runs on the HOST. Targets the devcontainer's running mitmproxy via the
-# bind-mounted .devcontainer/pending/ directory if needed, but mostly just
+# bind-mounted .devcontainer/tmp/pending/ directory if needed, but mostly just
 # calls docker exec to touch/rm the sentinel inside /tmp/claude-capture/
 # (which lives in the container's tmpfs, NOT bind-mounted to host).
 #
