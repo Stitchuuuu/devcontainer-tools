@@ -103,7 +103,7 @@ const ALLOW_FILE_SOURCE = portsFile(resolve(SCRIPT_DIR, '../../firewall'))
 // Written by .devcontainer/initialize.sh, the only code that runs on the host.
 // From in here the kernel only tells us the hypervisor, not the host OS — see
 // scripts/install-cross-arch-natives.mjs, which reads the same marker.
-const HOST_OS_FILE = resolve(SCRIPT_DIR, '../../logs/host-os')
+const HOST_OS_FILE = process.env.CDP_HOST_OS_FILE ?? resolve(SCRIPT_DIR, '../../tmp/logs/host-os')
 
 // Keyed on the ENDPOINT the lock guards, never on the checkout. The previous
 // repo-relative path (.tmp/cdp/.cdp-lock.json) broke under git worktrees : wtf
