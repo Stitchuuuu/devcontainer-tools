@@ -195,18 +195,32 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 [GET] vscode.blob.core.windows.net     # VS Code blob storage (langpacks, web assets)
 
 
+# === DevContainer specification + Dev Containers docs (read-only) ============
+# Added 2026-09-30. Everything this project declares in devcontainer.json is
+# governed by these documents, and settling one question — how VS Code executes
+# `initializeCommand` — needed them: a STRING runs in a shell (`/bin/sh -c` on
+# Unix, `cmd.exe /c` on Windows), an ARRAY runs with no shell, and a non-zero
+# exit aborts the container start and re-runs on the next Up. That is the whole
+# basis of the inline host guard the template now carries, and it was guessed
+# from search results because containers.dev was unreachable.
+[GET] containers.dev                   # the specification + JSON reference
+[GET] code.visualstudio.com            # VS Code Dev Containers documentation
+
+
 # === GitHub Anthropic — skills, MCP servers, claude-code releases ===========
 # A2 pending — path filter `/anthropics/*` not enforced yet (host-wide for now).
 # Pragmatic: GitHub-hosted skills installable from A1.1; A2 will tighten.
 
 [GET] github.com                       # Anthropic repos browse + git capability negotiation
   /anthropics/*                        #   repo HTML + .git/info/refs (cf. policy.d/)
+  /devcontainers/*                     #   the devcontainer spec repo (schema, lifecycle)
 
 [POST] github.com                      # git smart-pack push (clone/fetch protocol)
   /anthropics/*.git/git-upload-pack    #   max body 10MB (cf. policy.d/)
 
 [GET] api.github.com                   # GitHub REST API
   /repos/anthropics/*                  #   repo metadata, releases, tags
+  /repos/devcontainers/*               #   spec repo metadata (schema files, releases)
   /orgs/anthropics                     #   org metadata
 
 [GET] codeload.github.com              # GitHub tarball/zipball download
