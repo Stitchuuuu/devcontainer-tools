@@ -15,7 +15,7 @@ Once it does switch, only the project-local patchers stay:
   patcher repository.
 
 Everything else here is byte-identical to `meitogi/claude-ext-patchs`
-(`patchers/`, tag `cc2.1.258-r1`), which is where those patchers are maintained
+(`patchers/`, tag `cc2.1.258-r2`), which is where those patchers are maintained
 now. Edit them there, not here — and if you do change one here, expect the two
 copies to drift silently, because nothing checks them against each other any
 more.
