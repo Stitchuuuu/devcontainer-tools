@@ -7,9 +7,13 @@ it whenever it touches files under `.devcontainer/firewall/`.
 ## Mode gate — check first
 
 ```bash
-cat .devcontainer/.configured-firewall-mode
-# empty ⇒ read .devcontainer/firewall/default-mode
+cat .devcontainer/firewall/default-mode          # the configured mode
+cat /etc/devcontainer-firewall/default-mode      # the mode actually applied at boot
 ```
+
+The second is the truth: the config is **baked**, so a workspace edit without a
+rebuild does not change what runs. They disagree exactly when someone edited the
+first and did not rebuild.
 
 Modes :
 

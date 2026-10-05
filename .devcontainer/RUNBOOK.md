@@ -1,6 +1,6 @@
 # Runbook — DevContainer Niveau 1 strict
 
-Operational procedures, step-by-step. Each section is a recipe: do these steps in this order. For background, read [README.md](README.md); for the threat model, [SECURITY.md](SECURITY.md); for internals, [knowledge/INDEX.md](knowledge/INDEX.md).
+Operational procedures, step-by-step. Each section is a recipe: do these steps in this order. For background, read [README.md](README.md); for the threat model, [docs/SECURITY.md](docs/SECURITY.md); for internals, [knowledge/INDEX.md](knowledge/INDEX.md).
 
 Conventions:
 - `[host]` — run on the host machine (terminal outside the container)
@@ -61,7 +61,7 @@ For a POST host, **stop**. Use procedure 2 instead.
 
 ## 2. Add a POST on a third-party API
 
-You cannot extend the main allowlist with new POST hosts. The threat model (see [SECURITY.md § POST allowlist](SECURITY.md#post-allowlist-the-exact-list)) limits main POST to 4 targets. Other POST requirements must run in an isolated research project.
+You cannot extend the main allowlist with new POST hosts. The threat model (see [docs/SECURITY.md § POST surface](docs/SECURITY.md#post-surface-as-declared-enforced-only-in-strict)) declares main POST on 9 hosts — and in `basic`, the mode this tree runs, those path and method scopes are not enforced at all. Other POST requirements must run in an isolated research project.
 
 1. **In Claude** `[container]`:
    ```

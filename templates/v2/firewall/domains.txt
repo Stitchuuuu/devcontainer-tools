@@ -134,7 +134,7 @@
   /v1/messages                         #   chat completion (cf. policy.d max 32MB)
 
 
-docs.anthropic.com                     # Documentation publique Anthropic — 301 → platform.claude.com (GET)
+docs.anthropic.com                     # Anthropic public documentation — 301 → platform.claude.com (GET)
 
 # platform.claude.com — Anthropic's new dev platform. Split per-method so
 # synthetic endpoints scope precisely. Unknown paths fall to enforcement_mode:
@@ -285,8 +285,8 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
 # linuxkit project — kernel build recipes + release tags. Docker Desktop's
 # bundled VM kernel comes from this repo (kernel/ subtree). Useful to
-# cross-reference « ma version Docker Desktop embarque quel kernel patché
-# vs vulnérable » quand les release notes Docker n'en parlent pas.
+# cross-reference « which patched vs vulnerable kernel does my Docker
+# Desktop version bundle » when the Docker release notes do not say.
 # Merges additively with /repos/anthropics/* and /repos/blunt1337/wtfcmd/*
 # declared elsewhere in this file.
 [GET] api.github.com

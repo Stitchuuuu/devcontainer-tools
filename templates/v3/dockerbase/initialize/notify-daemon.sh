@@ -321,7 +321,7 @@ spawn_notify_daemon() {
 	done
 
 	if [ ! -f "$startup_file" ]; then
-		echo "⚠ Notify daemon : startup file absent après 3s — tail daemon.log :"
+		echo "⚠ Notify daemon : startup file missing after 3s — tail daemon.log :"
 		tail -n 5 "$logfile" 2>/dev/null | sed 's/^/    /'
 		return 0
 	fi

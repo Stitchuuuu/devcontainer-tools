@@ -22,7 +22,7 @@ byte-identical by a test, so either route gives the same result.
    grep -rl '{{PROJECT_' . --exclude=README.md | xargs sed -i '' -e 's/{{PROJECT_ID}}/my-project/g' -e 's/{{PROJECT_DISPLAY_NAME}}/My Project/g'
    ```
 
-   (GNU sed : `sed -i` sans `''`.)
+   (GNU sed : `sed -i` without the `''`.)
 3. `cp .env.example .env`, then set at least `DC_PROJECT=my-project`.
    `BASE_IMAGE` is optional — the compose default pins
    `1.8.0-cc2.1.280`; set it to `1.8.0-cc2.1.272` for another published

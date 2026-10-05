@@ -4,7 +4,7 @@
 
 This devcontainer runs Claude Code under a default-deny outbound firewall. Niveau 1 strict (the default) blocks every outbound connection that is not in an explicit allowlist, filters paths and methods via mitmproxy, and bounds POST body sizes per endpoint. The container can read code and talk to `api.anthropic.com`; it cannot push, cannot create PRs, and cannot reach arbitrary third-party APIs.
 
-This README is the maintainer's handbook. Skim it once to understand what's where; consult [RUNBOOK.md](RUNBOOK.md) for step-by-step operations and [SECURITY.md](SECURITY.md) for the threat model. AI-modifiable internals live in [knowledge/INDEX.md](knowledge/INDEX.md).
+This README is the maintainer's handbook. Skim it once to understand what's where; consult [RUNBOOK.md](RUNBOOK.md) for step-by-step operations and [docs/SECURITY.md](docs/SECURITY.md) for the threat model. AI-modifiable internals live in [knowledge/INDEX.md](knowledge/INDEX.md).
 
 ## Table of contents
 
@@ -128,7 +128,7 @@ Then `wtf client dev` from any container shell starts the Vite / webpack dev ser
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The host is the only place that holds long-lived secrets. The main container cannot push to GitHub even if Claude is fully prompt-injected. See [SECURITY.md](SECURITY.md) for the threat model.
+The host is the only place that holds long-lived secrets. The main container cannot push to GitHub even if Claude is fully prompt-injected. See [docs/SECURITY.md](docs/SECURITY.md) for the threat model.
 
 ## Quick start
 
@@ -210,7 +210,7 @@ A few signals are shown at every container start. None are blocking; all give th
 ├── test-firewall.sh            [container] smoke test (called by post-create.sh)
 │
 ├── README.md                   ← you are here
-├── SECURITY.md                 threat model + accepted gaps
+├── docs/SECURITY.md            threat model + accepted gaps
 ├── knowledge/                  AI-facing internals (entry: knowledge/INDEX.md)
 │   ├── INDEX.md                topic index + small inline topics
 │   ├── firewall.md             firewall internals + strict mode
@@ -726,7 +726,7 @@ It's a build artifact regenerated at every boot by `init-firewall.sh`. The commi
 
 ## See also
 
-- [SECURITY.md](SECURITY.md) — threat model + accepted gaps
+- [docs/SECURITY.md](docs/SECURITY.md) — threat model + accepted gaps
 - [knowledge/INDEX.md](knowledge/INDEX.md) — internals (volumes, OAuth flow, hooks, idempotency contracts, extension points)
 - [RUNBOOK.md](RUNBOOK.md) — operational procedures (add domain, reset CA, troubleshoot)
 - [RESEARCH.md](RESEARCH.md) — research bundle workflow

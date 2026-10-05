@@ -1,7 +1,7 @@
 # Knowledge — index
 
 Entry point for the AI-facing documentation of this devcontainer.
-Human-facing docs (`README.md`, `RUNBOOK.md`, `SECURITY.md`) stay at the
+Human-facing docs (`README.md`, `RUNBOOK.md`, `docs/SECURITY.md`) stay at the
 root of `.devcontainer/`. **Topics that Claude needs when modifying the
 code live here under `knowledge/`**, one file per topic, so the AI loads
 only the relevant section instead of the whole monolith. Split rule:

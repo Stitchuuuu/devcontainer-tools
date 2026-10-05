@@ -16,7 +16,7 @@
 //                           wslDistro=<your distro>, powershell=ok
 //   - WSL1 with interop   → kind=windows, platform=linux, wslDistro set
 //                           (no WSL_INTEROP), powershell=ok
-//   - WSL1 sans interop   → kind=windows (procVersion-based),
+//   - WSL1 no interop     → kind=windows (procVersion-based),
 //                           powershell=unreachable → notifier would
 //                           `skipped reason=wsl-no-powershell`
 // =============================================================================

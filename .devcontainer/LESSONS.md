@@ -360,231 +360,330 @@
   answer is usually thirty seconds of `grep` in `extensionHostProcess.js`, and
   it is cheaper than the release decision that hangs on it.
 
-- **Un banc qui ne prouve pas qu'il a provoqué quelque chose ne mesure rien.**
-  *Why* : `bare-check.sh --login` invalidait l'`accessToken` pour forcer un
-  `authentication_failed`, et laissait le `refreshToken` valide à côté, avec
-  `refreshTokenExpiresAt` dans le futur. Claude Code prenait le 401, partait
-  sur le chemin de refresh, se ré-authentifiait — la session restait connectée
-  et le banc posait quand même ses questions. Toute une session de banc a été
-  perdue avant que l'utilisateur ne dise « je peux pas trigger le unauth ».
-  La garde humaine existait pourtant (« l'écran apparaît-il ? ») et n'a pas
-  protégé : on répond oui à une question qu'on n'a pas les moyens de vérifier.
-  *How to apply* : tout banc qui provoque un état doit **affirmer par machine
-  qu'il l'a atteint** avant de demander quoi que ce soit à un humain — ici une
-  vraie requête (`claude -p`), parce que `claude auth status` rapporte
-  `loggedIn: true` sur les dates d'expiration du fichier, jamais sur la
-  validité du jeton. Et quand on invalide un identifiant, invalider **toutes
-  les voies de récupération**, pas la première.
+- **A bench that cannot prove it provoked something measures nothing.**
+  *Why* : `bare-check.sh --login` invalidated the `accessToken` to force an
+  `authentication_failed`, and left the `refreshToken` valid next to it, with
+  `refreshTokenExpiresAt` in the future. Claude Code took the 401, went down
+  the refresh path, re-authenticated — the session stayed logged in and the
+  bench asked its questions anyway. A whole bench session was lost before the
+  user said « I can't trigger the unauth ». The human guard did exist (« does
+  the screen appear ? ») and did not protect : one answers yes to a question
+  one has no means of checking.
+  *How to apply* : any bench that provokes a state must **assert by machine
+  that it reached it** before asking a human anything — here a real request
+  (`claude -p`), because `claude auth status` reports `loggedIn: true` off the
+  file's expiry dates, never off token validity. And when invalidating a
+  credential, invalidate **every recovery path**, not the first one.
 
-- **Ancrer sur ce qui survit, pas sur ce qui est à côté.** *Why* : les cinq
-  ré-ancrages de 2.1.268 ont tous la même forme. `model-mode-affinity` était
-  ancré sur la tête d'une chaîne de virgules qu'upstream a réécrite, alors que
-  la queue où il injecte est byte-identique depuis 2.1.220. `model-selection-fix`
-  recopiait le préambule de `loadUserSettings` uniquement pour en extraire les
-  idents `fs`/`path` — 268 a scindé la méthode et le patch est mort pour un
-  corps auquel il ne touchait même pas. `user-action-observer` épelait
-  `JSON.stringify` alors qu'il se moque de qui sérialise.
-  *How to apply* : avant d'écrire une regex, demander « de quoi ai-je
-  réellement besoin ? ». Capturer plutôt qu'épeler (le sérialiseur, le module,
-  le nom de classe) ; tolérer les arguments en queue plutôt que compter les
-  paramètres ; préférer un site **unique dans tout le bundle**
-  (`setPreferredLocation("panel")` : exactement une occurrence sur 220, 258 et
-  268) à un site voisin plus lisible ; et injecter un prologue plutôt que
-  recopier le code d'upstream pour le réémettre.
+- **Anchor on what survives, not on what sits next to it.** *Why* : the five
+  re-anchorings of 2.1.268 all have the same shape. `model-mode-affinity` was
+  anchored on the head of a comma chain upstream rewrote, while the tail it
+  injects into has been byte-identical since 2.1.220. `model-selection-fix`
+  re-spelled `loadUserSettings`'s preamble only to extract the `fs`/`path`
+  idents from it — 268 split the method and the patch died over a body it did
+  not even touch. `user-action-observer` spelled out `JSON.stringify` when it
+  does not care who serialises.
+  *How to apply* : before writing a regex, ask « what do I actually need ? ».
+  Capture rather than spell out (the serialiser, the module, the class name) ;
+  tolerate trailing arguments rather than count parameters ; prefer a site
+  that is **unique in the whole bundle** (`setPreferredLocation("panel")` :
+  exactly one occurrence on 220, 258 and 268) over a more readable neighbour ;
+  and inject a prologue rather than re-spell upstream's code to re-emit it.
 
-- **Un sous-correctif qu'upstream a rattrapé se retire sur ce que dit le
-  bundle, pas sur un numéro de version.** *Why* : sur 2.1.268 l'étape 4 de
-  `icon-fix-open-in-current-panel` est devenue inutile — `d1$() =
-  Si$()?.viewColumn ?? ViewColumn.Active` fait ce que notre injection faisait,
-  en mieux (repli sur le premier groupe d'onglets éligible). Une garde
-  `if version >= 2.1.268` aurait créé deux chemins de code à maintenir.
-  *How to apply* : tester la **forme lue** (« le troisième argument est-il
-  encore `ViewColumn.Active` ? ») et se retirer avec un message qui le dit.
-  Un seul chemin de code, et il reste juste quand upstream change d'avis.
+- **A sub-fix upstream has caught up with is retired on what the bundle says,
+  not on a version number.** *Why* : on 2.1.268 step 4 of
+  `icon-fix-open-in-current-panel` became useless — `d1$() =
+  Si$()?.viewColumn ?? ViewColumn.Active` does what our injection did, and
+  better (falls back to the first eligible tab group). An
+  `if version >= 2.1.268` guard would have created two code paths to maintain.
+  *How to apply* : test the **shape read** (« is the third argument still
+  `ViewColumn.Active` ? ») and retire with a message that says so. One code
+  path, and it stays correct when upstream changes its mind.
 
-- **Un artefact qui nomme sa version cible doit être refusé, ou au minimum
-  signalé, quand on l'applique ailleurs.** *Why* : le schéma de tag
-  `cc<version>-r<n>` du dépôt de patchers DÉCLARE l'extension pour laquelle il
-  a été coupé, et `ext-patches-sync` ne lisait ce nom que comme clé de cache,
-  ligne de statut et URL de fetch — jamais comme une affirmation. Un pin resté
-  en arrière après quatre bumps CC (`cc2.1.258-r2`) a donc été appliqué tel
-  quel à une extension 2.1.272 : huit patchers ont échoué bruyamment et
-  **neuf ont réussi**. Ce sont les neuf le problème — une ancre de 2.1.258 qui
-  matche encore dans du code 2.1.272 n'est pas une ancre qui veut encore dire
-  la même chose, et `node --check` prouve seulement que le résultat parse. Le
-  seul garde-fou existant, `warn_untested_version`, comparait le mauvais
-  référentiel (le `versions.json` qui **voyage avec le jeu téléchargé**, donc
-  d'époque) et se noyait sous huit lignes rouges.
-  *How to apply* : quand un nom d'artefact encode sa cible — tag, dossier,
-  digest — lire cette cible et la comparer à la réalité, au lieu de traiter le
-  nom comme opaque. Sortir l'alerte **en dernier**, après ce qu'elle qualifie,
-  et la répéter sur le chemin du court-circuit : « déjà appliqué » est
-  précisément la phrase qui ne doit jamais rester seule quand le jeu appliqué
-  était pour une autre version.
+- **An artefact that names its target version must be refused, or at minimum
+  flagged, when applied elsewhere.** *Why* : the patchers repo's
+  `cc<version>-r<n>` tag schema DECLARES the extension it was cut for, and
+  `ext-patches-sync` read that name only as a cache key, a status line and a
+  fetch URL — never as an assertion. A pin left behind after four CC bumps
+  (`cc2.1.258-r2`) was therefore applied as is to a 2.1.272 extension : eight
+  patchers failed loudly and **nine succeeded**. The nine are the problem — a
+  2.1.258 anchor that still matches in 2.1.272 code is not an anchor that
+  still means the same thing, and `node --check` only proves the result
+  parses. The one existing safeguard, `warn_untested_version`, compared the
+  wrong reference (the `versions.json` that **travels with the downloaded
+  set**, hence period-correct) and drowned under eight red lines.
+  *How to apply* : when an artefact name encodes its target — tag, folder,
+  digest — read that target and compare it to reality, instead of treating the
+  name as opaque. Emit the alert **last**, after what it qualifies, and repeat
+  it on the short-circuit path : « already applied » is precisely the sentence
+  that must never stand alone when the applied set was for another version.
 
-- **Une assertion ne doit jamais grep une chaîne que le correctif lui-même
-  cite.** *Why* : la garde de capability de `init-firewall.sh` explique que
-  iptables ment en disant « you must be root ». L'assertion censée prouver que
-  ce diagnostic opaque n'apparaît plus grepait… `you must be root`, et matchait
-  donc le texte du refus. Elle échouait alors que la garde marchait
-  parfaitement. Corrigée en `Could not fetch rule set generation id`, la
-  signature propre d'iptables, que rien d'autre n'émet.
-  *How to apply* : ancrer une assertion de non-régression sur une chaîne que
-  **seul le défaut** peut produire. Si le message de correction cite le
-  symptôme — ce qui est souvent la bonne rédaction — la chaîne citée est
-  disqualifiée comme sonde.
+- **An assertion must never grep a string the fix itself quotes.** *Why* :
+  `init-firewall.sh`'s capability guard explains that iptables lies by saying
+  « you must be root ». The assertion meant to prove that opaque diagnostic no
+  longer appears grepped… `you must be root`, and so matched the text of the
+  refusal. It failed while the guard worked perfectly. Fixed to
+  `Could not fetch rule set generation id`, iptables's clean signature, which
+  nothing else emits.
+  *How to apply* : anchor a non-regression assertion on a string **only the
+  defect** can produce. If the fix message quotes the symptom — which is often
+  the right wording — the quoted string is disqualified as a probe.
 
-- **Une suite qui lit une variable d'environnement doit la neutraliser à
-  l'entrée.** *Why* : `ext-patches-sync` préfère l'environnement au `.env`
-  (compose injecte à la création), donc `toolkit.test.sh` héritait du pin, du
-  dépôt et du token du container qui l'exécutait : 69/0 sur le host, **5
-  échecs** dans le devcontainer de dogfood, même code, même commit. La suite
-  répondait sur le container au lieu de répondre sur sa fixture.
-  *How to apply* : `unset` en tête de suite toute variable que le code sous
-  test lit depuis l'environnement, et la poser explicitement dans les seuls
-  tests qui l'éprouvent — le précédent est `run-firewall-suites.sh:26-29` avec
-  `FIREWALL_ALLOW_LOCAL_AT_REBUILD`.
+- **A suite that reads an environment variable must neutralise it on entry.**
+  *Why* : `ext-patches-sync` prefers the environment over `.env` (compose
+  injects at creation), so `toolkit.test.sh` inherited the pin, the repo and
+  the token of the container running it : 69/0 on the host, **5 failures** in
+  the dogfood devcontainer, same code, same commit. The suite answered about
+  the container instead of answering about its fixture.
+  *How to apply* : `unset` at the top of the suite every variable the code
+  under test reads from the environment, and set it explicitly in the only
+  tests that exercise it — the precedent is `run-firewall-suites.sh:26-29`
+  with `FIREWALL_ALLOW_LOCAL_AT_REBUILD`.
 
-- **`npm pack` jette silencieusement tout fichier nommé `.gitignore`.** *Why* :
-  le scaffold de `devc init` embarque un `.devcontainer/.gitignore` dans
-  `packages/devcontainer-cli/templates/` ; le checkout l'avait, tous les tests
-  passaient, le tarball ne le contenait pas — 24 fichiers sur 25. Le plan
-  étant construit en parcourant le dossier, une installation depuis le
-  registre aurait scaffoldé un projet **sans `.gitignore`**, sans erreur.
-  Trouvé par la passe de vérification, jamais par le checkout de dev.
-  *How to apply* : nommer le template `_gitignore` et le renommer à l'écriture
-  (convention create-vite) ; et garder un test qui compare `npm pack
-  --dry-run --json` au parcours du dossier — c'est le seul endroit où le
-  défaut est visible.
+- **`npm pack` silently drops any file named `.gitignore`.** *Why* : `devc
+  init`'s scaffold carries a `.devcontainer/.gitignore` in
+  `packages/devcontainer-cli/templates/` ; the checkout had it, every test
+  passed, the tarball did not contain it — 24 files out of 25. Since the plan
+  is built by walking the folder, an install from the registry would have
+  scaffolded a project **without a `.gitignore`**, with no error. Found by the
+  verification pass, never by the dev checkout.
+  *How to apply* : name the template `_gitignore` and rename it on write
+  (create-vite convention) ; and keep a test comparing `npm pack
+  --dry-run --json` against the folder walk — it is the only place the defect
+  is visible.
 
-- **`npx <paquet> <cmd>` sans spec de version ne lance pas la copie locale.**
-  *Why* : dans `libnpmexec` (npm 8-11), un spec sans version est un *tag* ; la
-  branche appelle `getManifest` (`preferOnline`) à chaque exécution, compare
-  l'URL du tarball résolu à celle du `node_modules` local, et **installe puis
-  lance la version plus récente** dès qu'il y en a une au registre. Un
-  `devDependencies` + lockfile ne protège donc rien sous cette forme. Un spec
-  en **plage** (`@0.x`) prend l'autre branche : arbre local interrogé,
-  `semver.satisfies`, copie locale lancée sans réseau — prouvé par un test
-  contre un registre mort (`test/npx-resolution.test.ts`).
-  *How to apply* : toute commande répétée qui passe par `npx` (un
-  `initializeCommand`, un hook) porte une plage ou une version exacte, jamais
-  le nom nu ; et éviter `^` (échappement cmd.exe) et `>` (redirection) dans la
-  chaîne — `0.x` n'a aucun métacaractère.
+- **`npx <package> <cmd>` with no version spec does not run the local copy.**
+  *Why* : in `libnpmexec` (npm 8-11), a spec with no version is a *tag* ; the
+  branch calls `getManifest` (`preferOnline`) on every run, compares the
+  resolved tarball URL to the local `node_modules` one, and **installs then
+  runs the newer version** as soon as one exists in the registry. A
+  `devDependencies` + lockfile therefore protects nothing in this form. A
+  **range** spec (`@0.x`) takes the other branch : local tree queried,
+  `semver.satisfies`, local copy run with no network — proven by a test
+  against a dead registry (`test/npx-resolution.test.ts`).
+  *How to apply* : every repeated command that goes through `npx` (an
+  `initializeCommand`, a hook) carries a range or an exact version, never the
+  bare name ; and avoid `^` (cmd.exe escaping) and `>` (redirection) in the
+  string — `0.x` has no metacharacter.
 
-- **Ne jamais passer un chemin absolu en premier argument positionnel de
-  `npx`.** *Why* : avant de résoudre un paquet, libnpmexec teste si la
-  commande demandée existe déjà en bin local, avec
+- **Never pass an absolute path as `npx`'s first positional argument.**
+  *Why* : before resolving a package, libnpmexec tests whether the requested
+  command already exists as a local bin, with
   `resolve(<dir>/node_modules/.bin, args[0])`
-  (`libnpmexec/lib/file-exists.js`). Quand `args[0]` est absolu, `resolve`
-  jette le répertoire et rend le chemin lui-même — qui existe. npx en conclut
-  que la commande est installée, **n'installe rien**, n'atteint jamais
-  `getBinFromManifest` (qui aurait traduit le spec en nom de bin) et passe le
-  fichier à `sh` : `Permission denied` sur un `.tgz`, sans un mot sur
-  l'installation manquante. *How to apply* : pour jouer un tarball local,
-  `npx --yes --package /chemin/x.tgz -- <bin> <args>`. Un chemin **relatif**
-  marche aussi par accident (`resolve` ne court-circuite pas), mais la forme
-  `--package` est la seule qui dit ce qu'elle fait.
+  (`libnpmexec/lib/file-exists.js`). When `args[0]` is absolute, `resolve`
+  discards the directory and returns the path itself — which exists. npx
+  concludes the command is installed, **installs nothing**, never reaches
+  `getBinFromManifest` (which would have translated the spec into a bin name)
+  and hands the file to `sh` : `Permission denied` on a `.tgz`, without a word
+  about the missing install. *How to apply* : to run a local tarball,
+  `npx --yes --package /path/x.tgz -- <bin> <args>`. A **relative** path also
+  works by accident (`resolve` does not short-circuit), but the `--package`
+  form is the only one that says what it does.
 
-- **Un npm imbriqué hérite des `npm_config_*` du npm parent.** *Why* :
-  `npm publish --dry-run` exporte `npm_config_dry_run=true` ; le `npm pack`
-  lancé par un test sous `prepublishOnly` l'hérite, **sort en 0 et n'écrit
-  aucun tarball**. Le test casse alors sur son propre fixture
-  (`assert.ok(tarball !== undefined)`) et l'échec accuse le test, pas la
-  cause. Vaut pour `dry_run`, `registry`, `cache`, `production`… *How to
-  apply* : tout `spawn('npm'|'npx', …)` dans un test part avec un
-  environnement nettoyé des `npm_config_*` qui changeraient son sens — et le
-  commentaire dit lequel, sinon le prochain le remet.
+- **A nested npm inherits the parent npm's `npm_config_*`.** *Why* :
+  `npm publish --dry-run` exports `npm_config_dry_run=true` ; the `npm pack`
+  run by a test under `prepublishOnly` inherits it, **exits 0 and writes no
+  tarball**. The test then breaks on its own fixture
+  (`assert.ok(tarball !== undefined)`) and the failure accuses the test, not
+  the cause. Holds for `dry_run`, `registry`, `cache`, `production`… *How to
+  apply* : every `spawn('npm'|'npx', …)` in a test starts with an environment
+  cleaned of the `npm_config_*` that would change its meaning — and the
+  comment says which one, otherwise the next person puts it back.
 
-- **Une commande shell écrite et vérifiée en bash n'est pas vérifiée pour un
-  lecteur en zsh.** *Why* : zsh ne découpe pas une expansion de variable non
-  quotée en mots. `DEVC="node /x/devc.mjs"` puis `$DEVC init` marche en bash
-  et échoue en zsh sur `no such file or directory: node /x/devc.mjs` — le
-  nom de commande est la chaîne entière. Un guide rédigé depuis ce container
-  (bash) et joué sur le Mac (zsh) tombe dessus à la première ligne, et le
-  script qui porte la même forme en interne, lui, marche — ce qui égare le
-  diagnostic. *How to apply* : dans une doc destinée à être collée dans un
-  terminal, un lanceur est une **fonction** (`devc() { node "$X" "$@"; }`),
-  jamais une variable. Dépannage sans réécrire : `${=VAR}`.
+- **A shell command written and verified in bash is not verified for a reader
+  in zsh.** *Why* : zsh does not split an unquoted variable expansion into
+  words. `DEVC="node /x/devc.mjs"` then `$DEVC init` works in bash and fails
+  in zsh on `no such file or directory: node /x/devc.mjs` — the command name
+  is the whole string. A guide written from this container (bash) and run on
+  the Mac (zsh) hits it on the first line, and the script carrying the same
+  form internally does work — which misleads the diagnosis. *How to apply* :
+  in a doc meant to be pasted into a terminal, a launcher is a **function**
+  (`devc() { node "$X" "$@"; }`), never a variable. Workaround without
+  rewriting : `${=VAR}`.
 
-- **`return <promesse>` dans un `try/finally` exécute le `finally` avant que
-  la promesse ne se résolve** — et si ce `finally` ferme une ressource, la
-  promesse ne se résout jamais. *Why* : mesuré sur `devc init`, où le chemin
-  « projet déjà scaffoldé » faisait `return reportExisting(wizard)` sans
-  `await` dans un `try { … } finally { readline?.close() }`. L'interface
-  readline était créée pendant l'appel puis fermée aussitôt, question
-  pendante : `rl.question()` ne se règle plus, la boucle d'événements se
-  vide et node sort en **13** avec `Warning: Detected unsettled top-level
-  await`. À l'écran, le prompt s'affiche et le shell reprend la main sans
-  rien lire. *How to apply* : dans un `try` qui a un `finally` libérant
-  quoi que ce soit, écrire `return await f()`, jamais `return f()` — la
-  règle vaut aussi quand le `finally` ne fait « que » du log.
+- **`return <promise>` inside a `try/finally` runs the `finally` before the
+  promise settles** — and if that `finally` closes a resource, the promise
+  never settles. *Why* : measured on `devc init`, where the « project already
+  scaffolded » path did `return reportExisting(wizard)` without `await` inside
+  a `try { … } finally { readline?.close() }`. The readline interface was
+  created during the call then closed right away, question pending :
+  `rl.question()` never settles, the event loop drains and node exits **13**
+  with `Warning: Detected unsettled top-level await`. On screen, the prompt
+  shows and the shell takes back control without reading anything. *How to
+  apply* : in a `try` that has a `finally` releasing anything, write
+  `return await f()`, never `return f()` — the rule holds even when the
+  `finally` « only » logs.
 
-- **Une couture d'injection testable peut rendre un défaut de cycle de vie
-  invisible à toute la suite.** *Why* : les 129 tests de `devc init`
-  passaient `options.ask`, donc `readlineAsk()` n'était **jamais** construit
-  et le `close()` du `finally` était un no-op — le défaut ci-dessus ne
-  pouvait pas apparaître. La couture qui rend les prompts testables est
-  exactement celle qui masque la ressource qu'ils tiennent. *How to apply* :
-  quand une dépendance est injectable, garder **un** test qui prend le
-  chemin réel (ici : un `PassThrough` avec `isTTY = true` et pas de `ask`,
-  sous `{ timeout }` pour que l'échec soit une expiration lisible et non un
-  blocage). Le contrôle que le test sert à quelque chose se fait en cassant
-  le correctif dans le **compilé** et en vérifiant qu'il rougit.
+- **A testable injection seam can make a lifecycle defect invisible to the
+  whole suite.** *Why* : the 129 `devc init` tests all passed `options.ask`,
+  so `readlineAsk()` was **never** constructed and the `finally`'s `close()`
+  was a no-op — the defect above could not appear. The seam that makes prompts
+  testable is exactly the one that hides the resource they hold. *How to
+  apply* : when a dependency is injectable, keep **one** test that takes the
+  real path (here : a `PassThrough` with `isTTY = true` and no `ask`, under
+  `{ timeout }` so the failure is a readable expiry and not a hang). Checking
+  that the test is worth anything is done by breaking the fix in the
+  **compiled** output and verifying it goes red.
 
-- **`node_modules/` est partagé entre le Mac et le container par le
-  bind-mount, et un paquet à binaire natif par plateforme ne peut pas
-  satisfaire les deux.** *Why* : `typescript@^7.0.2` livre son compilateur
-  en optionalDependencies par plateforme
-  (`@typescript/typescript-darwin-arm64`, `…-linux-arm64`, …). Le
-  `npm install` du Mac ne pose que la brique darwin ; dans le container,
-  `npm run build` meurt sur `Unable to resolve
-  @typescript/typescript-linux-arm64`. Pire : `npm install` de la brique
-  linux **supprime** la darwin (« added 1 package, and removed 1 package »),
-  donc réparer un côté casse l'autre, et npm refuse la darwin sur linux
-  (`notsup Actual cpu`). *How to apply* : pour faire coexister les deux,
-  récupérer le tarball et l'extraire à la main —
-  `npm pack @typescript/typescript-<os>-<arch>@<version>` puis
-  `tar xzf … --strip-components=1 -C node_modules/@typescript/<nom>`. Et
-  s'en souvenir au moment de choisir une dépendance : un paquet à binaires
-  par plateforme coûte cette gymnastique à chaque fois
+- **`node_modules/` is shared between the Mac and the container by the
+  bind-mount, and a package with per-platform native binaries cannot satisfy
+  both.** *Why* : `typescript@^7.0.2` ships its compiler as per-platform
+  optionalDependencies (`@typescript/typescript-darwin-arm64`,
+  `…-linux-arm64`, …). The Mac's `npm install` lays down only the darwin
+  brick ; inside the container, `npm run build` dies on `Unable to resolve
+  @typescript/typescript-linux-arm64`. Worse : `npm install` of the linux
+  brick **removes** the darwin one (« added 1 package, and removed 1
+  package »), so repairing one side breaks the other, and npm refuses the
+  darwin one on linux (`notsup Actual cpu`). *How to apply* : to make both
+  coexist, fetch the tarball and extract it by hand —
+  `npm pack @typescript/typescript-<os>-<arch>@<version>` then
+  `tar xzf … --strip-components=1 -C node_modules/@typescript/<name>`. And
+  remember it when picking a dependency : a package with per-platform binaries
+  costs this gymnastics every time
   ([.claude/rules/dependencies.md](../.claude/rules/dependencies.md)).
 
-- **Publier sur npm depuis une CI : trusted publishing (OIDC) + staged
-  publishing, et `npm publish` laissé décoché.** *Why* : l'UI de npm le dit
-  elle-même à côté de la case (« Not recommended. For stronger security, leave
-  unchecked to allow staged publishing only »), et la raison est concrète, pas
-  décorative. `npm stage publish` dépose le tarball dans une zone d'attente et
-  s'arrête ; un mainteneur approuve en 2FA, ou jette avec `npm stage reject` et
-  peut re-stager la même version. Une version publiée, elle, est définitive
-  passé 72 h. **Le push du tag cesse donc d'être le point de non-retour** —
-  c'est l'approbation qui l'est, faite par un humain, après coup, avec le droit
-  de refuser. OIDC apporte le reste : aucun secret dans le dépôt, rien qui
-  expire, et l'attestation de provenance attachée **sans** `--provenance`.
-  *How to apply* : `permissions: id-token: write`, `setup-node` avec
-  `registry-url` (toujours requis, même sans jeton), `npm stage publish`. Sur
-  npmjs.com, *Trusted publishing* → GitHub Actions : le compte **sans `@`**
-  (`meitogi`, pas `@meitogi`), le dépôt sans le propriétaire, et le **nom de
-  fichier du workflow**, qui devient porteur — le renommer casse la
-  publication en `E404` qui ressemble à un paquet introuvable, et npm ne valide
-  **rien** à l'enregistrement. Planchers : npm ≥ 11.5.1 pour OIDC, ≥ 11.15.0
-  pour le staging ; épingler `node-version: '24'` **en littéral** et jamais
-  `node-version-file: package.json`, qui lirait `engines.node` et installerait
-  un Node dont le npm est antérieur à OIDC. Vérifié le 2026-09-21 : le staging
-  **préserve** la provenance, ce que la doc npm ne dit nulle part.
+- **Publishing to npm from CI : trusted publishing (OIDC) + staged
+  publishing, and `npm publish` left unchecked.** *Why* : npm's UI says so
+  itself next to the box (« Not recommended. For stronger security, leave
+  unchecked to allow staged publishing only »), and the reason is concrete,
+  not decorative. `npm stage publish` drops the tarball in a holding area and
+  stops ; a maintainer approves under 2FA, or discards with `npm stage reject`
+  and can re-stage the same version. A published version, by contrast, is
+  final past 72 h. **Pushing the tag therefore stops being the point of no
+  return** — the approval is, made by a human, after the fact, with the right
+  to refuse. OIDC brings the rest : no secret in the repo, nothing that
+  expires, and the provenance attestation attached **without** `--provenance`.
+  *How to apply* : `permissions: id-token: write`, `setup-node` with
+  `registry-url` (always required, even with no token), `npm stage publish`.
+  On npmjs.com, *Trusted publishing* → GitHub Actions : the account **without
+  the `@`** (`meitogi`, not `@meitogi`), the repo without the owner, and the
+  **workflow's file name**, which becomes load-bearing — renaming it breaks
+  publication with an `E404` that looks like a missing package, and npm
+  validates **nothing** at registration time. Floors : npm ≥ 11.5.1 for OIDC,
+  ≥ 11.15.0 for staging ; pin `node-version: '24'` **as a literal** and never
+  `node-version-file: package.json`, which would read `engines.node` and
+  install a Node whose npm predates OIDC. Verified on 2026-09-21 : staging
+  **preserves** provenance, which the npm docs say nowhere.
 
-- **Le conteneur n'a aucun credential GitHub : tout push est un geste
-  hôte.** *Why* : `gh` est installé mais non authentifié, et le relais de
-  credentials des Dev Containers ne répond **rien** pour `github.com` —
-  éprouvé avec et sans nom d'utilisateur. Le piège est qu'un `git ls-remote`
-  ou un `git fetch` sur un dépôt **public** réussit quand même, ce qui donne
-  l'illusion que l'authentification fonctionne ; le premier `git push` la
-  détruit avec `could not read Password … terminal prompts disabled`. *How to
-  apply* : l'éprouver **avant** de bâtir un plan qui suppose un push depuis le
-  conteneur (`printf 'protocol=https\nhost=github.com\n\n' | git credential
-  fill` — n'en lire que la présence, jamais la valeur). Le `.git` étant
-  bind-monté, tout ce que Claude committe localement est immédiatement
-  poussable depuis le Mac : lui donner le chemin hôte, qui est dans
-  `$HOST_WORKSPACE_PATH`. Et lui rappeler que **`git push` seul ne pousse pas
-  les tags** — il répond `Everything up-to-date`, ce qui se lit comme un
-  succès pendant que la ref est restée locale et qu'aucun run ne part.
-  `git push origin refs/tags/<tag>`.
+- **The container has no GitHub credential : every push is a host gesture.**
+  *Why* : `gh` is installed but not authenticated, and the Dev Containers
+  credential relay answers **nothing** for `github.com` — tested with and
+  without a username. The trap is that a `git ls-remote` or a `git fetch` on a
+  **public** repo succeeds anyway, which gives the illusion that
+  authentication works ; the first `git push` destroys it with
+  `could not read Password … terminal prompts disabled`. *How to apply* :
+  test it **before** building a plan that assumes a push from the container
+  (`printf 'protocol=https\nhost=github.com\n\n' | git credential fill` — read
+  only its presence, never its value). Since `.git` is bind-mounted,
+  everything Claude commits locally is immediately pushable from the Mac :
+  give it the host path, which is in `$HOST_WORKSPACE_PATH`. And remind it
+  that **`git push` alone does not push tags** — it answers
+  `Everything up-to-date`, which reads as success while the ref stayed local
+  and no run starts. `git push origin refs/tags/<tag>`.
+
+- **When a generated artefact does not contain what was put in it, re-run the
+  generator before reasoning about the sources.** *Why* : on 2026-09-30, a
+  rule added to `firewall/policy.d/api.github.com.yaml` did not show up in
+  `effective/policy.compiled.yaml`. I spent an hour reading
+  `firewall-docker-setup.sh`, `firewall-digest.sh`, the overlay order, the
+  `blocked_header_patterns` and `domains.local.txt`, and asking the user four
+  times over to collect data — while `compile-policy.py`, `python3` and the
+  real `firewall/` tree were available from the start. A single call
+  (`compile-policy.py --config-dir <tree>/firewall --out-policy …`) produced
+  the answer **and** an explicit `WARN:`. *How to apply* : as soon as a
+  compiled, baked or rendered file does not reflect its source, reproduce the
+  compilation locally on the **real** files, and read stderr first. The
+  generator almost always says what is wrong ; inferring it from the source
+  code is slower and more wrong.
+
+- **A « it's stuck » symptom is cut in two before being diagnosed : what has
+  finished, and what has not.** *Why* : same incident. The boot looked stuck,
+  and I successively accused the shim, the image pull, the `/Volumes/Data`
+  volume, bootstrap DNS resolution and the firewall — five hypotheses, all
+  wrong. The proof was in the log the user had already pasted :
+  `=== post-start done ===` followed by the `✓ all clear` panel. Every one of
+  our fragments had finished ; the wait was **after**, on the VS Code side
+  (extension downloads). *How to apply* : look for the last completion marker
+  in the logs first. Whatever printed « done » is out of the picture, however
+  slow it appears. Only propose a cause after bounding the window where the
+  time actually goes.
+
+- **Asking the user for the same measurement more than once is an error
+  signal, not perseverance.** *Why* : I demanded `firewall-blocks` and an HTTP
+  code four times in a row, each time formulating one more theory. *How to
+  apply* : on the second request left unanswered, stop asking. Either
+  reproduce it yourself with what is at hand, or write **one** script that
+  collects everything at once and returns a verdict — never a third question.
+
+- **A debug block never decides a script's exit code, and `writer | head -n`
+  under `pipefail` is an intermittent failure.** *Why* : measured on
+  2026-10-05 on symptems. `init-firewall.sh` printed `✓ Firewall ready`, then
+  the debug dump that follows (`iptables -L`, `ipset list … | head -30`,
+  redirected to `/tmp/iptables-dump.txt 2>&1`) failed ; `set -Eeuo pipefail`
+  exited the script, and the ERR trap's message went **into the file**. The
+  phase log showed a green firewall and a red `rc=1` fragment, with nothing in
+  between — and the fragment additionally overwrote the real code with a
+  hardcoded `exit 1`. Real cost : `on-create` phase aborted, VS Code re-runs
+  the whole flow, create work redone at post-start, ~27 s. On `head` :
+  `seq 1 200000 | head -30` fails 200/200 (SIGPIPE 141 surfaced by
+  `pipefail`), `seq 1 400 | head -30` 0/200 — the boundary is the 64 KiB pipe
+  buffer, so it depends on the size of the set. *How to apply* : every purely
+  diagnostic block ends with `|| true` (or `|| echo …`) **and** the script
+  ends with an explicit `exit 0` ; `sed -n '1,30p'` instead of `head -30` in a
+  `pipefail` script ; a lifecycle fragment re-prints `rc=$?`, never an invented
+  code. Guards in `test/manifest.test.sh` § « init-firewall: the exit status is
+  the firewall ».
+
+- **A cache under `.devcontainer/tmp/` lives in the workspace : « fresh
+  container » does not exist for whatever reads it.** *Why* :
+  `ext-patches-sync` resolved an `auto` ref from the cache first, documenting
+  that tags would be queried « on a fresh container ». Since the cache
+  survives the rebuild, that case never happened : `cc2.1.280-r2` was served
+  the day after `r3` was published, on a recreated container, with no network
+  call. *How to apply* : before writing « at first boot » or « on a fresh
+  container », check where the state being read lives — `$DEVC_CONFIG_DIR/tmp/**`
+  is workspace, not container. Whatever must distinguish the two must read it
+  from the phase (`--create` passed by the on-create fragment), not from the
+  presence of a file.
+
+- **Nuance on the previous lesson : « done » bounds the fragments' work, not
+  the phase process's duration.** *Why* : measured on 2026-10-05. `devc-hook`
+  printed `=== post-start done ===` then **did not return for 30 s** — the
+  per-fragment watchdog (`_frag_watchdog`, landed in 1.7.1) ran
+  `while sleep 30` in the foreground of a subshell : a non-interactive bash
+  defers the signal until its foreground command ends, so `run_frag`'s `kill`
+  was only honoured when the `sleep` expired, and the `wait` that follows
+  waited all that time. Measurement : 30.024 s for a phase containing only a
+  `true` ; 0.029 s after the fix (`sleep & ; trap TERM ; wait` — `wait` is
+  interruptible, a foreground `sleep` is not). The two 20-32 s « holes »
+  between `on-create`, `post-create` and `post-start` in a boot cycle were
+  this — not VS Code. *How to apply* : before accusing the host or VS Code of
+  dead time between phases, time the phase process itself
+  (`time devc-hook <phase>` against a fake `DEVC_BASE_HOOKS`), not just read
+  its lines. And in any background subshell meant to be killed : never a
+  blocking foreground command, always `cmd & wait $!` with a trap.
+
+- **"The project copy is dead" says nothing about the state of what replaces
+  it.** *Why* : a French-removal pass classified `skills/{diagram,tokens,
+  watch-log,prepare-stack}` as out of scope because the image ships the skill
+  and `slim_tree` removes the project copy — correct, and it dropped 99
+  detections from the list. The image's own copy was never opened. It was
+  French too, and it is the copy that reaches every project. The classification
+  was right about the file and silent about the destination. *How to apply* :
+  when a mechanism (`slim_tree`, a template seed, an `install.sh` overwrite)
+  means "this file is not the one that matters", the next step is to open the
+  one that does and apply the same check to it. A correct exclusion is still an
+  exclusion — it removes a file from the list, not a problem from the tree.
+
+- **A zero only counts if the same probe has been seen returning non-zero.**
+  *Why* : a detector that reads 0 because its pattern is wrong is
+  indistinguishable from one that reads 0 because the work is done. This bit
+  three sessions on a `grep` for a bucket name nothing emitted. The cheap
+  discipline is to run the probe on something that must fail: the French
+  detector was calibrated by returning **0** on lines 1→362 of this file and
+  **216** on lines 363→675 *before* any translation, then **161** on the files
+  deliberately left French *after*. *How to apply* : report a zero next to a
+  non-zero from the same probe, in the same run. And watch the probe's own
+  blind spots — this one reads 0 on `notify/lib/smart-text.js`, which emits
+  French to the user, because its word list has no `aucune` or `entrée` ; and
+  it reads 1 on `'20px sans-serif'`, because `sans` is also a French word.

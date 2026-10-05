@@ -248,8 +248,8 @@ A few signals are shown at every container start. None are blocking; all give th
 │   └── sync-skills.sh          merges skill commands + hooks into ~/.claude/settings.json
 │
 ├── host-helpers/               host-side wrappers (invoked by user after Claude proposes)
-│   ├── verify-slim-base        [v2.1] 9 PASS/FAIL gates sur la base image (size cap, /home/node, …)
-│   ├── analyze-base-image      [v2.1] per-layer + per-dir + per-pkg breakdown (debug "où passent les GB")
+│   ├── verify-slim-base        [v2.1] 9 PASS/FAIL gates on the base image (size cap, /home/node, …)
+│   ├── analyze-base-image      [v2.1] per-layer + per-dir + per-pkg breakdown (debug "where the GB go")
 │   ├── watch-log-cleanup       drop pending/* older than 60 min
 │   ├── research-cleanup        list/delete sibling research projects (dry-run by default)
 │   └── bring-back-result       archive research output back into research-bundles/
