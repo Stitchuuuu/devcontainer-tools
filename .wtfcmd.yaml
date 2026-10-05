@@ -99,6 +99,52 @@
       test: "$bool"
   cmd: bash ./packages/devcontainer-sandbox/test/release-check.sh{{ if .no_purge }} --no-purge{{ end }}
 
+# ---- ext-patch — the VS Code extension patchers of THIS container ---------
+# Convenience only. The command itself is `ext-patches-update`, baked into the
+# image and on PATH in any container built from it; this group just spares the
+# name. Which patchers a container runs is set by EXT_PATCHES_* in
+# .devcontainer/.env — the image ships none and names no repository.
+
+- group: ext-patch
+  name: status
+  desc: |
+    What is configured, what is cached, and whether the patch sentinels are
+    live in the extension on disk. Reads only — never writes, never fetches.
+  cmd: ext-patches-sync --status
+
+- group: ext-patch
+  name: update
+  desc: |
+    Move this container to another patch set. With no flag: resolves the
+    latest release of EXT_PATCHES_REPO (falling back to its tag list, which
+    is what a repository with tags and no releases uses), applies it, and
+    rewrites EXT_PATCHES_REF in .devcontainer/.env — the pin only moves once
+    the patchers are actually on disk. A VS Code window reload is needed for
+    the change to reach the extension host.
+  flags:
+    - name: check
+      desc: Say what is installed and what is available, then stop.
+      default: ""
+      test: "$bool"
+    - name: ref
+      desc: Install this tag or commit SHA instead of resolving the latest.
+      default: ""
+    - name: dir
+      desc: Apply from a local checkout of patchers — no network, no token.
+      default: ""
+    - name: reapply
+      desc: Replay the current ref from the cache, e.g. after a Claude Code bump.
+      default: ""
+      test: "$bool"
+    - name: no-write-env
+      desc: Apply without moving the pin — a trial run.
+      default: ""
+      test: "$bool"
+  cmd: >-
+    ext-patches-update{{ if .check }} --check{{ end }}{{ if .ref }} --ref
+    {{ .ref }}{{ end }}{{ if .dir }} --dir {{ .dir }}{{ end }}{{ if .reapply }}
+    --reapply{{ end }}{{ if .no_write_env }} --no-write-env{{ end }}
+
 # ---- shareglaude — receive a shared Claude Code token (user B side) --------
 # Runs INSIDE the devcontainer: it writes ~/.claude/.credentials.json and needs
 # platform.claude.com + api.anthropic.com, both allowlisted here. Deploying the
@@ -153,3 +199,72 @@
     one that expired or was revoked since staging.
     The current credentials are kept as .credentials.json.bak-<timestamp>.
   cmd: exec ./scripts/claude-token-share.mjs --promote
+
+# ---- docker — disk usage and reclaim ---------------------------------------
+# HOST ONLY. Inside the devcontainer, `docker` talks to the NESTED daemon
+# (dind-storage-*), which has homonymous images with different IDs — you would
+# measure and clean the wrong machine. Both commands refuse nothing, so check
+# where you are before reading the numbers.
+
+- group: docker
+  name: usage
+  desc: |
+    What Docker occupies, and what of it is reclaimable. Removes nothing.
+    Beyond `docker system df`, which under-reports: the build cache broken
+    down BY BUILD STEP, with the image(s) each step belongs to — recovered by
+    joining the step text against every image's `docker history`, since
+    BuildKit does not record it. A step shown with "+N more" is shared, and
+    deleting it would take a neighbour's cache with it.
+  flags:
+    - name: cache
+      desc: Add the per-step cache table. Slower, it reads every image history.
+      default: ""
+      test: "$bool"
+  cmd: bash ./.devcontainer/host-helpers/docker-reclaim.sh{{ if .cache }} --cache{{ end }}
+
+- group: docker
+  name: reclaim
+  desc: |
+    Remove Docker junk. With no flag it reports and removes NOTHING, so run it
+    bare first and read what it would take.
+    Named volumes are never candidates, whatever you ask — the difference
+    between a cache and a database is a name you have to read. That covers
+    claude-code-config-* (Claude sessions and transcripts), claude-creds-*,
+    vscode, dind-storage-* and every project database. Stopped containers are
+    not candidates either: a stopped project is still a project.
+    Prefer --cache-dead over --cache-dupes. The cache is a DAG (98% of records
+    have a parent) and the newest copy of a step descends from the older ones,
+    so cache-dupes targets the parents of what it keeps and BuildKit refuses:
+    measured 328 records asked, 51 freed, 2.34 GB. cache-dead takes whole
+    unreferenced chains and actually reclaims the space.
+  flags:
+    - name: builders
+      desc: |
+        Inactive container-driver buildx builders AND their state volumes,
+        including volumes orphaned by an earlier `buildx rm` (which leaves
+        them behind — 13.44 GB was found stranded that way).
+      default: ""
+      test: "$bool"
+    - name: dangling
+      desc: Untagged images no container uses. Tagged images are never touched.
+      default: ""
+      test: "$bool"
+    - name: anon-volumes
+      desc: Anonymous volumes (64 hex chars) with zero links. Named ones, never.
+      default: ""
+      test: "$bool"
+    - name: cache-dead
+      desc: |
+        Every cache chain backing no existing image — the "reclaimable" figure
+        docker system df prints. No size limit. The next build re-runs those
+        steps.
+      default: ""
+      test: "$bool"
+    - name: cache-dupes
+      desc: |
+        Older copies of an identical step, keeping the most recent. Safe but
+        largely ineffective against the DAG — see the description above.
+      default: ""
+      test: "$bool"
+  cmd: |
+    bash ./.devcontainer/host-helpers/docker-reclaim.sh{{ if or .builders .dangling .anon_volumes .cache_dead .cache_dupes }} --apply{{ end }}{{ if .builders }} builders{{ end }}{{ if .dangling }} dangling{{ end }}{{ if .anon_volumes }} anon-volumes{{ end }}{{ if .cache_dead }} cache-dead{{ end }}{{ if .cache_dupes }} cache-dupes{{ end }}
