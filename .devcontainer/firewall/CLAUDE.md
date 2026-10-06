@@ -7,13 +7,15 @@ it whenever it touches files under `.devcontainer/firewall/`.
 ## Mode gate — check first
 
 ```bash
-cat .devcontainer/firewall/default-mode          # the configured mode
-cat /etc/devcontainer-firewall/default-mode      # the mode actually applied at boot
+cat /etc/devcontainer-firewall/default-mode   # the mode actually in force
+cat .devcontainer/firewall/default-mode       # what the next rebuild will apply
 ```
 
-The second is the truth: the config is **baked**, so a workspace edit without a
-rebuild does not change what runs. They disagree exactly when someone edited the
-first and did not rebuild.
+The two disagree when the mode was changed since the last rebuild — the baked
+copy wins, because `firewall/` is COPYed into the image at build time. Change it
+with `npx devc firewall-mode <off|basic|strict>` (no argument reports it), then
+rebuild. `.configured-firewall-mode` is a v2 file : if a tree still carries one,
+nothing reads it.
 
 Modes :
 
@@ -50,8 +52,6 @@ Common misreads to avoid in `basic` :
 - Only DNS / ipset failures indicate a real block (fails loudly).
 - New host needed ? → default to a temporary
   `firewall/domains.local.txt` addition (gitignored, revert-friendly).
-- **Never propose `/prepare-research`** — it's `strict`-only ; in
-  `basic` it brings no added value.
 
 ## `strict` mode : path scopes DO apply
 
@@ -66,24 +66,21 @@ Adding a new endpoint / host in `strict` :
 - Team / permanent : `firewall/domains.txt` + `firewall/policy.d/<host>.yaml`,
   both committed. Standard PR + review.
 
-## `/prepare-research` decision tree
+## A new host, in either mode
 
-The `/prepare-research` skill spawns a scoped research devcontainer.
-Use it ONLY when :
+Two routes, and the cheapest is the default :
 
-1. Mode = `strict` AND
-2. Genuine deep-scope work : third-party POST/DELETE integration,
-   multi-host package evaluation, or clean isolated workspace to
-   experiment without touching main state.
+- **Personal / temporary** — `firewall/domains.local.txt` (+
+  `firewall/policy.local.d/<host>.yaml` in `strict`). Gitignored,
+  revert-friendly, and only baked into the image when
+  `FIREWALL_ALLOW_LOCAL_AT_REBUILD=1`.
+- **Team / permanent** — `firewall/domains.txt` (+
+  `firewall/policy.d/<host>.yaml`). Committed, standard PR + review.
 
-In `basic`, or for lighter needs in `strict`, prefer :
-
-- **Route 2** — temp `firewall/domains.local.txt` addition (default when
-  unsure, cheapest, revert-friendly).
-- **Route 3** — permanent : `domains.local.txt` (personal) or
-  `domains.txt` (team, committed).
-
-See the skill file for the full 3-route matrix.
+A scoped research sibling used to be a third route, through a
+`/prepare-research` skill. No image line ships it any more, so there is
+nothing to propose — widening the allowlist on one of the two routes above
+is the whole decision.
 
 ## Editing firewall config — don't fake-verify
 
@@ -98,4 +95,6 @@ the running dnsmasq / ipset / mitmproxy. The runtime config in
 - The only real verification path is **rebuilding the devcontainer**.
 - Never claim « tested by recompile » without a rebuild.
 
-See `knowledge/firewall.md` for the init flow and compile-policy modes.
+See `/opt/devcontainer/base/knowledge/firewall.md` for the init flow and
+compile-policy modes. A v3 tree carries no `.devcontainer/knowledge/` — the
+base image ships those seven sheets.

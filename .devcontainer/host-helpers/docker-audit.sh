@@ -33,28 +33,31 @@ fi
 
 # --- 1. Auto-detect expected tags ---
 
-CLAUDE_VER="$(grep -oE 'CLAUDE_CODE_VERSION:-[0-9.]+' \
-	"$REPO_ROOT/.devcontainer/initialize.sh" 2>/dev/null \
-	| head -1 | sed 's/^[^0-9]*//' || true)"
-CLAUDE_VER="${CLAUDE_VER:-latest}"
-
 DC_PROJECT="$(grep -E '^DC_PROJECT=' "$REPO_ROOT/.devcontainer/.env" 2>/dev/null \
 	| head -1 | sed 's/^DC_PROJECT=//' | tr -d '"' || true)"
-DC_PROJECT="${DC_PROJECT:-devcontainer-tools}"
+# The scaffolded default; .env above wins whenever it carries the key.
+DEFAULT_PROJECT="{{PROJECT_ID}}"
+DC_PROJECT="${DC_PROJECT:-$DEFAULT_PROJECT}"
 COMPOSE_NAME="${DC_PROJECT}-claude-code"
 
-BASE_PARENT="$(grep -E '^FROM ' "$REPO_ROOT/.devcontainer/Dockerfile.base" 2>/dev/null \
-	| head -1 | awk '{print $2}' || true)"
-BRIDGE_PARENT="$(grep -E '^FROM ' \
-	"$REPO_ROOT/.devcontainer/claude-bridge/Dockerfile" 2>/dev/null \
-	| head -1 | awk '{print $2}' || true)"
+# v3 pulls a PUBLISHED base image instead of building Dockerfile.base, so the
+# parent is the pinned ARG, not the FROM of a local base Dockerfile.
+BASE_PARENT="$(grep -E '^ARG BASE_IMAGE=' "$REPO_ROOT/.devcontainer/Dockerfile" 2>/dev/null \
+	| head -1 | sed 's/^ARG BASE_IMAGE=//' || true)"
 
+# ⚠ v3 PULLS a published base image and builds no local one, so the two
+# expectations this array used to carry — a locally built base and the
+# `uniclaudeproxy:local` bridge — can never resolve. Dropped.
+#
+# The cross-project section that used to follow this file (≈150 lines, "==
+# Cross-project audit: claude-devcontainer-base ==") was dead for the same
+# reason and has been removed rather than carried into every project: it
+# compared layer prefixes of locally built base images, and under a published
+# base there is no local base to compare against. Rewriting it for the
+# published-image model is a separate piece of work nobody has asked for.
 EXPECTED=(
 	"$BASE_PARENT"
-	"claude-devcontainer-base:$CLAUDE_VER"
 	"${COMPOSE_NAME}-app"
-	"$BRIDGE_PARENT"
-	"uniclaudeproxy:local"
 )
 
 LOCAL_TAGS=()
@@ -169,161 +172,3 @@ printf '  Sum of images              : %s\n' "$(human "$total_naive")"
 printf '  Real disk (subset)         : %s\n' "$(human "$subset_disk")"
 printf '  Saved via sharing          : %s (%s %%)\n' "$(human "$saved")" "$pct"
 
-# --- 6. Section: Cross-project audit of shared base ---
-# Cross-project view of claude-devcontainer-base: for each local image,
-# check if its first N layers (RootFS.Layers) match exactly the layers of
-# a tagged base — exact match ⇒ derived image, sharing intact. An image
-# matching no base is either non-derived or orphaned (original base
-# deleted/overwritten). With per-project suffixed tags
-# (`claude-devcontainer-base:VERSION-<project>`), there is no single
-# "current base" anymore — each project has its own.
-
-echo
-echo "== Cross-project audit: claude-devcontainer-base =="
-
-mkdir -p "$WORK/cross"
-
-# Auto-discover all present base tags (version-sorted for stable display).
-BASE_LIST=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
-	| grep '^claude-devcontainer-base:' | sort -V -u)
-
-if [ -z "$BASE_LIST" ]; then
-	echo "No claude-devcontainer-base:* tag present locally."
-	exit 0
-fi
-
-# Pre-compute display width of base name (after stripping the common
-# prefix `claude-devcontainer-base:` — every base has it by construction).
-base_w=$(echo "$BASE_LIST" | awk '
-BEGIN{m=8}
-{ s=$0; sub(/^claude-devcontainer-base:/,"",s); if(length(s)>m) m=length(s) }
-END{print m}')
-
-# Build each base's signature (layers + size).
-# base_sigs.tsv : tag<TAB>layer_count<TAB>byte_size<TAB>sigfile
-: >"$WORK/cross/base_sigs.tsv"
-echo "Local bases (prefix 'claude-devcontainer-base:' stripped):"
-echo "$BASE_LIST" | while IFS= read -r base; do
-	[ -z "$base" ] && continue
-	lf="$WORK/cross/$(echo "$base" | tr ':/' '__').sig"
-	docker image inspect --format '{{range .RootFS.Layers}}{{.}}{{"\n"}}{{end}}' "$base" \
-		| grep -v '^$' >"$lf"
-	count=$(wc -l <"$lf" | tr -d ' ')
-	size=$(docker image inspect --format '{{.Size}}' "$base")
-	printf '%s\t%s\t%s\t%s\n' "$base" "$count" "$size" "$lf" >>"$WORK/cross/base_sigs.tsv"
-	base_short="${base#claude-devcontainer-base:}"
-	printf "  %-${base_w}s  %3s layers  %8s\n" \
-		"$base_short" "$count" "$(human "$size")"
-done
-echo
-
-# Scan all named images on the daemon (skip <none> and the bases themselves).
-CANDIDATES=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
-	| grep -v '<none>' \
-	| grep -v '^claude-devcontainer-base:' \
-	| sort -u)
-
-# Pre-compute column widths after stripping common affixes
-# (`-claude-code-app:latest` on the image side, `claude-devcontainer-base:`
-# on the base side). No truncation: full names fit in ~96 chars total with
-# current data, plenty for a 120+ char terminal.
-#
-# IMPORTANT: compute width ONLY on candidates that will actually be
-# displayed (`-claude-code-app` in the name). Without that filter, unrelated
-# images on the daemon (registries, other tools) with long names would
-# bloat the PROJECT column unnecessarily.
-img_w=$(echo "$CANDIDATES" | grep -- '-claude-code-app' | awk '
-BEGIN{m=7}
-{ s=$0; sub(/-claude-code-app:latest$/,"",s); if(length(s)>m) m=length(s) }
-END{print m}')
-# base_w already computed above (reused for the "Local bases" sub-table —
-# lower bound 8 to accommodate "<orphan>").
-[ "$base_w" -lt 8 ] && base_w=8
-row_fmt="%-${img_w}s  %-${base_w}s  %8s  %12s\n"
-
-echo "(image: '-claude-code-app:latest' stripped; base: 'claude-devcontainer-base:' stripped)"
-printf "$row_fmt" "PROJECT" "BASE" "PREFIX" "DELTA"
-
-# Counters + buckets in temp files: the `| while` runs in a subshell,
-# variables there are lost on exit. Separate buckets so we can show
-# matched ones first, orphans next.
-echo 0 >"$WORK/cross/n_matched"
-echo 0 >"$WORK/cross/n_orphan"
-: >"$WORK/cross/matched.out"
-: >"$WORK/cross/orphans.out"
-
-# Second detection channel: the `-claude-code-app` suffix is the compose
-# convention for project images (cf. COMPOSE_NAME above). An image that
-# carries it but matches no base RootFS is very likely orphaned (original
-# base deleted/overwritten) — display it anyway.
-echo "$CANDIDATES" | while IFS= read -r img; do
-	[ -z "$img" ] && continue
-	imgf="$WORK/cross/img_$(echo "$img" | tr ':/' '__').layers"
-	if ! docker image inspect --format '{{range .RootFS.Layers}}{{.}}{{"\n"}}{{end}}' "$img" 2>/dev/null \
-		| grep -v '^$' >"$imgf"; then
-		continue
-	fi
-	img_count=$(wc -l <"$imgf" | tr -d ' ')
-	[ "$img_count" -eq 0 ] && continue
-
-	matched_base=""
-	matched_count=""
-	matched_size=""
-	while IFS=$'\t' read -r base bcount bsize bfile; do
-		[ "$img_count" -lt "$bcount" ] && continue
-		head -n "$bcount" "$imgf" >"$WORK/cross/_head.txt"
-		if cmp -s "$WORK/cross/_head.txt" "$bfile"; then
-			matched_base="$base"
-			matched_count="$bcount"
-			matched_size="$bsize"
-			break
-		fi
-	done <"$WORK/cross/base_sigs.tsv"
-
-	img_size=$(docker image inspect --format '{{.Size}}' "$img")
-
-	if [ -n "$matched_base" ]; then
-		delta=$((img_size - matched_size))
-		[ "$delta" -lt 0 ] && delta=0
-
-		n=$(($(cat "$WORK/cross/n_matched") + 1))
-		echo "$n" >"$WORK/cross/n_matched"
-
-		img_short="${img%-claude-code-app:latest}"
-		matched_short="${matched_base#claude-devcontainer-base:}"
-		printf "$row_fmt" \
-			"$img_short" "$matched_short" \
-			"${matched_count}/${img_count}" \
-			"+$(human "$delta")" \
-			>>"$WORK/cross/matched.out"
-	elif echo "$img" | grep -q -- '-claude-code-app'; then
-		# No base match — but project suffix: likely orphan.
-		n=$(($(cat "$WORK/cross/n_orphan") + 1))
-		echo "$n" >"$WORK/cross/n_orphan"
-		img_short="${img%-claude-code-app:latest}"
-		# ASCII '-' (vs em-dash '—') to align with %8s — printf
-		# pads by bytes, and '—' is 3 bytes for 1 display column.
-		printf "$row_fmt" \
-			"$img_short" "<orphan>" "-/${img_count}" \
-			"$(human "$img_size")" \
-			>>"$WORK/cross/orphans.out"
-	fi
-done
-
-# Display: matched first, orphans next.
-cat "$WORK/cross/matched.out" "$WORK/cross/orphans.out"
-
-n_matched=$(cat "$WORK/cross/n_matched" 2>/dev/null || echo 0)
-n_orphan=$(cat "$WORK/cross/n_orphan" 2>/dev/null || echo 0)
-total=$((n_matched + n_orphan))
-
-echo
-if [ "$total" -eq 0 ]; then
-	echo "No derived image detected among local tags."
-else
-	echo "($n_matched derived match(es), $n_orphan orphan(s))"
-fi
-echo
-echo "Images not listed either don't derive from any present"
-echo "claude-devcontainer-base:*, or were built on a deleted/overwritten"
-echo "base — rebuild advised to recover sharing."

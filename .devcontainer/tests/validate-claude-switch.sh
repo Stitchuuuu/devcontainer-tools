@@ -5,16 +5,16 @@
 # Each invocation :
 #   1. Detects the active claude mode from .env (cloud / local / local-proxy).
 #   2. Runs the claude-switch integration suite (filtered to that mode).
-#   3. Appends result to .devcontainer/logs/claude-switch-validation.log.
+#   3. Appends result to .devcontainer/tmp/logs/claude-switch-validation.log.
 #   4. Tells you what to do next : claude-switch <next-mode> + rebuild.
 #
 # Usage : bash .devcontainer/tests/validate-claude-switch.sh
 #
-# Reset progress : rm .devcontainer/logs/claude-switch-validation.log
+# Reset progress : rm .devcontainer/tmp/logs/claude-switch-validation.log
 
 set +e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR=/workspace/.devcontainer/logs
+STATE_DIR=/workspace/.devcontainer/tmp/logs
 STATE="$STATE_DIR/claude-switch-validation.log"
 mkdir -p "$STATE_DIR"
 
@@ -48,8 +48,6 @@ fi
 ENV_FILE=/workspace/.devcontainer/.env
 mode="cloud"
 if   grep -qE '^ANTHROPIC_BASE_URL=http://ollama\.internal:11434' "$ENV_FILE" 2>/dev/null; then mode="local"
-elif grep -qE '^ANTHROPIC_BASE_URL=http://claude-bridge:9223'     "$ENV_FILE" 2>/dev/null; then mode="local-proxy"
-elif grep -qE '^ANTHROPIC_BASE_URL=http://claude-bridge\.local'   "$ENV_FILE" 2>/dev/null; then mode="local-proxy-bypass"
 fi
 
 echo "${BOLD}${CYAN}== claude-switch validation — active mode: $mode ==${RST}"

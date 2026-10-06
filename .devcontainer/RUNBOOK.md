@@ -1,11 +1,12 @@
-# Runbook — DevContainer Niveau 1 strict
+# Runbook — DevContainer on the published base image
 
-Operational procedures, step-by-step. Each section is a recipe: do these steps in this order. For background, read [README.md](README.md); for the threat model, [docs/SECURITY.md](docs/SECURITY.md); for internals, [knowledge/INDEX.md](knowledge/INDEX.md).
+Operational procedures, step-by-step. Each section is a recipe: do these steps in this order. For background, read [README.md](README.md); for the threat model, [SECURITY](docs/SECURITY.md); for the image's internals, `/opt/devcontainer/base/knowledge/INDEX.md`; for the image's own how-tos, `/opt/devcontainer/base/docs/`.
 
 Conventions:
 - `[host]` — run on the host machine (terminal outside the container)
 - `[container]` — run inside the dev container (VS Code terminal or `docker exec`)
 - When unspecified, default is `[container]`
+- This tree runs the firewall in `basic` mode. Steps marked *(strict)* only apply when `firewall/default-mode` says `strict`.
 
 ## Table of contents
 
@@ -15,19 +16,14 @@ Conventions:
 4. [Switch firewall mode](#4-switch-firewall-mode)
 5. [Routine cleanup](#5-routine-cleanup)
 6. [Regenerate mitmproxy CA](#6-regenerate-mitmproxy-ca)
-7. [Diagnose all-green](#7-diagnose-all-green)
-8. [Reset auth or claude mode](#8-reset-auth-or-claude-mode)
-9. [Force a fresh `/scan-deps`](#9-force-a-fresh-scan-deps)
-10. [Reinstall VS Code extensions](#10-reinstall-vs-code-extensions)
-11. [Inspect / rotate Claude OAuth credentials](#11-inspect--rotate-claude-oauth-credentials)
-12. [Inspect the audit trail](#12-inspect-the-audit-trail)
-13. [Quick commands reference](#13-quick-commands-reference)
-14. [Bump Claude version](#14-bump-claude-version) — v2.1
-15. [Troubleshoot Claude failsafe scenarios](#15-troubleshoot-claude-failsafe-scenarios) — v2.1
-16. [Analyze base image breakdown](#16-analyze-base-image-breakdown) — v2.1
-17. [Force rebuild base no-cache](#17-force-rebuild-base-no-cache) — v2.1
-18. [Adopt the PHP variant](#18-adopt-the-php-variant) — v2.1-3
-19. [Regen `extensions.json` if VS Code redownloads](#19-regen-extensionsjson-if-vs-code-redownloads) — v2.1
+7. [Run the test suites](#7-run-the-test-suites)
+8. [Reset the Claude mode](#8-reset-the-claude-mode)
+9. [Reinstall VS Code extensions](#9-reinstall-vs-code-extensions)
+10. [Inspect / rotate Claude OAuth credentials](#10-inspect--rotate-claude-oauth-credentials)
+11. [Inspect the audit trail](#11-inspect-the-audit-trail)
+12. [Quick commands reference](#12-quick-commands-reference)
+13. [Bump Claude Code or the base image](#13-bump-claude-code-or-the-base-image)
+14. [Update the extension patchers](#14-update-the-extension-patchers)
 
 ---
 
@@ -35,69 +31,63 @@ Conventions:
 
 You need to fetch a docs site, a static file, a registry the team doesn't already allow.
 
-1. **Edit** `[host]` `.devcontainer/firewall/domains.local.txt`:
+1. **Find the hostname** `[container]` — it is in the error message, not in a log: DNS refusals are silent by design.
+   ```bash
+   getent hosts docs.example.com      # empty = not allowed
    ```
+2. **Edit** the file for the right audience:
+   - `.devcontainer/firewall/domains.local.txt` — yours alone, or still experimenting (gitignored)
+   - `.devcontainer/firewall/domains.d/<eco>.txt` — the team needs it too (committed, reviewed in PR)
+   ```
+   # what needed it — an entry nobody can explain is one nobody dares remove
    docs.example.com                          # bare = GET only
    [GET] static.example.com                  # explicit
-   [GET] api.example.com/v1/public           # path-restricted
+   [GET] api.example.com/v1/public           # path-restricted (enforced in strict only)
    ```
-2. **Recompile + reload** — two options:
-   - **In-place** `[container]`: `sudo /usr/local/bin/init-firewall.sh` (reloads policy, no restart)
-   - **Full rebuild** `[host]`: VS Code → `Dev Containers: Rebuild Container`
-3. **Verify** `[container]`:
+3. **Apply** — the allowlist is baked into the image, so a restart changes nothing. Two options:
+   - **Rebuild** `[host]`: VS Code → `Dev Containers: Rebuild Container`. Required for `domains.d/` and `domains.txt`; for `domains.local.txt` only if `FIREWALL_ALLOW_LOCAL_AT_REBUILD=1` is set in `.env`.
+   - **Hot-reload the local layer** (basic mode only, `domains.local.txt` + `policy.local.d/`, lasts until the next container start):
+     ```bash
+     reload-firewall --dry-run               # [container] unprivileged preview of the diff
+     wtf firewall reload                     # [host] from .devcontainer/ — docker exec -u 0 … /usr/local/bin/reload-firewall
+     ```
+     `reload-firewall` refuses in strict (the L7 policy would need reloading too) and is root-only by design — no NOPASSWD sudo for it, ever.
+4. **Verify** `[container]`:
    ```bash
-   curl -sI https://docs.example.com/ | head -1
-   # → HTTP/2 200
+   getent hosts docs.example.com              # → an address
+   curl -sI https://docs.example.com/ | head -1   # → HTTP/2 200
+   boot-summary                               # Firewall row: count went up, "baked in" (not STAGED)
    ```
 
 If the curl still fails:
-- Check `cat .devcontainer/.configured-firewall-mode` is `strict` or `basic`
-- Check the host is in compiled output: `grep example.com /var/run/devcontainer-firewall/policy.compiled.yaml`
-- Check the mitmproxy log: `tail -50 /var/log/mitmproxy.log`
+- Check the mode in force: `cat /etc/devcontainer-firewall/default-mode` (baked) vs `cat .devcontainer/firewall/default-mode` (next rebuild)
+- Check the host is in the compiled output: `grep example.com /var/run/devcontainer-firewall/policy.compiled.yaml`
+- *(strict)* `firewall-blocks` for L7 refusals; `sudo tail -50 /var/log/mitmproxy.log`
 
-For a POST host, **stop**. Use procedure 2 instead.
+Reference: `/opt/devcontainer/base/docs/how-to/allow-a-domain.md`.
 
 ---
 
 ## 2. Add a POST on a third-party API
 
-You cannot extend the main allowlist with new POST hosts. The threat model (see [docs/SECURITY.md § POST surface](docs/SECURITY.md#post-surface-as-declared-enforced-only-in-strict)) declares main POST on 9 hosts — and in `basic`, the mode this tree runs, those path and method scopes are not enforced at all. Other POST requirements must run in an isolated research project.
+The threat model (see [SECURITY § POST surface](docs/SECURITY.md#post-surface-as-declared-enforced-only-in-strict)) declares the POST allowlist — and in `basic`, the mode this tree runs, methods and paths are **not enforced at all**: an allowlisted host accepts every method on every path. So the question is not "how do I allow POST" but "do I accept this host at all, with what it can receive".
 
-1. **In Claude** `[container]`:
+1. **Decide the scope.** A host that will receive data from the container is a host the whole team's audit surface includes. Prefer a `domains.d/<name>.txt` entry with a comment stating what is sent, reviewed in PR. Not `domains.local.txt`: a POST host nobody else sees is the exfiltration path the firewall exists to prevent.
+2. **Declare it** `[host]` — `.devcontainer/firewall/domains.d/<name>.txt`:
    ```
-   /prepare-research stripe-payments-integration
+   # payments integration — POST /v1/charges from scripts/billing.mjs
+   [GET,POST] api.example.com
    ```
-   This writes a 5-file bundle under `.devcontainer/research-bundles/stripe-payments-integration/`.
-2. **Review** `[host]` the bundle (all 5 files):
-   ```bash
-   cat .devcontainer/research-bundles/stripe-payments-integration/instructions.md
-   cat .devcontainer/research-bundles/stripe-payments-integration/domains.local.txt
-   cat .devcontainer/research-bundles/stripe-payments-integration/policy.local.d.example/*.yaml
-   cat .devcontainer/research-bundles/stripe-payments-integration/files-to-copy.txt
-   cat .devcontainer/research-bundles/stripe-payments-integration/secrets.env.template
+3. *(strict)* **Scope it** — `.devcontainer/firewall/policy.d/api.example.com.yaml`, so the L7 filter only lets the paths through that the integration needs:
+   ```yaml
+   endpoints:
+     - path: "^/v1/charges$"
+       methods: [POST]
+       max_body_kb: 64
    ```
-3. **Spawn the research container** `[host]`:
-   ```bash
-   cp -r .devcontainer/research-bundles/stripe-payments-integration/ \
-         ../stripe-payments-integration/
-   cd ../stripe-payments-integration/
-   # Fill secrets:
-   nano .devcontainer/.env.local   # set STRIPE_API_KEY_TEST=sk_test_...
-   code .                          # Reopen in Container
-   ```
-4. **Work in the research container** — Claude reads `INSTRUCTIONS.md`, writes output to `/output/`.
-5. **Bring the result back** `[host]`:
-   ```bash
-   .devcontainer/host-helpers/bring-back-result stripe-payments-integration
-   # → archives ../stripe-payments-integration/result/ into the main bundle
-   ```
-6. **Cleanup** `[host]` after >7 days (or sooner):
-   ```bash
-   .devcontainer/host-helpers/research-cleanup            # dry-run by default
-   .devcontainer/host-helpers/research-cleanup --apply    # actually delete
-   ```
-
-Full flow + bundle anatomy: [RESEARCH.md](RESEARCH.md).
+   Mind the parity rule for Anthropic-shaped targets (`/opt/devcontainer/base/knowledge/INDEX.md` § Policy parity).
+4. **Rebuild** `[host]`: VS Code → `Dev Containers: Rebuild Container`.
+5. **Verify** `[container]`: the request succeeds; *(strict)* `firewall-blocks` shows no refusal for the host, `sudo tail /var/log/mitmproxy-writes.log` shows the POST. Record the new host in [SECURITY § What this tree adds](docs/SECURITY.md#what-this-tree-adds-to-the-egress-surface).
 
 ---
 
@@ -107,207 +97,178 @@ A request fails with timeout, REJECT, 503, or NXDOMAIN.
 
 1. **Identify the mode** `[container]`:
    ```bash
-   cat /workspace/.devcontainer/.configured-firewall-mode
+   cat /etc/devcontainer-firewall/default-mode
    ```
    - `off` → no filter active, something else is wrong (typo, network down)
-   - `basic` → only DNS allowlist active, no path/method filtering
-   - `strict` (default) → full L1-L6 stack
+   - `basic` (this tree) → only DNS allowlist active, no path/method filtering
+   - `strict` → full L1-L6 stack
 2. **Check L1 (DNS allowlist)** `[container]`:
    ```bash
+   getent hosts example.com
    dig +short example.com @127.0.0.53
-   # → empty = NXDOMAIN = not in allowlist
+   # → empty = not in allowlist
    ```
-   If empty: the host isn't allowed. Add it (procedure 1) or spawn research (procedure 2).
-3. **Check L2-L6 (mitmproxy + addons)** `[container]`:
+   If empty: the host isn't allowed. Add it (procedure 1).
+3. **Check the compiled policy** `[container]`:
    ```bash
    grep example.com /var/run/devcontainer-firewall/policy.compiled.yaml
    ```
-   If empty: same as above, not in policy.
-4. **Inspect mitmproxy logs** `[container]`:
+   If empty: same as above, not in policy. If present but you edited `firewall/` since the last rebuild: the boot panel says `STAGED` — rebuild (procedure 1 step 3).
+4. **Resolves but times out** → the service is not HTTP and needs a `host:port` entry in `firewall/ports.txt` (then Rebuild). `sudo /usr/local/bin/test-firewall.sh` probes every `ports.txt` entry.
+5. *(strict)* **Check L2-L6 (mitmproxy + addons)** `[container]`:
    ```bash
+   firewall-blocks                               # recent refusals: reason, host, path
    sudo tail -50 /var/log/mitmproxy.log          # CONNECT events + errors
    sudo tail -50 /var/log/mitmproxy-writes.log   # POST/PUT/PATCH/DELETE audit
+   curl -v https://example.com/ 2>&1 | head -40  # mitmproxy should appear in the TLS chain
    ```
-   Look for `403`, `503`, `path not allowed`, `method not allowed`, `body size`.
-5. **Verbose request** `[container]`:
-   ```bash
-   curl -v https://example.com/ 2>&1 | head -40
-   ```
-   Reads the TLS chain — `mitmproxy` should appear if the proxy intercepts.
+   Look for `403`, `503`, `path not allowed`, `method not allowed`, `body size`. A 403 from a host that resolves is a *path* decision: add a `policy.d/<host>.yaml`, not another hostname.
 6. **Test the same URL with a known-good baseline**:
    ```bash
    curl -sI https://api.anthropic.com/ | head -3   # should 200/401
    ```
-   If even this fails, mitmproxy itself is down — see procedure 6.
+   If even this fails, the firewall itself is down — `sudo /usr/local/bin/init-firewall.sh` re-applies it (what `20-firewall-reinit` does at every start); *(strict)* see procedure 6.
 
 ---
 
 ## 4. Switch firewall mode
 
-1. **Flip the flag** `[host]`:
+The mode is baked: `firewall/default-mode` is COPYed into the image as `/etc/devcontainer-firewall/default-mode` and read at boot.
+
+1. **Set the flag** `[host]`:
    ```bash
-   bash .devcontainer/firewall-mode.sh strict   # default, secure max
-   bash .devcontainer/firewall-mode.sh basic    # DNS-only, no L7
-   bash .devcontainer/firewall-mode.sh off      # kill-switch (debug only)
+   npx @meitogi/devcontainer-cli firewall-mode strict   # DNS + mitmproxy L7
+   npx @meitogi/devcontainer-cli firewall-mode basic    # DNS-only, no L7 (this tree)
+   npx @meitogi/devcontainer-cli firewall-mode off      # kill-switch (debug only)
+   npx @meitogi/devcontainer-cli firewall-mode          # no argument: report
    ```
-   This edits `.configured-firewall-mode` AND `.env` (HTTPS_PROXY, CA env vars) consistently.
+   This writes `firewall/default-mode` AND aligns the proxy/CA variables in `.env` (`HTTPS_PROXY`, CA env vars) with it. A bare `echo strict > firewall/default-mode` leaves `.env` saying the opposite — running the command for the mode already set is the repair for exactly that. `--dry-run` says what would change.
 2. **Rebuild the container** `[host]`:
    - VS Code → `Dev Containers: Rebuild Container`
 3. **Verify** `[container]` after reopen:
    ```bash
-   cat /tmp/post-start.log | grep -i 'firewall mode'
+   cat /etc/devcontainer-firewall/default-mode
+   grep -i 'firewall' .devcontainer/tmp/boot-summary.txt
    ```
 
-Deprecated aliases still accepted with a stderr warn: `okeish` → `basic`, `paranoid` → `strict`. Update your muscle memory at your leisure.
+Deprecated aliases still accepted with a stderr warn: `okeish` → `basic`, `paranoid` → `strict`.
 
 ---
 
 ## 5. Routine cleanup
 
-Drafts, pending scripts, research projects, audit trails grow over time. Periodic cleanup:
+Most of it is automatic now: `tmp/logs/` is rotated after 7 days (`05-log-rotation`), `tmp/pending/` after 60 min (`80-watch-log-cleanup`), and `rm -rf .devcontainer/tmp/` is always safe (it costs one patcher refetch). What is left:
 
 ```bash
-# PR drafts older than 7 days
+# PR drafts older than 7 days (authored documents — never purged automatically)
 find .devcontainer/pr-drafts/ -mtime +7 -name "*.md" -delete
 find .devcontainer/pr-drafts/ -mtime +7 -name "*.yaml" -delete
 
-# /watch-log pending scripts (auto-cleaned at post-start, but for safety):
-.devcontainer/host-helpers/watch-log-cleanup
+# State snapshots written by claude/backup-state.sh (two retention rules apply on write;
+# list what is there)
+bash .devcontainer/claude/backup-state.sh --list
 
-# Research projects (sibling dirs) older than 7 days
-.devcontainer/host-helpers/research-cleanup --apply
-
-# Research bundles older than 7 days
-find .devcontainer/research-bundles/ -mindepth 1 -maxdepth 1 -mtime +7 -type d -exec rm -rf {} +
-
-# Scan-deps audit markdown older than 30 days
-find .devcontainer/scan-deps/ -name "*.md" -mtime +30 -delete
+# [host] Docker: what is reclaimable, then reclaim (never touches named volumes)
+wtf docker usage
+wtf docker reclaim                      # bare = report only; read it, then pass the flag it suggests
+bash .devcontainer/host-helpers/docker-test-images.sh   # tagged leftovers of this repo's test runs
 ```
-
-Consider a cron / `launchd` job on the host if your project moves fast.
 
 ---
 
 ## 6. Regenerate mitmproxy CA
 
-The CA cert lives in volume `mitmproxy-${DC_PROJECT}`. If the volume is corrupted (cert expired, file permissions broken) or you want to start fresh:
+*(strict)* The CA cert lives in volume `mitmproxy-${DC_PROJECT}`. If the volume is corrupted (cert expired, file permissions broken) or you want to start fresh:
 
-1. **Stop the container** `[host]`: VS Code → close the window or `docker compose -f .devcontainer/docker-compose.yml down`.
+1. **Stop the container** `[host]`: VS Code → close the window or `docker compose -f .devcontainer/docker-compose.yml down` (**without** `-v` — the other volumes hold Claude transcripts).
 2. **Delete the volume** `[host]`:
    ```bash
-   # find the project-specific volume
    docker volume ls | grep mitmproxy
-   # output: <project>_mitmproxy-<project>
-   docker volume rm <project>_mitmproxy-<project>
+   docker volume rm mitmproxy-<project>
    ```
 3. **Reopen in Container** `[host]`: VS Code → `Dev Containers: Reopen in Container`.
-4. **CA regenerates** at first strict boot. `init-firewall.sh` calls `mitm-init.sh` which runs `mitmdump --certs` once if the volume is empty.
+4. **CA regenerates** at first strict boot. The baked `init-firewall.sh` calls `mitm-init.sh` which runs `mitmdump` once to create the certs if the volume is empty.
 5. **Verify** `[container]`:
    ```bash
    curl -sI https://api.anthropic.com/ | head -1   # 401 or 200 → CA OK
    ```
 
-The mitmproxy binary itself is baked into the image since A3, so this reset only affects the cert — no re-download.
+The mitmproxy binary itself is baked into the image, so this reset only affects the cert — no re-download. In `basic` the volume is mounted but empty; nothing to regenerate.
 
 ---
 
-## 7. Diagnose all-green
+## 7. Run the test suites
 
-Before any commit that touches `.devcontainer/`, run the full test suite. **From the host**, not from inside the container (the script refuses with exit 2 if invoked in-container — it needs `docker exec` to drive the target).
-
-```bash
-bash .devcontainer/tests/diagnose.sh
-```
-
-~180 tests, sectioned by phase (Phase 1 / Phase 2 / A1.1 / A2 strict / A4 / A5 / B / C / D / F / F2 / E). Exit 0 = all green.
-
-For debug iterations, capture per-mode snapshots:
+Before any commit that touches `.devcontainer/`:
 
 ```bash
-bash .devcontainer/tests/diag-a2.sh        # writes tests/diag-a2-<mode>.log
-bash .devcontainer/tests/diagnose.sh --verbose   # + state dumps inline
+# [container] firewall smoke test — DNS allowlist, ports.txt probes, ollama.internal
+sudo /usr/local/bin/test-firewall.sh
+
+# [container] this tree's suites (integration/, runs as node)
+bash .devcontainer/tests/run.sh
+bash .devcontainer/tests/run.sh tests/integration/test-claude-switch.sh   # one file
+
+# [container] after each claude-switch + rebuild — multi-rebuild orchestrator
+bash .devcontainer/tests/validate-claude-switch.sh
+
+# the base image's own suites, against the dind sidecar (both sides: container, then host)
+wtf image test
 ```
 
-If a single test fails, the script prints the failing assertion and the relevant context. Re-run with `--verbose` to get the full mitmproxy log / ipset state / iptables rules.
+The v2 firewall / bake / host-tier suites left with the local base image: the image repository runs them in its own `test/` as a strict superset. What stays here asserts this tree's own behaviour — the `claude-switch` pair.
 
 ---
 
-## 8. Reset auth or claude mode
+## 8. Reset the Claude mode
 
 ```bash
-# Reset GitHub auth (standard vs advanced)
-rm .devcontainer/.configured-auth
-# → VS Code: Rebuild Container → initialize.sh re-prompts
-
 # Reset Claude mode (dev vs reviewer)
-rm .devcontainer/.configured-claude-mode
-# → Rebuild → re-prompts; post-create.sh resymlinks /workspace/CLAUDE.md accordingly
+rm .devcontainer/tmp/configured/claude-mode
+# → Reopen / Rebuild → devc initialize re-prompts; 10-symlink-claude-mode resymlinks /workspace/CLAUDE.md
 
-# Re-run Claude first-prompt rules analysis
-rm .devcontainer/.configured-claude-rules
-# → next /init prompt re-analyses the project and updates CLAUDE.md
-
-# Reset firewall mode (rewrites strict silently)
-rm .devcontainer/.configured-firewall-mode
-# → Rebuild → initialize.sh writes strict
+# Replay just the symlink without a rebuild
+devc-hook post-create
 ```
+
+While `claude-switch` is in `local` mode, `CLAUDE.md` points at `CLAUDE-local-dev.md` whatever the flag says — switch back to `cloud` first (README § Local backends). GitHub auth has no flag any more: `gh auth login` / `gh auth logout` directly.
 
 ---
 
-## 9. Force a fresh `/scan-deps`
+## 9. Reinstall VS Code extensions
 
-The boot banner uses `scan-deps/.last-scan.json` (per-manifest `ts` + `ignored_until`) to decide whether to nag. To force a fresh scan even if nothing changed:
-
-```bash
-rm .devcontainer/scan-deps/.last-scan.json
-# In Claude:
-/scan-deps
-```
-
-This re-runs both `extract-auto-dependencies` (bash, deterministic) and the AI review layer.
-
-To **silence** the banner without scanning (e.g. you're sure the deps are fine, you'll deal with it later):
+The `90-install-extensions-safety` fragment normally handles extensions that failed to download at first start, but if you need to force:
 
 ```bash
-# Edit .devcontainer/scan-deps/.last-scan.json, set ignored_until to a future
-# unix timestamp (e.g. now + 7 days):
-jq '.ignored_until = (now + 7*86400)' .devcontainer/scan-deps/.last-scan.json \
-   > /tmp/scan-deps.json && mv /tmp/scan-deps.json .devcontainer/scan-deps/.last-scan.json
+install-extensions
 ```
 
----
-
-## 10. Reinstall VS Code extensions
-
-The post-start safety net normally handles missing extensions, but if you need to force:
-
-```bash
-bash .devcontainer/install-extensions.sh
-```
-
-Idempotent — extensions already installed are skipped. Reads pinned versions from `devcontainer.json` `customizations.vscode.extensions`. Useful after `vscode-server` corruption or after editing the extensions list.
+Idempotent — extensions already installed are skipped. Reads the list from `devcontainer.json` `customizations.vscode.extensions`. Useful after `vscode-server` corruption or after editing the extensions list.
 
 To force a re-install (skip the skip-if-installed check), uninstall first:
 
 ```bash
-code --list-extensions | grep -i claude
-code --uninstall-extension anthropic.claude-code
-bash .devcontainer/install-extensions.sh
+code --list-extensions
+code --uninstall-extension <publisher.name>
+install-extensions
 ```
+
+Do **not** add `anthropic.claude-code` to the list: the image bakes the (patched) extension, and a Marketplace pin is the one way an unpatched copy arrives. If the Claude extension itself is missing or duplicated, the `42-claude-ext-pin-warn` banner says so — the fix is a rebuild from a published tag (procedure 13).
 
 ---
 
-## 11. Inspect / rotate Claude OAuth credentials
+## 10. Inspect / rotate Claude OAuth credentials
 
-The `claude-creds` volume is shared across projects (`external: true`). Token is in `/home/node/.claude-creds/.credentials.json` (shared) and `/home/node/.claude/.credentials.json` (local copy). Sync logic in [knowledge/INDEX.md § Claude OAuth sync flow](knowledge/INDEX.md#claude-oauth-sync-flow).
+The `claude-creds` volume is shared across projects (`external: true`). Token is in `/home/node/.claude-creds/.credentials.json` (shared) and `/home/node/.claude/.credentials.json` (local copy). Sync logic: `/opt/devcontainer/base/knowledge/INDEX.md` § Claude OAuth sync flow.
 
 ```bash
 # Inspect token expiry
 jq -r '.claudeAiOauth.expiresAt / 1000 | todate' /home/node/.claude-creds/.credentials.json
 jq -r '.claudeAiOauth.expiresAt / 1000 | todate' /home/node/.claude/.credentials.json
 
-# Manual sync (decide which side wins)
-DEBUG=1 .devcontainer/claude/sync-creds.sh
+# Manual sync — decision details on stderr
+DEBUG=1 sync-creds
+VERBOSE=1 sync-creds
 
 # Resolve a conflict the prompt flagged
 rm /tmp/.claude-creds-conflict
@@ -323,9 +284,9 @@ To **fully revoke and re-auth** (if you suspect the token leaked):
 
 ---
 
-## 12. Inspect the audit trail
+## 11. Inspect the audit trail
 
-What did the container POST today?
+*(strict)* What did the container POST today?
 
 ```bash
 sudo tail -200 /var/log/mitmproxy-writes.log | jq -s '
@@ -339,24 +300,35 @@ Spot anomalies:
 # Hosts outside the expected POST allowlist
 sudo cat /var/log/mitmproxy-writes.log | jq -r '.host' | sort -u | \
   grep -v -E '^(api\.anthropic\.com|.*\.statsig\.com|sentry\.io|github\.com)$'
-# → should be empty in main; non-empty = investigate
+# → should be empty; non-empty = investigate
+
+# What was refused, and why
+firewall-blocks 50
+firewall-blocks --follow
 ```
 
-For research projects, the audit lives in the research container's own volume — separate audit trail per scope.
+In `basic` there is no mitmproxy, hence no write log and no blocks log: the only audit is the DNS allowlist itself (`/var/run/devcontainer-firewall/policy.compiled.yaml`) and `CLAUDE_CODE_FIREWALL_DEBUG=true` in `.env` for verbose iptables logging. This is the accepted trade-off described in [SECURITY](docs/SECURITY.md).
 
 ---
 
-## 13. Quick commands reference
+## 12. Quick commands reference
 
 ```bash
 # Where am I? Which mode? Any pending overrides?
-cat .devcontainer/.configured-firewall-mode
-cat .devcontainer/.configured-claude-mode
+cat /etc/devcontainer-firewall/default-mode          # in force
+cat .devcontainer/firewall/default-mode              # next rebuild
+cat .devcontainer/tmp/configured/claude-mode
 ls -la .devcontainer/firewall/domains.local.txt 2>/dev/null
 ls -la .devcontainer/firewall/policy.local.d/ 2>/dev/null
+cat .devcontainer/tmp/boot-summary.txt               # the cached boot panel (or: boot-summary)
 
-# Recompile policy without restarting
+# Re-apply the firewall without restarting (kernel-state guard skips if already up)
 sudo /usr/local/bin/init-firewall.sh
+sudo /usr/local/bin/test-firewall.sh
+
+# Hot-reload the local layer (basic mode)
+reload-firewall --dry-run                            # [container] preview
+wtf firewall reload                                  # [host] from .devcontainer/
 
 # Show all allowed hosts after merge+overrides
 sudo cat /var/run/devcontainer-firewall/policy.compiled.yaml | yq '.domains | keys'
@@ -364,230 +336,70 @@ sudo cat /var/run/devcontainer-firewall/policy.compiled.yaml | yq '.domains | ke
 # Show what overrides are active (machine-readable)
 sudo yq '.runtime._overrides_applied' /var/run/devcontainer-firewall/policy.compiled.yaml
 
-# Live tail mitmproxy
+# (strict) live tail mitmproxy / recent refusals
 sudo tail -F /var/log/mitmproxy.log
+firewall-blocks
 
-# Replay post-start without rebuilding
-bash .devcontainer/post-start.sh
+# Lifecycle: what would run, replay a phase, read its log
+devc-hook post-start --dry-run
+devc-hook post-start
+cat "$(ls -t .devcontainer/tmp/logs/post-start-*.log | head -1)"
+
+# Claude Code binary, patchers, skills
+claude --version && cat /etc/claude-source
+ext-patches-sync --status
+ls ~/.claude/commands/
+
+# [host] mode, routing, images
+npx @meitogi/devcontainer-cli firewall-mode
+bash .devcontainer/host-helpers/claude-switch status
+wtf docker usage
 ```
 
 ---
 
-## 14. Bump Claude version
+## 13. Bump Claude Code or the base image
 
-The base image bakes Claude Code at build time, pinned by `CLAUDE_CODE_VERSION` in `.env`. A bump rebuilds only the Claude layer (~30s on arm64); all other layers stay cached.
+The Claude Code version is part of the base image tag: `ghcr.io/meitogi/devcontainer-sandbox:<base-version>-cc<claude-code-version>`. Bumping Claude Code, bumping the base, and rolling either back are the same one-line edit. The pairs published together are listed in the image repository's `cc-versions.json`; the `45-claude-update-probe` banner ("Claude Code X available") is informational until a `-ccX` tag exists.
 
-1. **Edit the pin** `[host]`:
+1. **Edit the pin** `[host]` — `.devcontainer/.env`:
    ```bash
-   # .devcontainer/.env
-   CLAUDE_CODE_VERSION=2.1.146     # ← new version
+   BASE_IMAGE=ghcr.io/meitogi/devcontainer-sandbox:1.9.1-cc2.1.280     # ← the tag you want
    ```
-2. **Also bump `devcontainer.json` extension pin** `[host]` (the JSONC comment in the file reminds you):
-   ```jsonc
-   "customizations": {
-     "vscode": {
-       "extensions": [
-         // Pin = runtime fallback for the build-time VSIX bake.
-         // Sync with CLAUDE_CODE_VERSION in .env.
-         "anthropic.claude-code@2.1.146"
-       ]
-     }
-   }
-   ```
-3. **Rebuild Container** `[host]`: VS Code → `Dev Containers: Rebuild Container`.
-   - `initialize.sh build_base_if_missing()` detects the new tag is missing and rebuilds `Dockerfile.base` (~30s — only the Claude layer is invalidated).
-   - Build log captured in `.devcontainer/logs/build-base-2.1.146-<ts>.log` (gitignored).
-4. **Verify** `[container]`:
+   Commented out = the default in `Dockerfile` / `docker-compose.yml`.
+2. **Rebuild Container** `[host]`: VS Code → `Dev Containers: Rebuild Container`. Compose pulls the tag; only this project's thin layer (anim tools, docker CLI, rust, zig, xwin) is built, and its cache is invalidated by the new `FROM`.
+3. **Verify** `[container]`:
    ```bash
-   claude --version                                # → 2.1.146
-   cat /etc/claude-source                          # → extension:<path> (Scenario 1) ideally
+   claude --version                                # → the cc<version> of the tag
+   cat /etc/claude-source                          # → extension:<path> ideally
    ls /etc/claude-fallback-warn 2>/dev/null && echo "FALLBACK" || echo "OK"
+   boot-summary                                    # Claude / Firewall / Patchers rows
+   ext-patches-sync --status                       # patchers resolved for the new cc line? (procedure 14)
    ```
-5. **Sanity check** `[host]` (optional):
-   ```bash
-   bash .devcontainer/host-helpers/verify-slim-base
-   # → 9/9 OK if size/Claude pin/etc. still within bounds
-   ```
+4. **Rollback** `[host]`: put the previous tag back in `.env`, Rebuild.
 
-If `/etc/claude-source` is now `npm-fallback (VSIX baked, Phase B path issue)` (Scenario 2), Anthropic moved the binary path inside the extension. See [procedure 15](#15-troubleshoot-claude-failsafe-scenarios).
-
-`post-start.sh check_claude_update()` proactively queries `registry.npmjs.org/@anthropic-ai/claude-code` at boot and prints a yellow 1-line banner when a newer published version is available.
+A yellow "npm fallback active" banner after the bump means the published image itself fell back at its build (the extension's embedded binary was not usable) — nothing in this tree fixes it; pick another published tag and report it to the image repository. There is no local base to rebuild, no cache to bypass: `docker pull` of the tag is the whole story.
 
 ---
 
-## 15. Troubleshoot Claude failsafe scenarios
+## 14. Update the extension patchers
 
-You see the yellow loud banner at boot or `claude` isn't working. The build itself should ALWAYS succeed — if it doesn't, the issue is elsewhere (Docker daemon, disk space, firewall reaching dpkg/apt, etc.), not Claude.
-
-### Step 1 — figure out which scenario fired
+Patchers are applied to the baked VS Code extension at container create and re-checked at every start (`45-ext-patches`), from the tarball of `EXT_PATCHES_REPO` at `EXT_PATCHES_REF` (`.env`), merged with this tree's `claude/vscode-ext-patchs/`. `auto` (unset) resolves to the newest `cc<version>-r<n>` tag for the installed Claude Code; a boot never moves the pin on its own.
 
 ```bash
-docker exec <ctr> cat /etc/claude-source
+# What is configured, cached, and live in the extension on disk — reads only
+ext-patches-sync --status          # = wtf ext-patch status
+
+# What is installed vs available, then stop
+wtf ext-patch update --check
+
+# Move to the newest -r for this Claude Code line; rewrites EXT_PATCHES_REF in .env
+wtf ext-patch update
+
+# Pin a specific tag or SHA / replay the current ref from cache / trial run without moving the pin
+wtf ext-patch update --ref cc2.1.280-r4
+wtf ext-patch update --reapply
+wtf ext-patch update --no-write-env
 ```
 
-| Output | Scenario | Meaning |
-|---|---|---|
-| `extension:<path>` | 1 (optimal) | VSIX baked + Phase B symlink OK. Should NOT see the banner. |
-| `npm-fallback (VSIX baked, Phase B path issue)` | 2 | VSIX baked but `claude --version` from ext binary didn't match the build ARG, or binary path moved. |
-| `npm-fallback (no VSIX, runtime ext install via Marketplace)` | 3 | VSIX DL failed at build time. VS Code installs the extension at runtime via `devcontainer.json` pin. |
-
-### Step 2 — sanity checks
-
-```bash
-# Phase B path probe — where does the symlink point?
-docker exec <ctr> readlink -f /usr/local/bin/claude
-
-# Extension dir presence + size
-docker exec <ctr> ls -lah /home/node/.vscode-server/extensions/ | grep claude
-
-# Sentinel
-docker exec <ctr> ls /etc/claude-fallback-warn 2>/dev/null && echo "sentinel ON" || echo "sentinel OFF"
-
-# claude itself
-docker exec <ctr> claude --version
-```
-
-### Step 3 — fix path
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| Scenario 2, "version mismatch" in `.devcontainer/logs/build-base-*.log` | Ext binary in the VSIX is older than the published version | Try a different `CLAUDE_CODE_VERSION` (one minor older or newer). |
-| Scenario 2, "$BIN missing/not executable" | Anthropic moved the binary inside the extension tree (was at `resources/native-binary/claude`) | `docker exec <ctr> find /home/node/.vscode-server/extensions/anthropic.claude-code-* -name claude -type f -executable 2>/dev/null` — find the new path, update `BIN=` in `Dockerfile.base` line ~149, rebuild base. |
-| Scenario 3, but the VSIX should be available | Marketplace down OR version retired/replaced | Re-run the probe : `for P in linux-x64 linux-arm64; do curl -fsSL --compressed -A 'VSCode/devcontainer' --range 0-1023 -o /dev/null -w "$P %{http_code}\n" "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/anthropic/vsextensions/claude-code/${V}/vspackage?targetPlatform=${P}"; done` — if 404, the version is gone, pick another. |
-| Scenarios 1 or 2 but `claude --version` fails inside the container | Symlink target gone (rare — only if someone rm'd the extension dir at runtime) | `docker exec <ctr> ls -la /usr/local/bin/claude` then re-symlink manually OR `BUILD_BASE_NO_CACHE=1 bash .devcontainer/initialize.sh` (see [procedure 17](#17-force-rebuild-base-no-cache)). |
-| Build fails entirely with "Unsupported arch" | Running on something other than amd64/arm64 (e.g. armv7) | Add the arch to the case statement in BOTH RUN blocks of `Dockerfile.base`. |
-| VS Code re-downloads Claude on first start (du shows 2 dirs) | `extensions.json` malformed → see [procedure 19](#19-regen-extensionsjson-if-vs-code-redownloads) |
-
-### Step 4 — last-resort manual fixes (in-container, no rebuild)
-
-- **Force Phase B manually** (Scenario 2 fix without rebuild) :
-  ```bash
-  docker exec -u root <ctr> ln -sf /home/node/.vscode-server/extensions/anthropic.claude-code-*/resources/native-binary/claude /usr/local/bin/claude
-  docker exec -u root <ctr> rm /etc/claude-fallback-warn
-  # Note: doesn't survive container rebuild — apply a proper Dockerfile.base fix for persistence.
-  ```
-- **Force runtime VSIX re-install** (Scenario 1 or 2 if `extensions.json` is corrupted) :
-  ```bash
-  docker exec <ctr> rm /home/node/.vscode-server/extensions/extensions.json
-  docker exec <ctr> code --install-extension anthropic.claude-code@$(grep CLAUDE_CODE_VERSION .devcontainer/.env | cut -d= -f2) --force
-  ```
-
----
-
-## 16. Analyze base image breakdown
-
-When the base image grows unexpectedly between bumps, `host-helpers/analyze-base-image` breaks it down per-layer + per-directory + per-package so you can spot the offender.
-
-```bash
-bash .devcontainer/host-helpers/analyze-base-image
-```
-
-The helper outputs three sections:
-
-1. **`docker history claude-devcontainer-base:${V}`** — layer-by-layer size with the RUN/COPY/ARG/ENV that produced each layer
-2. **`du -sh /<top-dirs>/`** — disk usage of `/usr`, `/var`, `/home`, `/opt`, `/tmp` inside the image (run via temporary `docker run --rm`)
-3. **`dpkg-query -W -f='${Installed-Size}\t${Package}\n' | sort -nr | head -30`** — top 30 apt packages by installed size
-
-Use cases :
-- "Image went from 1.1 GB to 1.4 GB after I changed something" → run the helper before AND after, diff the per-layer column to localize the regression.
-- "Where do the 240 MB of layer 7 come from?" → look at the per-dir section (`/home/node/.vscode-server` = VSIX baked, `/usr/local/bin/claude` = symlink target).
-- "Did the chown trap come back?" → if you see two adjacent layers at 240+ MB each on the VSIX tree, it's the chown-in-separate-RUN duplication pattern (see [knowledge/INDEX § Modifications interdites / fragiles](knowledge/INDEX.md#modifications-interdites--fragiles)).
-
-The helper is **host-only** (refuses to run inside the container — it needs `docker history` against the host daemon). Portable awk fallback works on macOS without `numfmt`.
-
----
-
-## 17. Force rebuild base no-cache
-
-Sometimes the layer cache lies — Anthropic re-publishes the same version with a fix, a Marketplace asset gets updated under the same URL, etc. Bypass the cache for the next base build:
-
-```bash
-# One-shot via env var
-BUILD_BASE_NO_CACHE=1 bash .devcontainer/initialize.sh
-
-# OR via .env (auto-consumed after one rebuild)
-echo "BUILD_BASE_NO_CACHE=1" >> .devcontainer/.env
-# Then: VS Code → Dev Containers: Rebuild Container
-```
-
-After the rebuild, the flag is auto-removed from `.env` so subsequent rebuilds use the cache normally.
-
-`initialize.sh` also **auto-detects** `--build-no-cache` requests by walking the parent process ancestry (matches `devcontainer / docker / compose / buildkit / Code Helper` case-insensitively). When you click "Rebuild Container Without Cache" in VS Code, the flag propagates to the base build without needing the env var.
-
-For debugging the auto-detection itself:
-```bash
-DEBUG_REBUILD_CONTEXT=1 bash .devcontainer/initialize.sh
-# Dumps process tree + env to .devcontainer/logs/rebuild-context-<ts>.log (gitignored)
-```
-
----
-
-## 18. Adopt the PHP variant
-
-For PHP projects, `.devcontainer/Dockerfile.php` provides a slim variant `FROM claude-devcontainer-base:${VERSION}` + PHP 8.2 + Composer 2 + 13 extensions. Adoption is per-project:
-
-1. **Copy the variant into the target project** `[host]`:
-   ```bash
-   cp .devcontainer/Dockerfile.php <php-project>/.devcontainer/Dockerfile.php
-   ```
-2. **Point compose at it** `[host]` — edit `<php-project>/.devcontainer/docker-compose.yml`:
-   ```yaml
-   services:
-     app:
-       build:
-         context: .
-         dockerfile: Dockerfile.php           # ← was Dockerfile
-   ```
-3. **Rebuild Container** `[host]`: VS Code → `Dev Containers: Rebuild Container`.
-4. **Smoke test** `[container]`:
-   ```bash
-   php --version                              # → PHP 8.2.x
-   composer --version                         # → Composer 2.x
-   php -r 'foreach (["curl","gd","mbstring","xml","zip","soap","intl","pdo_mysql","readline","bcmath","sockets","Phar"] as $e) echo $e . ": " . (extension_loaded($e) ? "OK" : "MISSING") . PHP_EOL;'
-   ```
-
-**Layer dedup happens automatically** through Docker's content-addressable cache: every PHP project sharing the same `FROM` + same `RUN apt install` reuses the PHP layer at ~150 MB delta (no per-project duplication on disk).
-
-To **add other extensions one-off** for a specific PHP project, edit that project's local `Dockerfile.php` and append to the apt install. Only bump the shared `.devcontainer/Dockerfile.php` if ≥2 PHP projects need the same addition.
-
-To **add a different variant** (Python ML, Go, Rust, etc.) → [knowledge/extension-points.md § Add a new Dockerfile variant](knowledge/extension-points.md#add-a-new-dockerfile-variant).
-
----
-
-## 19. Regen `extensions.json` if VS Code redownloads
-
-`Dockerfile.base` bakes `~/.vscode-server/extensions/extensions.json` with hardcoded UUIDs at build time so VS Code skips the Marketplace check at boot. If you see `du -sh /home/node/.vscode-server/extensions/` reporting two adjacent `anthropic.claude-code-*` dirs (one baked + one downloaded), the baked JSON drifted from VS Code's expected schema.
-
-1. **Inspect the baked file** `[container]`:
-   ```bash
-   python3 -m json.tool /home/node/.vscode-server/extensions/extensions.json
-   ```
-   Expected single entry with `identifier.uuid=3c13ae49-babe-45fe-8c48-5e45077a62bf` and `metadata.publisherId=89769da0-cc4b-40b0-8216-93ffb5a96b56`.
-2. **Compare to a fresh runtime install** `[container]`:
-   ```bash
-   # Force a clean re-install to see what VS Code writes naturally
-   rm /home/node/.vscode-server/extensions/extensions.json
-   code --install-extension anthropic.claude-code@$(grep CLAUDE_CODE_VERSION /workspace/.devcontainer/.env | cut -d= -f2) --force
-   python3 -m json.tool /home/node/.vscode-server/extensions/extensions.json
-   ```
-3. **Diff** — if VS Code adds a new required field, port it to `Dockerfile.base` lines ~180-195 (`printf` with `%s` placeholders generating the JSON).
-4. **Rebuild base** `[host]`:
-   ```bash
-   BUILD_BASE_NO_CACHE=1 bash .devcontainer/initialize.sh
-   # → VS Code: Rebuild Container
-   ```
-
-Reference UUIDs (stable per-extension/per-publisher, do NOT change unless Anthropic republishes under a new publisher account):
-
-```jsonc
-{
-  "identifier": {
-    "id": "anthropic.claude-code",
-    "uuid": "3c13ae49-babe-45fe-8c48-5e45077a62bf"
-  },
-  "metadata": {
-    "publisherId": "89769da0-cc4b-40b0-8216-93ffb5a96b56",
-    "publisherDisplayName": "Anthropic"
-  }
-}
-```
+Then **Reload Window** in VS Code (a window reload, not a rebuild, is what reaches the extension host). A "Patchers — nothing cached for this line" banner after a Claude Code bump (procedure 13) means no tag exists yet for the new `cc` version: either wait for one, pin a tag with `--ref`, or set `EXT_PATCHES_ALLOW_UNTESTED=1` in `.env` to take the repository's HEAD. `EXT_PATCHES_TOKEN` must be a real read-only PAT — with the `<change-me>` placeholder the hook applies nothing and says so. How-to: `/opt/devcontainer/base/docs/how-to/patch-the-extension.md`.

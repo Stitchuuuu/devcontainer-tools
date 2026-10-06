@@ -7,7 +7,7 @@
 # freshness so we can pick the one most likely to support Claude Code's
 # current version (2.1.145).
 #
-# Output goes to .devcontainer/logs/proxy-audit-<ts>.log — bind-mounted, so
+# Output goes to .devcontainer/tmp/logs/proxy-audit-<ts>.log — bind-mounted, so
 # Claude Code inside the container can read it too.
 #
 # Usage : bash .devcontainer/host-helpers/audit-claude-code-proxies
@@ -23,9 +23,9 @@ command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found in PATH" >&2; e
 command -v jq   >/dev/null 2>&1 || { echo "ERROR: jq not found in PATH (brew install jq)" >&2; exit 2; }
 
 DEVCONTAINER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$DEVCONTAINER_DIR/logs"
+mkdir -p "$DEVCONTAINER_DIR/tmp/logs"
 TS=$(date +%Y%m%d-%H%M%S)
-LOG="$DEVCONTAINER_DIR/logs/proxy-audit-${TS}.log"
+LOG="$DEVCONTAINER_DIR/tmp/logs/proxy-audit-${TS}.log"
 exec > >(tee -a "$LOG") 2>&1
 
 # Candidates — extend this list if you find more relevant projects.

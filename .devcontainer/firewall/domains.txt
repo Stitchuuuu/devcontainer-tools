@@ -99,7 +99,7 @@
 # via docker-compose extra_hosts to the host gateway IP. The `.internal`
 # suffix is NOT in NO_PROXY → traffic routes via HTTP_PROXY=mitmproxy →
 # full audit (policy.d/ollama.internal.yaml + passive_log).
-# Daily switch + setup guide: .devcontainer/knowledge/ollama-local.md
+# Daily switch + setup guide: /opt/devcontainer/base/knowledge/ollama-local.md
 # The host:11434 port must also be opened via CLAUDE_CODE_FIREWALL_ALLOWED.
 
 [POST] ollama.internal                 # Ollama local backend (Anthropic Messages compat)
@@ -112,49 +112,12 @@
 # Ollama public documentation + online model registry (read-only — needed
 # to debug the local bridge, browse available models, check for newer
 # versions, and read the Anthropic-compat docs while troubleshooting).
-[GET] ollama.com                       # Model registry browser, downloads, blog (cf. knowledge/ollama-local.md)
+[GET] ollama.com                       # Model registry browser, downloads, blog (cf. /opt/devcontainer/base/knowledge/ollama-local.md)
 [GET] docs.ollama.com                  # API reference (incl. /api/anthropic-compatibility)
 [GET] registry.ollama.ai               # Docker-v2 registry API : list tags + fetch manifests
   /v2/*                                #   /v2/library/<model>/tags/list, /v2/library/<model>/manifests/<tag>
 
 
-# === Local Claude bridge sidecar (cf. knowledge/ollama-local.md) =======================
-# UniClaudeProxy sidecar in the devcontainer compose. Translates Anthropic
-# Messages ⇄ Ollama-native + converts <think> blocks to Anthropic format so
-# Claude Code stops hanging on reasoning models (qwen3, deepseek-r1).
-# Mode `local-proxy` routes Claude Code → mitmproxy → claude-bridge:9223
-# (audited via policy.d/claude-bridge.yaml — STRICT 1:1 mirror of /v1/messages
-# from api.anthropic.com.yaml). The bypass alias `claude-bridge.local:9223`
-# matches NO_PROXY .local → direct TCP, no audit (debug only — same pattern
-# as `ollama.local`). The bypass is NOT listed here : iptables ACCEPT for
-# both paths comes from CLAUDE_CODE_FIREWALL_ALLOWED=claude-bridge:9223
-# (same peer container IP).
-
-[POST] claude-bridge                   # UniClaudeProxy sidecar (in-compose peer)
-  /v1/messages                         #   chat completion (cf. policy.d max 32MB)
-
-
-docs.anthropic.com                     # Anthropic public documentation — 301 → platform.claude.com (GET)
-
-# platform.claude.com — Anthropic's new dev platform. Split per-method so
-# synthetic endpoints scope precisely. Unknown paths fall to enforcement_mode:
-# warn (cf. policy.d/) — audit mode while we discover the API surface ;
-# tighten to block once `firewall-blocks` is stable.
-[POST] platform.claude.com             # auth flows
-  /v1/oauth/token                      #   POST — token refresh
-
-[GET] platform.claude.com              # docs site (301 from docs.anthropic.com)
-  /docs/*                              #   documentation pages
-
-console.anthropic.com                  # Admin / billing / usage dashboard (GET)
-
-# Claude Code CDNs surfaced by empirical audit. Subdomain-literal, no
-# wildcard parent promotion.
-[GET] bridge.claudeusercontent.com     # Claude Code Chrome bridge CDN (computer use artifacts)
-  /chrome/*                            #   per-session UUID-keyed assets
-
-[GET] code.claude.com                  # Claude Code docs map (UA Claude-User)
-  /docs/*                              #   /docs/en/claude_code_docs_map.md etc.
 
 
 # === Telemetry — OPTIONAL ====================================================
@@ -234,7 +197,7 @@ console.anthropic.com                  # Admin / billing / usage dashboard (GET)
 
 # === wtfcmd doc (runtime browse — binary baked at build) ====================
 # The `wtf` binary is installed at `docker build` time from a GitHub release
-# (see Dockerfile.base). That fetch runs on the daemon host, OUT of the
+# (see the base image's Dockerfile). That fetch runs on the daemon host, OUT of the
 # runtime firewall scope (same pattern as the Claude VSIX block). The hosts
 # below are only needed when reading the wtfcmd doc from inside the container.
 

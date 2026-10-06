@@ -34,4 +34,4 @@
       exit 1
     fi
     echo "-> docker exec -u 0 into $container"
-    docker exec -u 0 "$container" /workspace/.devcontainer/reload-local.sh
+    docker exec -u 0 "$container" /usr/local/bin/reload-firewall

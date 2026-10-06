@@ -51,7 +51,7 @@
   "remoteUser": "node",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096 --use-openssl-ca",
-    // UTF-8 locale — Dockerfile.base purges all locale packs except en/en_US/C
+    // UTF-8 locale — the base image purges all locale packs except en/en_US/C
     // (~175 MB saved), so only glibc's built-in C.UTF-8 is available. Without
     // this, LANG is empty → LC_CTYPE=POSIX → zsh's ZLE renders every non-ASCII
     // byte as `?` (em-dash « — » → « ??? », idem accents/arrows).
@@ -64,7 +64,7 @@
     // local had no effect — PID 1's env stayed at .claude). When commented
     // out in .env, the var is unset and Claude defaults to ~/.claude
     // (the cloud path). When uncommented, it points at ~/.claude-local for
-    // mode isolation. See knowledge/ollama-local.md § Audit & observability.
+    // mode isolation. See /opt/devcontainer/base/knowledge/ollama-local.md § Audit & observability.
     "GH_CONFIG_DIR": "/home/node/.claude/gh",
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
     // HOST_WORKSPACE_PATH — real host path of the workspace, injected by

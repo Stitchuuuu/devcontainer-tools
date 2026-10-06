@@ -5,7 +5,7 @@
 #
 # Tier above ollama-serve-16k : more RAM headroom = larger model + double
 # context. Aliasing approach (single-force vs multi-alias) is independent —
-# see knowledge/ollama-local.md § "Default model name mapping".
+# see /opt/devcontainer/base/knowledge/ollama-local.md § "Default model name mapping".
 #
 # What it tunes vs the 16k tier :
 #   CONTEXT_LENGTH=32768    32k default ctx (~25k usable after Claude Code's system prompt)

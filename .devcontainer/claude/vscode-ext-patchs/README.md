@@ -1,26 +1,20 @@
 # Patchers — dogfood tree
 
-**Still the live source for this container, and not yet reducible.**
+**Project-local patchers only.** Since this tree runs on the published
+`devcontainer-sandbox` image, the shared patchers come from the pinned tarball
+of `meitogi/claude-ext-patchs` (`EXT_PATCHES_REPO` / `EXT_PATCHES_REF` in
+`.devcontainer/.env`; ref unset = `auto`, the newest tag cut for the installed
+Claude Code version). `_common.py` and `run-all.sh` are the image's toolkit.
+Edit a shared patcher in that repository, never here.
 
-`.devcontainer/Dockerfile.base:234` copies this whole directory into the image
-it builds and runs `run-all.sh` from it. So `run-all.sh`, `_common.py` and the
-sixteen shared patchers all have to stay here until this project switches onto
-the published `devcontainer-sandbox` image — that is the `dogfood-switchover`
-work, not this directory's.
-
-Once it does switch, only the project-local patchers stay:
+What stays here :
 
 - `model-timing-probe.py` — diagnostic instrumentation, dogfood-only by
   decision. It exists nowhere else: not in the image repo, not in the shared
   patcher repository.
 
-Everything else here is byte-identical to `meitogi/claude-ext-patchs`
-(`patchers/`, tag `cc2.1.258-r2`), which is where those patchers are maintained
-now. Edit them there, not here — and if you do change one here, expect the two
-copies to drift silently, because nothing checks them against each other any
-more.
-
-After the switchover, the `45-ext-patches.sh` hook resolves the shared patchers
-(from `EXT_PATCHES_DIR` or a pinned tarball) and merges whatever `*.py` it finds
-in this directory into the same work directory. `_common.py` and `run-all.sh`
-come from the image's toolkit at that point, and must be deleted from here.
+At boot, the `45-ext-patches.sh` hook resolves the shared set, then merges every
+`*.py` found in this directory into the same work directory — a local file with
+the same name as a shared patcher **replaces** it, and the boot output names the
+override. `ext-patches-sync --status` shows what applied and from where;
+`wtf ext-patch status` / `wtf ext-patch update` wrap the same commands.
