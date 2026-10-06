@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "@meitogi/devcontainer-cli": "^0.8.1"
+  }
+}
