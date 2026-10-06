@@ -4,16 +4,20 @@ services:
   app:
     build:
       context: .
-      # Slim project layer — FROM claude-devcontainer-base built by
-      # .devcontainer/initialize.sh before compose runs.
+      # Slim project layer — FROM the published GHCR base image; compose
+      # pulls it, nothing is built locally. BASE_IMAGE in .env is both the
+      # version pin and the rollback knob (see Dockerfile header).
       dockerfile: Dockerfile
       args:
-        TZ: ${TZ:-Europe/Paris}
-        # Single source of truth lives in .devcontainer/.env, written by
-        # initialize.sh. Default falls back to the version Dockerfile.base pins.
-        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.145}
-        GIT_DELTA_VERSION: "0.18.2"
-        DC_PROJECT: ${DC_PROJECT:-devcontainer-tools}
+        # The three published lines: 1.9.1-cc2.1.280 (default), 1.9.1-cc2.1.272,
+        # 1.9.1-cc2.1.220.
+        BASE_IMAGE: ${BASE_IMAGE:-ghcr.io/meitogi/devcontainer-sandbox:1.9.1-cc2.1.280}
+        # Whether the build bakes firewall/domains.local.txt and
+        # firewall/policy.local.d/ into the image. Hardened default is 0 :
+        # those files are gitignored and container-writable, so a rebuild
+        # would otherwise be a silent path from "a postinstall edited a file"
+        # to "the firewall allows more". Personal opt-in through .env only.
+        FIREWALL_ALLOW_LOCAL_AT_REBUILD: ${FIREWALL_ALLOW_LOCAL_AT_REBUILD:-0}
     # Local Ollama backend (cf. .devcontainer/knowledge/ollama-local.md). Two aliases for
     # the same host gateway IP — the routing difference comes from NO_PROXY :
     #   ollama.internal  ∉ NO_PROXY  → routed via HTTP_PROXY (mitmproxy audit)
