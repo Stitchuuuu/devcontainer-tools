@@ -109,7 +109,9 @@
     absent), CLI = this checkout packed and installed offline, so the
     initializeCommand provably runs the tree and nothing published.
     Scratch .tmp/bare/, DC_PROJECT bare-project, swept at every run; the
-    shared creds volume is never a candidate. Once inside:
+    shared creds volume is never a candidate. HOST ONLY — refused inside a
+    devcontainer, where docker is the nested dind VS Code cannot reach.
+    Every run is written to .tmp/bare.log. Once inside the project:
     bash /workspace/check-in-container.sh.
   flags:
     - name: pat
@@ -131,7 +133,14 @@
         pins and the npm version the CLI package.json names. Both must resolve.
       default: ""
       test: "$bool"
-  cmd: bash ./packages/devcontainer-sandbox/test/bare-project.sh{{ if .pat }} --pat{{ end }}{{ if .shared_creds }} --shared-creds{{ end }}{{ if .published }} --published{{ end }}
+    - name: build
+      desc: |
+        Build devcontainer-sandbox:local from this tree first, cached layers
+        (the gate's build is --no-cache). For a machine where release-check
+        has not run, or ran before the last commit.
+      default: ""
+      test: "$bool"
+  cmd: bash ./packages/devcontainer-sandbox/test/bare-project.sh{{ if .pat }} --pat{{ end }}{{ if .shared_creds }} --shared-creds{{ end }}{{ if .published }} --published{{ end }}{{ if .build }} --build{{ end }}
 
 # ---- ext-patch — the VS Code extension patchers of THIS container ---------
 # Convenience only. The command itself is `ext-patches-update`, baked into the
