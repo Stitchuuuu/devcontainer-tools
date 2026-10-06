@@ -99,6 +99,40 @@
       test: "$bool"
   cmd: bash ./packages/devcontainer-sandbox/test/release-check.sh{{ if .no_purge }} --no-purge{{ end }}
 
+- group: image
+  name: bare
+  desc: |
+    A throwaway project on the image and CLI of THIS tree, scaffolded by
+    `devc init --yes` and opened in VS Code — the light companion of
+    release-check: no gate, no verdict, no --no-cache build. Image =
+    devcontainer-sandbox:local (what release-check leaves; refused when
+    absent), CLI = this checkout packed and installed offline, so the
+    initializeCommand provably runs the tree and nothing published.
+    Scratch .tmp/bare/, DC_PROJECT bare-project, swept at every run; the
+    shared creds volume is never a candidate. Once inside:
+    bash /workspace/check-in-container.sh.
+  flags:
+    - name: pat
+      desc: |
+        Wire the extension patchers. Token from ~/.config/devc/ext-patches.env
+        (projected by devc initialize at boot), else EXT_PATCHES_TOKEN in the
+        environment; neither = refusal with the recipe.
+      default: ""
+      test: "$bool"
+    - name: shared-creds
+      desc: |
+        Mount this repo's CLAUDE_CREDS_VOLUME (a signed-in Claude session)
+        instead of a throwaway claude-creds-bare-project wiped at every run.
+      default: ""
+      test: "$bool"
+    - name: published
+      desc: |
+        The registries instead of the tree: the GHCR tag the CLI template
+        pins and the npm version the CLI package.json names. Both must resolve.
+      default: ""
+      test: "$bool"
+  cmd: bash ./packages/devcontainer-sandbox/test/bare-project.sh{{ if .pat }} --pat{{ end }}{{ if .shared_creds }} --shared-creds{{ end }}{{ if .published }} --published{{ end }}
+
 # ---- ext-patch — the VS Code extension patchers of THIS container ---------
 # Convenience only. The command itself is `ext-patches-update`, baked into the
 # image and on PATH in any container built from it; this group just spares the
