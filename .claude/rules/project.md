@@ -1,0 +1,1 @@
+../../.devcontainer/claude/CLAUDE-project.md
