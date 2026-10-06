@@ -1,20 +1,24 @@
-# DevContainer (v2) — internals scoped to .devcontainer/
+# DevContainer (v3) — internals scoped to .devcontainer/
 
-# Runtime artefacts (auto-generated, per-rebuild)
+# Everything a machine writes lives under tmp/ : the patcher cache
+# (cache/ext-patchs/<ref>/), the notify queue and its .authority, the lifecycle
+# logs and the setup markers, and watch-log's host hand-off (tmp/pending/, which
+# the image purges past 60 min anyway). Nothing under it is a source — `rm -rf
+# tmp/` costs only a refetch of the patchers from the private repository, which
+# is exactly what moving them out of this tree was meant to keep out of git.
+tmp/
+
+# Secrets and per-dev overrides — hand-edited, never generated
 .env
-.configured-*
-logs/
 
-# Skill scratch dirs (keep dir via .keep, ignore content)
-pending/*
+# prepare-pr's output: authored documents you copy into `gh pr create`, and
+# nothing purges them — which is why this one stays out of tmp/, whose whole
+# promise is that deleting it costs nothing. watch-log's pending/ went the other
+# way, under tmp/, because the image purges it. research-bundles/ and scan-deps/
+# left with their skills: no baked skill references either any more.
 pr-drafts/*
-research-bundles/*
-scan-deps/*
 
-!pending/.keep
 !pr-drafts/.keep
-!research-bundles/.keep
-!scan-deps/.keep
 
 # Python bytecode cache — anywhere under .devcontainer/
 **/__pycache__/
@@ -24,6 +28,11 @@ firewall/domains.local.txt
 firewall/policy.local.d/*
 firewall/tests/*.log
 firewall-blocks.*.log
+# Build output of firewall-docker-setup.sh, never a source. Committing it would
+# put a hand-editable copy of the compiled ruleset next to the files it is
+# supposed to be derived from.
+firewall/effective/
+firewall/baked-at
 
 !firewall/policy.local.d/.keep
 
@@ -34,27 +43,6 @@ skills/**/*.local/
 # claude-bridge sidecar runtime config (bootstrapped from .example.json)
 claude-bridge/config.json
 
-# shareglaude deployment URLs + create key (bootstrapped from .example)
-shareglaude.env
-
-# Notify daemon — runtime artefacts under notify/queue/ (auto-generated)
-#   *.jsonl          : per-hook event queue (consumed + cleaned by the daemon)
-#   daemon.log       : daemon stderr/stdout sink (rotated at 1 MB → 100 KB)
-#   .daemon.pid      : single-instance lockfile + heartbeat (mtime touched every 10 s)
-#   .daemon.startup* : channel readback dropped after init (also covers the .tmp
-#                      sibling that survives a writeFileSync→renameSync crash window)
-#   state/           : pending.json + actions.jsonl (in-flight timers + audit
-#                      log, both reset per daemon lifetime — see lib/state.js)
-notify/queue/*.jsonl
-notify/queue/daemon.log
-notify/queue/.daemon.pid
-notify/queue/.daemon.startup*
-notify/queue/state/
-
-# Claude state snapshots (claude/backup-state.sh) — transcripts + shell history
-# parked on the bind mount so a `docker compose down -v` cannot take them.
-.state-backup/
-
 # Lessons — local / not-yet-generalisable (committed sibling is LESSONS.md)
 LESSONS.local.md
 
@@ -62,9 +50,8 @@ LESSONS.local.md
 zshrc.local
 .zsh-custom/
 
-tmp/
-# Caches — fetched or derived, never committed. In particular
-# cache/ext-patchs/<ref>/ holds patchers the 45-ext-patches hook fetched from
-# a private repository: committing them would republish exactly what moving
-# them out of this tree was meant to stop.
-cache/
+# --- Project ---------------------------------------------------------------
+pending/*
+!pending/.keep
+shareglaude.env
+.state-backup/
