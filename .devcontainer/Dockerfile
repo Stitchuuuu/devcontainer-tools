@@ -97,8 +97,8 @@ ENV PATH="/home/node/.cargo/bin:${PATH}"
 
 # Rust cross-compile via zig-as-linker + cargo-zigbuild. Ships the SDK stubs
 # needed for macOS / Windows / Linux-musl targets without installing Xcode CLT
-# or MinGW-w64. Enables cross-building the apps/notifier/ workspace from this
-# aarch64 Linux container. Bump ZIG_VERSION as new stables ship.
+# or MinGW-w64. Enables cross-building the packages/notifier/ workspace from
+# this aarch64 Linux container. Bump ZIG_VERSION as new stables ship.
 ARG ZIG_VERSION=0.14.0
 RUN ARCH="$(uname -m)" \
  && curl -fsSL -o /tmp/zig.tar.xz \

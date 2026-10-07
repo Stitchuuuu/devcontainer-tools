@@ -41,10 +41,13 @@ packages/*/*.tgz
 # devcontainer-sandbox has its own git history — never tracked here.
 # devcontainer-cli was tracked here until 2026-09-21; its history up to
 # 1c6ade2 stays on feat/v3, and it lives on at meitogi/devcontainer-cli.
+# notifier was tracked here until 2026-10-07; its history up to 652e752
+# stays on feat/v3, and it lives on at meitogi/notifier.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
 packages/vscode-ext-patch-starter/
 packages/devcontainer-cli/
+packages/notifier/
 
 # Scratch / experimentation
 .tmp/
