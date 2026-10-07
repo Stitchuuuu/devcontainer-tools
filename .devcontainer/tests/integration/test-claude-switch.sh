@@ -38,11 +38,6 @@ _claude_mode() {
   fi
 }
 
-# Count active (non-comment, non-blank) entries in a file.
-_active_lines() {
-  grep -vE '^\s*(#|$)' "$1" 2>/dev/null | tr -d '[:space:]' | grep -c .
-}
-
 test_workspace_baked_alignment() {
   _post_bake || { skip_test "not in post-bake container"; return; }
   [ -f "$WORKSPACE_TCP" ] && [ -f "$BAKED_TCP" ] || {
@@ -65,12 +60,13 @@ test_mode_cloud() {
   _post_bake || { skip_test "not in post-bake container"; return; }
   local m; m=$(_claude_mode)
   [ "$m" = "cloud" ] || { skip_test "active mode = $m, not cloud"; return; }
-  # Expected : no active entry (only commented examples) in both copies.
-  if [ "$(_active_lines "$BAKED_TCP")" -eq 0 ]; then
-    _ok "cloud : baked ports has zero active entries"
+  # Expected : host:11434 NOT active in baked. The Ollama port is what
+  # separates cloud from local ; other entries (host:9222, dind:2375…) are the
+  # project's own and stay open in either mode.
+  if grep -qE '^[[:space:]]*host:11434[[:space:]]*$' "$BAKED_TCP"; then
+    _nok "cloud : baked still has host:11434 active"
   else
-    _nok "cloud : baked ports has unexpected entries"
-    grep -vE '^\s*(#|$)' "$BAKED_TCP" | sed 's/^/      /'
+    _ok "cloud : baked has host:11434 inactive"
   fi
 }
 
