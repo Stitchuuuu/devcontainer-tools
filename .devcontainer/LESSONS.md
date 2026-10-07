@@ -40,45 +40,12 @@
   header comment "run from repo root on host", and every path
   `./relative/...` or `$(pwd)/...`. Files dropped in `.tmp/foo/` on the
   host are then visible at `/workspace/.tmp/foo/` from inside the
-  container via the bind mount.
-
-- **Targeted updates ship as `updates/<YYYYMMDD-HHMM>-<title>/` folders
-  containing exactly two files : `update.patch` + `update.md`.
-  Downstream projects fetch them via sparse-checkout into
-  `.tmp/devcontainer-updates/` — never into `.tmp/upgrade-v2/updates/`
-  (that path was the old convention, retired June 2026).** *Why* :
-  one folder per fix keeps `git log` / archival surgical, the
-  sparse-checkout target is ~1 MB vs ~30 MB for the full-release
-  clone used by the version-bump flow, and the `.tmp/devcontainer-updates/`
-  prefix is short enough to type / paste without abbreviation. The
-  bootstrap + per-update flow was documented in the "Targeted updates"
-  section of `UPGRADE-v2.md` (retired with the v2 tree on 2026-10-07, see
-  git history).
-  *How to apply* : when shipping a new targeted fix, create
-  `updates/<ts>-<title>/` with `update.patch` (the diff) and
-  `update.md` (the recipe). Every path inside the recipe's bash
-  blocks references `.tmp/devcontainer-updates/updates/<ts>-<title>/update.patch`.
-
-- **`updates/*/update.md` bash blocks must be flat-pasteable in an
-  interactive zsh — no `set -euo pipefail`, no `# …` step comments, no
-  leading variable assignments, no multi-line `if/then/fi`.** *Why* : the
-  user pastes these recipes line-by-line (or block-by-block) into the host
-  terminal — never through `bash <<EOF`. `set -euo pipefail` in an
-  interactive shell kills the whole session on the first unset var or
-  non-zero exit ; `# 1.` / `# 2.` step headers and `PATCH=…` declarations
-  either pollute history or fail to survive across multi-paste sessions.
-  This rule was paid for by [updates/20260613-1934-notify-accents-state/update.md](../updates/20260613-1934-notify-accents-state/update.md)
-  — the user had to manually rewrite it ; **DO NOT regenerate that shape**.
-  *How to apply* : when authoring `updates/<YYYYMMDD-HHMM>-<title>/update.md`,
-  model the Apply / Rollback blocks on the canonical
-  [updates/20260613-0929-plus-button-chrome/update.md](../updates/20260613-0929-plus-button-chrome/update.md)
-  — bare commands separated by blank lines, paths inlined (no `$VAR`,
-  always `.tmp/devcontainer-updates/updates/<name>/update.patch` written
-  in full), multi-line commands joined with `\` continuations,
-  multi-statement conditionals folded onto one line (`if …; then …; fi`).
-  If a recipe genuinely needs `set -e` semantics, ship a sibling `.sh`
-  file and have the recipe call `bash ./that.sh` — never inline the guards
-  in the `.md`.
+  container via the bind mount. Commands meant to be PASTED into the
+  user's interactive zsh (not run as a file) follow the opposite shape :
+  no `set -euo pipefail` (it kills the session on the first unset var),
+  no `# …` step comments, no leading `VAR=…` assignments, paths inlined
+  in full, `if …; then …; fi` on one line — a guard that is really needed
+  goes in a sibling `.sh` the pasted line calls.
 
 - **Commit messages stay short and self-contained — never append
   `— apply updates/<ts>-<title>` or any other rollout/tracker suffix.**
