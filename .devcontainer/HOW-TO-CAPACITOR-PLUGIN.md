@@ -6,8 +6,8 @@
 
 ## Quick checklist (5 steps)
 
-1. Run `install.sh` in your target plugin dir → prompts for variant
-2. Pick `CapacitorAndroidMin` (or `CapacitorAndroidStd`)
+1. Scaffold your target plugin dir with `devc init` (the v3 CLI)
+2. Copy `Dockerfile.CapacitorAndroidMin` (or `Dockerfile.CapacitorAndroidStd`) next to it and point the compose `build.dockerfile` at it
 3. Paste sections from [`claude/CLAUDE-project-android-capacitor.md`](claude/CLAUDE-project-android-capacitor.md) into your project's `.devcontainer/claude/CLAUDE-project.md`
 4. Paste sections from [`firewall/domains.capacitor-android.txt`](firewall/domains.capacitor-android.txt) into your project's `.devcontainer/firewall/domains.local.txt` (personal, gitignored) or `domains.txt` (team-committed)
 5. Add `cache/*` to `.devcontainer/.gitignore` (if not already there)
@@ -18,20 +18,19 @@ Then `code your-project` — VSCode boots the devcontainer, Claude reads
 
 ## Detailed steps
 
-### 1. Template install
+### 1. Scaffold and variant
 
-From this template repo :
+In your plugin project :
 
-    ./install.sh /path/to/your-plugin-project
+    npx --yes @meitogi/devcontainer-cli devc init
 
-The installer :
-- Copies `.devcontainer/` skeleton
-- Prompts you for `DC_PROJECT` name (kebab-case, e.g. `my-plugin`)
-- Prompts for Docker variant → pick `CapacitorAndroidMin` or `CapacitorAndroidStd`
-- Copies the chosen `Dockerfile.CapacitorAndroid*` and generates
-  `.devcontainer/devcontainer.json` referencing it
-- Runs `initialize.sh` to build the `claude-devcontainer-base` layer
-  (~1.5GB, one-time per Claude Code version)
+The wizard asks for the project id (kebab-case, e.g. `my-plugin`), the display
+name, the stack and the Claude credentials volume, and writes `.devcontainer/`.
+Then copy the chosen `Dockerfile.CapacitorAndroidMin` or
+`Dockerfile.CapacitorAndroidStd` from this repo's `.devcontainer/` into yours
+and set `build.dockerfile` to it in `.devcontainer/docker-compose.yml`. The
+image's own recipe for the stack is `stacks/android-capacitor.md` in the
+`devcontainer-sandbox` repo.
 
 ### 2. Variant choice — Min vs Std
 
@@ -46,7 +45,7 @@ Capacitor SDK + AndroidX + kotlinx deps.
 
 ### 3. Claude rules — copy sections
 
-Open `templates/v2/claude/CLAUDE-project-android-capacitor.md`, copy the
+Open `claude/CLAUDE-project-android-capacitor.md`, copy the
 sections you need into your project's `.devcontainer/claude/CLAUDE-project.md`.
 Key sections :
 
@@ -59,7 +58,7 @@ Paste as-is or adapt to your project's conventions.
 
 ### 4. Firewall allowlist — copy sections
 
-Open `templates/v2/firewall/domains.capacitor-android.txt`. Two levels :
+Open `firewall/domains.capacitor-android.txt`. Two levels :
 
 - **Level A** (docs) — reference lookup only (developer.android.com,
   kotlinlang.org, capacitorjs.com, …)
@@ -85,10 +84,9 @@ Add `cache/*` to `.devcontainer/.gitignore` so on-demand fetched jars
 
 ### 6. Ship the delivery gate script
 
-If `install.sh` copies `templates/v2/scripts/` → `.devcontainer/scripts/`
-automatically, skip this. Otherwise :
+`devc init` ships no `scripts/` ; copy the gate from this repo :
 
-    cp templates/v2/scripts/capacitor-plugin-check.sh \
+    cp scripts/capacitor-plugin-check.sh \
        your-project/.devcontainer/scripts/capacitor-plugin-check.sh
     chmod +x your-project/.devcontainer/scripts/capacitor-plugin-check.sh
 

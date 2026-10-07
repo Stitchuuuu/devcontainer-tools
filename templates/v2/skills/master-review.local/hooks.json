@@ -1,6 +1,0 @@
-{
-  "Stop": [
-    {"matcher": "", "hooks": [{"type": "command", "command": "/workspace/.devcontainer/skills/master-review.local/master-review-suggest-fresh.sh"}]},
-    {"matcher": "", "hooks": [{"type": "command", "command": "/workspace/.devcontainer/skills/master-review.local/master-review-log-session.sh"}]}
-  ]
-}

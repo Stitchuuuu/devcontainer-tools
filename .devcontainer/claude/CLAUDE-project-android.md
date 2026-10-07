@@ -2,7 +2,7 @@
 
 > This file is **not auto-loaded**. Copy the sections you need into
 > the project's `CLAUDE-project.md` when the repo does Android /
-> Kotlin work. Companion to `templates/v2/firewall/domains.android.txt`
+> Kotlin work. Companion to `firewall/domains.android.txt`
 > (network allowlist) and `Dockerfile.AndroidMin` /
 > `Dockerfile.AndroidStd` (compile-check images).
 
@@ -66,7 +66,7 @@ Cache structure follows Maven layout for easy `-cp` reuse :
 
 Prerequisites — the network hosts must be allowlisted in the current
 devcontainer firewall (mode `basic` : host-level allow only). See
-`templates/v2/firewall/domains.android.txt` and copy the "Level B —
+`firewall/domains.android.txt` and copy the "Level B —
 Maven / Gradle package repos" block into `domains.local.txt` (personal)
 or `domains.txt` (team). Rebuild devcontainer once after the edit —
 mid-session edits don't refresh the running firewall.

@@ -35,14 +35,14 @@ JSONL. Le patch a été mergé en 3 pièces :
    (append à outbound.jsonl).
 
 Le tout est décrit en détail dans
-[updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md](updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md).
+`updates-v2.1/20260707-0811-vscode-ext-outbound-action-injector.md` (retired with the v2 tree on 2026-10-07, see git history).
 Le plan de tests manuels est dans
 [.devcontainer/claude/outbound-tester-manual-tests.md](.devcontainer/claude/outbound-tester-manual-tests.md).
 
 **Ton mandat** : audit préventif ciblé sur les failure modes
 plausibles, PAS une réécriture. Tu vas :
 
-1. **Lire les 3 fichiers listés ci-dessus + les updates-v2.1 associés**
+1. **Lire les 3 fichiers listés ci-dessus + l'update v2.1 associé (git history)**
    pour reconstruire le modèle mental.
 
 2. **Lire les injections finales** dans les fichiers patchés :

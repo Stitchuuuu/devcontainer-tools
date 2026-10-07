@@ -60,9 +60,6 @@ base, and the firewall runtime — see
 │   ├── devcontainer-sandbox/   # the image's source — own git history, own repo, gitignored here
 │   ├── claude-ext-patchs/      # own git history, own repo, gitignored here
 │   └── vscode-ext-patch-starter/  # own git history, own repo, gitignored here
-├── templates/v3/project/       # the v3 baseline source, mirrored into
-│                                # devcontainer-cli's package and drift-tested
-│                                # against it (test/template-drift.test.ts)
 ├── plans/                      # multi-session rollout journals
 ├── CHANGELOG.md                # v1/v2 version history
 └── CLAUDE.md                   # dev guidelines for working in this repo
@@ -89,8 +86,8 @@ becomes of them, and prints the switch as a checklist with the project's own
 values filled in — every step a file edit git can show and revert. It writes
 nothing. Once the checklist is done, `devc init` recognises the tree and adds
 the missing files. The bash `initializeCommand` can survive the switch through
-the shim at [templates/v3/project/initialize.sh](templates/v3/project/initialize.sh),
-which hands the step to the published CLI.
+the shim the CLI ships (`templates/devcontainer/initialize.sh` in the
+`devcontainer-cli` package), which hands the step to the published CLI.
 
 ## Security posture
 
@@ -116,36 +113,7 @@ this posture in v2; the same model carries into v3's image.
 
 ## History: v1 → v2
 
-The sections below describe the superseded `install.sh`-based v2 baseline,
-kept for projects that haven't moved to v3 yet. See [CHANGELOG.md](CHANGELOG.md)
-for the full v1/v2 version history.
-
-### Installing v2
-
-```bash
-bash /path/to/devcontainer-tools/install.sh ~/my-project
-```
-
-The wizard asks **4 questions** (down from 13 in v1.x): `PROJECT_ID`,
-`PROJECT_DISPLAY_NAME`, `PROJECT_TYPE` (`node`/`php`/`custom`), and the
-shared Claude credentials volume. `install.sh` copies `templates/v2/`
-verbatim to `<target>/.devcontainer/`, with `sed` substitutions for the
-answers.
-
-Re-running `install.sh` against an existing project: a **v1.3 marker**
-(`.configured-setup` with `VERSION="1.3.0"`) aborts with a pointer to the
-migration playbook below; a **v2 marker** offers `Reinstall` or `Abort`.
-
-### Migrating v1.x → v2.0
-
-`install.sh` v2 does not auto-migrate — a **Claude-driven playbook** walks
-the v1.x → v2.0 reconciliation per file-class with human-in-the-loop
-confirmation. Full playbook: [MIGRATION-v1-to-v2.md](MIGRATION-v1-to-v2.md).
-If you don't migrate, projects stay on v1.3 — `install.sh` detects the
-marker and aborts cleanly.
-
-### Upgrading within v2.x
-
-For routine minor bumps, the same Claude-driven flow applies, lighter
-because v2's `*.local` convention isolates user-specific config from
-shipped files. Full playbook: [UPGRADE-v2.md](UPGRADE-v2.md).
+v1 and v2 shipped as a bash installer (`install.sh`) copying a template tree
+into the project; both were retired on 2026-10-07, once the dogfood moved to
+v3. [CHANGELOG.md](CHANGELOG.md) keeps the full v1/v2 version history, and a
+project still on v2 switches with `devc migrate` (see above).

@@ -30,49 +30,6 @@
   legitimately needed, the right move is editing
   `policy.local.d/<host>.yaml` (gitignored) — not bypassing.
 
-- **Always split commits by *target* : `templates/v2/*` and `.devcontainer/*`
-  go in SEPARATE commits, never bundled.** *Why* : this repo's dual-edit
-  pattern produces byte-identical changes in `templates/v2/` (the shipped
-  template, picked up by future `install.sh` runs of adopting projects) and
-  `.devcontainer/` (the dogfood mirror that this repo runs on itself).
-  Bundling them obscures intent in `git log` and `git blame` — reviewers
-  can't tell whether a hunk shipped to consumers or only patched the
-  internal dogfood. Convention surfaced in commits `9fa7d25` / `40116ec`
-  and `bb9c7fa` / `0363603`. *How to apply* : commit the `templates/v2/`
-  side first (subject prefix `feat(template):`, `fix(template):`, etc.)
-  with rollout-plan files riding along ; then commit the matching
-  `.devcontainer/` mirror as `chore(dogfood): apply <change> to
-  .devcontainer/`. If a single edit spans both — split the staging with
-  `git add <path>` per file, never `git add -A`.
-
-- **Devcontainer change order : edit in `.devcontainer/` → verify
-  live → mirror byte-identical into `templates/v2/` → ship an
-  `updates/<YYYYMMDD-HHMM>-<title>.md` entry (+ optional sibling
-  `.patch`).** *Why* : `.devcontainer/` is the live testbed (daemon
-  running, can iterate fast), so the change is shaped and validated
-  there first. The `templates/v2/` mirror is what downstream FRESH
-  installs pull from when a new project runs its first `./install.sh`
-  — without the mirror, the change ships nowhere. The `updates/`
-  entry is what downstream EXISTING installs pull from — without it,
-  every consuming project has to hand-port the change. `install.sh`
-  is never run as part of OUR workflow ; it's a downstream-only
-  consumption surface. *How to apply* : (1) iterate inside
-  `.devcontainer/`, with whatever ad-hoc verification fits (run the
-  daemon, eyeball logs, unit tests). (2) Once happy, byte-copy each
-  touched file into the matching `templates/v2/` path and `diff` the
-  two to confirm zero drift. (3) Per the per-target commit-split rule
-  above, commit `templates/v2/` first as `feat(template):` /
-  `fix(template):` etc., then `.devcontainer/` as
-  `chore(dogfood): apply <change> to .devcontainer/`. (4) Create
-  `/workspace/updates/<YYYYMMDD-HHMM>-<title>.md` with a 5-backtick
-  fenced `bash` block applying the change
-  (inline `sed` for tiny diffs OR `git apply --check && git apply`
-  on a sibling `.patch` for larger ones), then `git commit -m` with a
-  pre-written message referencing the two upstream commit hashes.
-  Skip only when the change is purely local dogfood scaffolding that
-  intentionally does not ship — call that out explicitly in the
-  session log.
-
 - **Scripts you generate for the user to run on the *host* must use paths
   RELATIVE to the cwd, never `/workspace/...`.** *Why* : `/workspace` is a
   bind-mount point that only exists *inside* the container. On the host the
@@ -94,8 +51,9 @@
   sparse-checkout target is ~1 MB vs ~30 MB for the full-release
   clone used by the version-bump flow, and the `.tmp/devcontainer-updates/`
   prefix is short enough to type / paste without abbreviation. The
-  bootstrap + per-update flow is documented in the "Targeted updates"
-  section of [UPGRADE-v2.md](../UPGRADE-v2.md#targeted-updates-updatesname).
+  bootstrap + per-update flow was documented in the "Targeted updates"
+  section of `UPGRADE-v2.md` (retired with the v2 tree on 2026-10-07, see
+  git history).
   *How to apply* : when shipping a new targeted fix, create
   `updates/<ts>-<title>/` with `update.patch` (the diff) and
   `update.md` (the recipe). Every path inside the recipe's bash
