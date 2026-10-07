@@ -249,24 +249,27 @@ P2_SUB = 'loadConfig(){' + ext_probe(
 ) + 'if(this.config)return this.config;'
 
 
-# --- 3 : the 500 ms fallback timer — how many spawns were wasted.
+# --- 3 : the fallback timer — how many spawns were wasted. Since 2.1.280 the
+# timer body is the method startFallbackProbe(), armed from two sites
+# (loadConfig at 500 ms, releaseConfigResolver at 0 ms): anchoring on the
+# method covers both.
 def _p3_sub(m):
-    resolver_obj, cb_arg = m.group(1), m.group(2)
+    resolver = m.group(1)
     return (
-        f'{resolver_obj}.fallbackTimer=setTimeout(({cb_arg})=>{{'
+        f'startFallbackProbe({resolver}){{'
         + ext_probe(
             'this.logger.log('
             f'`{PREFIX} ${{new Date().toISOString()}} fallbackTimer '
-            f'superseded=${{this.configResolver!=={cb_arg}}} '
+            f'superseded=${{this.configResolver!=={resolver}}} '
             'sinceLoadConfig=${Date.now()-(this.__mtT0||Date.now())}ms`)'
         )
-        + f'if(this.configResolver!=={cb_arg})return;'
+        + f'if(this.configResolver!=={resolver})return;'
     )
 
 
 P3_PAT = re.compile(
-    r'([\w$]+)\.fallbackTimer=setTimeout\(\(([\w$]+)\)=>\{'
-    r'if\(this\.configResolver!==\2\)return;'
+    r'startFallbackProbe\(([\w$]+)\)\{'
+    r'if\(this\.configResolver!==\1\)return;'
 )
 
 # --- 4a : probe start stamp (ungated).
@@ -280,26 +283,25 @@ P4A_SUB = (
 )
 
 
-# --- 4b : probe completion — real cost of a spawn.
+# --- 4b : probe completion — real cost of a spawn. Since 2.1.280 the result
+# is no longer what follows `return` (a comma chain does), so it is captured
+# where it is assigned, from initializationResult(), within the same method.
 def _p4b_sub(m):
-    done_obj, ret_obj, epoch_var, result_var = m.groups()
-    return (
-        f'if({done_obj}.done(),{ret_obj}.return(),this.configEpoch!=={epoch_var})'
-        'throw Error("config invalidated mid-probe");'
-        + ext_probe(
-            'this.logger.log('
-            f'`{PREFIX} ${{new Date().toISOString()}} probeDone '
-            'ms=${Date.now()-(this.__mtProbeT0||Date.now())} '
-            f'resultKeys=${{Object.keys({result_var}||{{}}).slice(0,10).join(",")}} '
-            'settingsModel=${this.cachedClaudeSettings?.effective?.model??"?"}`)'
-        )
-        + f'return {result_var}}}'
+    result_var = m.group(1)
+    return m.group(0) + ext_probe(
+        'this.logger.log('
+        f'`{PREFIX} ${{new Date().toISOString()}} probeDone '
+        'ms=${Date.now()-(this.__mtProbeT0||Date.now())} '
+        f'resultKeys=${{Object.keys({result_var}||{{}}).slice(0,10).join(",")}} '
+        'settingsModel=${this.cachedClaudeSettings?.effective?.model??"?"}`)'
     )
 
 
 P4B_PAT = re.compile(
-    r'if\(([\w$]+)\.done\(\),([\w$]+)\.return\(\),this\.configEpoch!==([\w$]+)\)'
-    r'throw Error\("config invalidated mid-probe"\);return ([\w$]+)\}'
+    r'([\w$]+)=await [\w$]+\.initializationResult\(\)\}'
+    r'.{0,1500}?'
+    r'if\(this\.configEpoch!==[\w$]+\)throw [\w$]+\(\),'
+    r'Error\("config invalidated mid-probe"\);'
 )
 
 
@@ -337,10 +339,13 @@ P5_PAT = re.compile(
 # `state` still carries modelSetting. Because only the former was probed, the
 # first 10 s of every session were invisible and a regression there was
 # mistaken for correct behaviour. Probe both, or trust neither.
+#
+# Since 2.1.280 the message is the second declarator of a `let X=…,Y={…}`,
+# so the anchor starts at the identifier, not at `let`.
 def _p5b_sub(m):
     msg_var, chan, uuid_fn, state_var, config_var = m.groups()
     return (
-        f'let {msg_var}={{type:"request",channelId:{chan},requestId:{uuid_fn}(),'
+        f'{msg_var}={{type:"request",channelId:{chan},requestId:{uuid_fn}(),'
         f'request:{{type:"update_state",state:{state_var},config:{config_var}}}}};'
         + ext_probe(
             'this.logger.log('
@@ -355,7 +360,7 @@ def _p5b_sub(m):
 
 
 P5B_PAT = re.compile(
-    r'let ([\w$]+)=\{type:"request",channelId:([\w$]+),requestId:([\w$]+)\(\),'
+    r'(?<![\w$])([\w$]+)=\{type:"request",channelId:([\w$]+),requestId:([\w$]+)\(\),'
     r'request:\{type:"update_state",state:([\w$]+),config:([\w$]+)\}\};this\.send\(\1\)'
 )
 
