@@ -4,7 +4,8 @@
 # /workspace/ (root) only see the top-level .wtfcmd.yaml.
 
 # ---- firewall — hot-reload the local layer without rebuild --------------
-# Basic mode only. Wall-guard refuses strict (mitmproxy L7 reload TBD).
+# Basic or strict mode. In strict, mitmproxy re-reads policy.compiled.yaml
+# on its own (mtime check) — only dnsmasq is restarted.
 # Root-only by design : sudo passwordless is intentionally NOT baked (that
 # would let any node-uid process mutate the allowlist). Elevation happens
 # via `docker exec -u 0` which requires host-side docker socket access.
@@ -17,9 +18,9 @@
 - group: firewall
   name: reload
   desc: |
-    Hot-reload the local firewall layer (basic mode only, sub-500ms).
+    Hot-reload the local firewall layer (basic or strict, sub-500ms).
     Auto-detects the compose "app" container, elevates via
-    docker exec -u 0. Run from a shell with docker access (host).
+    docker exec -it -u 0. Run from a shell with docker access (host).
   cwd: ./
   cmd: |
     if ! command -v docker >/dev/null 2>&1; then
@@ -33,5 +34,5 @@
       echo "  Expected via: docker compose -f .devcontainer/docker-compose.yml ps app" >&2
       exit 1
     fi
-    echo "-> docker exec -u 0 into $container"
-    docker exec -u 0 "$container" /usr/local/bin/reload-firewall
+    echo "-> docker exec -it -u 0 into $container"
+    docker exec -it -u 0 "$container" /usr/local/bin/reload-firewall

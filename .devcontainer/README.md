@@ -440,7 +440,7 @@ All on `PATH` (`/usr/local/bin/`), shipped by the image — this tree carries no
 | `devc-hook <phase> [--dry-run]` | Lifecycle dispatcher (`on-create`, `post-create`, `post-start`) | `devc-hook post-start` replays a phase |
 | `init-firewall.sh` | Apply the baked firewall mode — dnsmasq + iptables (+ mitmproxy in strict). Re-run at every start by `20-firewall-reinit` | `sudo /usr/local/bin/init-firewall.sh` (NOPASSWD sudoers entry) |
 | `test-firewall.sh` | Connectivity smoke test (DNS allowlist, `ports.txt` TCP probes, `ollama.internal`) | `sudo /usr/local/bin/test-firewall.sh` |
-| `reload-firewall` | Merge `domains.local.txt` + `policy.local.d/` into the LIVE ruleset — basic mode only, root only, ephemeral until the next start | `reload-firewall --dry-run` (unprivileged preview); apply via `wtf firewall reload` from the host |
+| `reload-firewall` | Merge `domains.local.txt` + `policy.local.d/` into the LIVE ruleset — basic or strict, root only, ephemeral until the next start | `reload-firewall --dry-run` (unprivileged preview); apply via `wtf firewall reload` from the host |
 | `firewall-blocks [N\|--follow\|--reset]` | Recent L7 refusals with reasons (strict only — empty in basic) | no sudo needed |
 | `boot-summary` | Re-render the boot panel | — |
 | `sync-skills` / `sync-creds` | Skills install + OAuth sync (called by fragments 75 / 55) | `VERBOSE=1 sync-creds`, `DEBUG=1 sync-creds` |

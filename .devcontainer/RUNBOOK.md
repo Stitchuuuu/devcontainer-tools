@@ -46,12 +46,12 @@ You need to fetch a docs site, a static file, a registry the team doesn't alread
    ```
 3. **Apply** — the allowlist is baked into the image, so a restart changes nothing. Two options:
    - **Rebuild** `[host]`: VS Code → `Dev Containers: Rebuild Container`. Required for `domains.d/` and `domains.txt`; for `domains.local.txt` only if `FIREWALL_ALLOW_LOCAL_AT_REBUILD=1` is set in `.env`.
-   - **Hot-reload the local layer** (basic mode only, `domains.local.txt` + `policy.local.d/`, lasts until the next container start):
+   - **Hot-reload the local layer** (basic or strict, `domains.local.txt` + `policy.local.d/`, lasts until the next container start):
      ```bash
      reload-firewall --dry-run               # [container] unprivileged preview of the diff
-     wtf firewall reload                     # [host] from .devcontainer/ — docker exec -u 0 … /usr/local/bin/reload-firewall
+     wtf firewall reload                     # [host] from .devcontainer/ — docker exec -it -u 0 … /usr/local/bin/reload-firewall
      ```
-     `reload-firewall` refuses in strict (the L7 policy would need reloading too) and is root-only by design — no NOPASSWD sudo for it, ever.
+     In strict, a new host also needs its endpoints in `policy.local.d/<host>.yaml` ; mitmproxy re-reads the recompiled policy on its own. `reload-firewall` is root-only by design — no NOPASSWD sudo for it, ever.
 4. **Verify** `[container]`:
    ```bash
    getent hosts docs.example.com              # → an address
