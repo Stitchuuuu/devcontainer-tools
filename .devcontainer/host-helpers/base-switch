@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Run this devcontainer on the base image built from THIS tree
+# (packages/devcontainer-sandbox) instead of the published GHCR tag — and back.
+#
+#   status      which base .devcontainer/.env selects, and whether the dev
+#               image is current with the tree
+#   build       docker build devcontainer-sandbox:dev from the tree (cached)
+#   dev         build, then select it in .devcontainer/.env
+#   published   drop that selection: back to the tag the Dockerfile pins
+#
+# After `dev`, `published`, or a `build` while on dev: VS Code → Rebuild
+# Container. NOT "Rebuild Without Cache": that one pulls the base, and
+# devcontainer-sandbox:dev exists only on this machine.
+#
+# Only .env is touched, and only the two lines this script writes (a marker
+# comment + BASE_IMAGE). A BASE_IMAGE line of your own is never edited: `dev`
+# refuses and names it.
+#
+# HOST ONLY — inside the devcontainer, docker is the nested dind, which VS Code
+# never builds from. --simulate lifts that guard; BASE_SWITCH_ENV points at
+# another .env (both for tests).
+#
+# Usage: [host] wtf base {status|build|dev|published}
+set -euo pipefail
+
+SIMULATE=0
+CMD=status
+for a in "$@"; do
+  case "$a" in
+    --simulate) SIMULATE=1 ;;
+    status|build|dev|published) CMD=$a ;;
+    *) echo "usage: base-switch {status|build|dev|published}" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$SIMULATE" != 1 ] && { [ -f /.dockerenv ] || [ -n "${REMOTE_CONTAINERS:-}" ]; }; then
+  echo "✗ host only: inside the devcontainer, docker is the nested dind, which VS Code never builds from." >&2
+  echo "  On the Mac, from the project: wtf base $CMD" >&2
+  exit 2
+fi
+
+DEVCONTAINER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(dirname "$DEVCONTAINER_DIR")"
+REPO="$ROOT/packages/devcontainer-sandbox"
+ENV_FILE="${BASE_SWITCH_ENV:-$DEVCONTAINER_DIR/.env}"
+IMG=devcontainer-sandbox:dev
+MARK='# set by `wtf base dev` — undo with `wtf base published`'
+PINNED="$(sed -n 's/^ARG BASE_IMAGE=//p' "$DEVCONTAINER_DIR/Dockerfile")"
+
+die()  { echo "✗ $*" >&2; exit 1; }
+[ -f "$REPO/Dockerfile" ] || die "no base tree at $REPO"
+[ -f "$ENV_FILE" ] || die "no $ENV_FILE — run the devcontainer once (devc initialize writes it)"
+
+# The tree as the build sees it: HEAD, plus a hash of uncommitted changes and
+# untracked files when there are any — a WIP edit makes the image stale too.
+tree_id() (
+  cd "$REPO"
+  head="$(git rev-parse --short HEAD)"
+  if [ -z "$(git status --porcelain)" ]; then echo "$head"; exit 0; fi
+  dirty="$( { git diff HEAD; git ls-files -o --exclude-standard -z | xargs -0 cat 2>/dev/null; } | shasum -a 256 | cut -c1-8)"
+  echo "$head+wip.$dirty"
+)
+tree_version() { sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$REPO/package.json" | head -1; }
+
+# The BASE_IMAGE compose will use: the last active line of .env, else the pin.
+active_line() { grep -nE '^[[:space:]]*BASE_IMAGE=' "$ENV_FILE" | tail -1 || true; }
+selected()    { local l; l="$(active_line)"; if [ -n "$l" ]; then echo "${l#*BASE_IMAGE=}"; else echo "$PINNED"; fi; }
+ours()        { grep -qxF "$MARK" "$ENV_FILE" && grep -qx "BASE_IMAGE=$IMG" "$ENV_FILE"; }
+
+drop_ours() {
+  local tmp="$ENV_FILE.base-switch.$$"
+  awk -v mark="$MARK" -v line="BASE_IMAGE=$IMG" '
+    $0 == mark { skip = 1; next }
+    skip && $0 == line { skip = 0; next }
+    { skip = 0; print }' "$ENV_FILE" > "$tmp"
+  cat "$tmp" > "$ENV_FILE"   # rewrite in place: keeps the file's mode and owner
+  rm -f "$tmp"
+}
+
+image_tree() { docker image inspect -f '{{index .Config.Labels "dev.tree"}}' "$IMG" 2>/dev/null || true; }
+
+cmd_build() {
+  local tree ver
+  tree="$(tree_id)"; ver="$(tree_version)"
+  echo "→ building $IMG from packages/devcontainer-sandbox ($ver, tree $tree) — cached; the first build takes several minutes"
+  docker build -t "$IMG" --build-arg BASE_VERSION="$ver" --label "dev.tree=$tree" "$REPO" \
+    || die "build failed (output above) — the selected base is unchanged"
+  echo "✓ built $IMG (tree $tree)"
+}
+
+rebuild_hint() {
+  echo "→ VS Code: Rebuild Container to run on it. Not \"Rebuild Without Cache\" — that pulls the base, and $IMG exists only on this machine."
+}
+
+cmd_status() {
+  local sel built now
+  sel="$(selected)"
+  if ours; then echo "base     : $IMG — dev, built from this tree (set by wtf base dev)"
+  elif [ "$sel" = "$PINNED" ] && [ -z "$(active_line)" ]; then echo "base     : $sel — published, the Dockerfile pin"
+  else echo "base     : $sel — set by your own line in .devcontainer/.env:$(active_line | cut -d: -f1)"
+  fi
+  built="$(image_tree)"; now="$(tree_id)"
+  if [ -z "$built" ]; then echo "dev image: not built — wtf base build (or wtf base dev to build and select it)"
+  elif [ "$built" = "$now" ]; then echo "dev image: up to date (tree $now)"
+  else echo "dev image: STALE — built from $built, tree is now $now → wtf base build, then Rebuild Container"
+  fi
+}
+
+case "$CMD" in
+  status)
+    cmd_status ;;
+  build)
+    cmd_build
+    if ours; then rebuild_hint; else echo "→ not selected yet: wtf base dev"; fi ;;
+  dev)
+    l="$(active_line)"
+    if [ -n "$l" ] && ! ours; then
+      die "line ${l%%:*} of .devcontainer/.env already sets ${l#*:} — comment it out, then rerun: wtf base dev"
+    fi
+    cmd_build
+    if ! ours; then
+      printf '%s\nBASE_IMAGE=%s\n' "$MARK" "$IMG" >> "$ENV_FILE"
+      echo "✓ .devcontainer/.env now selects $IMG"
+    fi
+    rebuild_hint ;;
+  published)
+    if ours; then
+      drop_ours
+      echo "✓ .devcontainer/.env back on the published base: $(selected)"
+      echo "→ VS Code: Rebuild Container."
+    elif [ -n "$(active_line)" ]; then
+      echo "· not set by wtf base dev — your own line selects $(selected); left as is"
+    else
+      echo "· already on the published base: $PINNED"
+    fi ;;
+esac

@@ -142,6 +142,42 @@
       test: "$bool"
   cmd: bash ./packages/devcontainer-sandbox/test/bare-project.sh{{ if .pat }} --pat{{ end }}{{ if .shared_creds }} --shared-creds{{ end }}{{ if .published }} --published{{ end }}{{ if .build }} --build{{ end }}
 
+# ---- base — run THIS devcontainer on the base image of this tree -----------
+# HOST ONLY. `dev` builds packages/devcontainer-sandbox as
+# devcontainer-sandbox:dev and selects it in .devcontainer/.env; `published`
+# goes back to the GHCR tag the Dockerfile pins. Either way, then: VS Code →
+# Rebuild Container (not "Without Cache" — it would try to pull :dev).
+
+- group: base
+  name: status
+  desc: |
+    Which base .devcontainer/.env selects (dev or published), and whether
+    devcontainer-sandbox:dev is current with the tree (uncommitted changes
+    count). Reads only.
+  cmd: bash ./.devcontainer/host-helpers/base-switch status
+
+- group: base
+  name: build
+  desc: |
+    Build devcontainer-sandbox:dev from packages/devcontainer-sandbox
+    (cached). Selects nothing — on dev already, follow with Rebuild Container.
+  cmd: bash ./.devcontainer/host-helpers/base-switch build
+
+- group: base
+  name: dev
+  desc: |
+    Build devcontainer-sandbox:dev, then select it in .devcontainer/.env.
+    Refuses (and names the line) when a BASE_IMAGE line of your own is
+    active. Then: Rebuild Container.
+  cmd: bash ./.devcontainer/host-helpers/base-switch dev
+
+- group: base
+  name: published
+  desc: |
+    Remove the selection `wtf base dev` wrote: back to the published GHCR
+    base the Dockerfile pins. Then: Rebuild Container.
+  cmd: bash ./.devcontainer/host-helpers/base-switch published
+
 # ---- ext-patch — the VS Code extension patchers of THIS container ---------
 # Convenience only. The command itself is `ext-patches-update`, baked into the
 # image and on PATH in any container built from it; this group just spares the
