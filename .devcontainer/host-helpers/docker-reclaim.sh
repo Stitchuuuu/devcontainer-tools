@@ -143,11 +143,12 @@ for v in $(docker volume ls --format '{{.Name}}' | grep '^buildx_buildkit_'); do
     b="${v#buildx_buildkit_}"; b="${b%0_state}"
     docker buildx inspect "$b" >/dev/null 2>&1 && continue
     SZ=$(docker system df -v 2>/dev/null | awk -v x="$v" '$1==x{print $NF}')
-    act "orphaned builder state $v (${SZ:-?}) — its builder is gone"
+    N=$((N + 1)); act "orphaned builder state $v (${SZ:-?}) — its builder is gone"
     if [ "$APPLY" -eq 1 ] && want builders; then
         docker volume rm "$v" >/dev/null 2>&1 && echo "    ✔ gone" || echo "    ✘ in use"
     fi
 done
+N_BUILDERS=$N
 
 # --------------------------------------------------------------------------
 hr "dangling images with no container"
@@ -162,6 +163,7 @@ for id in $(docker images -f "dangling=true" -q); do
     fi
 done
 [ "$N" -eq 0 ] && echo "  (none)"
+N_DANGLING=$N
 
 # --------------------------------------------------------------------------
 hr "anonymous volumes with zero links"
@@ -178,6 +180,7 @@ while IFS=$'\t' read -r name links size; do
 done < "$TMP/vols"
 [ "$N" -eq 0 ] && echo "  (none)"
 echo "  named volumes are never candidates — see the header"
+N_ANONVOL=$N
 
 # --------------------------------------------------------------------------
 # BuildKit does not record which image a cache entry belongs to. But every
@@ -239,7 +242,10 @@ docker builder du --verbose 2>/dev/null | awk '
   /^Size:/         { sz=bytes($2) }
   /^Description:/  { $1=""; d=substr($0,2); gsub(/\t/," ",d); gsub(/[[:space:]]+$/,"",d); desc=d }
   /^$/ {
-    if (id != "") printf "%s\t%s\t%s\t%d\t%s\t%s\n", desc, created, id, sz, shr, rec
+    # %.0f, not %d: mawk'\''s %d clamps any value over 2147483647 (2.147 GB) to
+    # that ceiling — common for a single cache record — silently shrinking
+    # every size past it. %.0f formats the same double without the C-int cap.
+    if (id != "") printf "%s\t%s\t%s\t%.0f\t%s\t%s\n", desc, created, id, sz, shr, rec
     id=""; desc=""; created=""; sz=0; shr=""; rec=""
   }
 ' > "$TMP/cache6" 2>/dev/null || true
@@ -258,7 +264,13 @@ awk -F'\t' '{ if ($1 in m) m[$1]=m[$1]","$2; else m[$1]=$2 }
 hr "build cache"
 if [ ! -s "$TMP/cache" ]; then
     echo "  (no cache records)"
+    CACHE_DEAD_N=0; CACHE_DEAD_B=0
 else
+    # Same filter as the "backing nothing that exists" row above, kept in
+    # shell variables so the final "recommended" section can quote the exact
+    # figure instead of making the reader re-read the table.
+    CACHE_DEAD_N=$(awk -F'\t' '$6=="true" && $5!="true"{n++} END{print n+0}' "$TMP/cache")
+    CACHE_DEAD_B=$(awk -F'\t' '$6=="true" && $5!="true"{t+=$4} END{printf "%.0f", t+0}' "$TMP/cache")
     # Shared = a layer an existing image still points at. Unshared+reclaimable
     # is exactly the "RECLAIMABLE" number docker system df prints for the cache.
     awk -F'\t' '
@@ -385,4 +397,22 @@ fi
 
 hr "after"
 docker system df
-[ "$APPLY" -eq 1 ] || printf '\nNothing was removed. Re-run with:  %s --apply <targets>\n' "$(basename "$0")"
+
+# --------------------------------------------------------------------------
+# What to actually run — spelled out, because the tables above require doing
+# arithmetic across three sections to answer that. Only targets that found
+# something are listed; an empty target is omitted rather than shown at 0.
+if [ "$APPLY" -ne 1 ]; then
+    hr "recommended"
+    PRINTED=0
+    [ "${N_BUILDERS:-0}" -gt 0 ] && { printf '  builders       %-3d found           →  %s --apply builders\n' "$N_BUILDERS" "$(basename "$0")"; PRINTED=1; }
+    [ "${N_DANGLING:-0}" -gt 0 ] && { printf '  dangling       %-3d found           →  %s --apply dangling\n' "$N_DANGLING" "$(basename "$0")"; PRINTED=1; }
+    [ "${N_ANONVOL:-0}" -gt 0 ] && { printf '  anon-volumes   %-3d found           →  %s --apply anon-volumes\n' "$N_ANONVOL" "$(basename "$0")"; PRINTED=1; }
+    [ "${CACHE_DEAD_N:-0}" -gt 0 ] && { printf '  cache-dead     %-8s (%d records)  →  %s --apply cache-dead\n' "$(gb "${CACHE_DEAD_B:-0}")" "$CACHE_DEAD_N" "$(basename "$0")"; PRINTED=1; }
+    if [ "$PRINTED" -eq 1 ]; then
+        echo
+        echo "  nothing was removed — combine any of the above in one --apply call"
+    else
+        echo "  nothing worth removing right now"
+    fi
+fi
