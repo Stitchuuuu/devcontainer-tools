@@ -208,6 +208,10 @@
     - name: ref
       desc: Install this tag or commit SHA instead of resolving the latest.
       default: ""
+    - name: auto
+      desc: Drop a pin set by --ref and go back to this line's newest cached tag.
+      default: ""
+      test: "$bool"
     - name: dir
       desc: Apply from a local checkout of patchers — no network, no token.
       default: ""
@@ -221,8 +225,9 @@
       test: "$bool"
   cmd: >-
     ext-patches-update{{ if .check }} --check{{ end }}{{ if .ref }} --ref
-    {{ .ref }}{{ end }}{{ if .dir }} --dir {{ .dir }}{{ end }}{{ if .reapply }}
-    --reapply{{ end }}{{ if .no_write_env }} --no-write-env{{ end }}
+    {{ .ref }}{{ end }}{{ if .auto }} --auto{{ end }}{{ if .dir }} --dir
+    {{ .dir }}{{ end }}{{ if .reapply }} --reapply{{ end }}{{ if .no_write_env }}
+    --no-write-env{{ end }}
 
 # ---- shareglaude — receive a shared Claude Code token (user B side) --------
 # Runs INSIDE the devcontainer: it writes ~/.claude/.credentials.json and needs

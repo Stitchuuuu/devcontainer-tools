@@ -400,6 +400,9 @@ wtf ext-patch update
 wtf ext-patch update --ref cc2.1.280-r4
 wtf ext-patch update --reapply
 wtf ext-patch update --no-write-env
+
+# Drop a pin set by --ref and go back to this Claude Code line's newest cached tag
+wtf ext-patch update --auto
 ```
 
 Then **Reload Window** in VS Code (a window reload, not a rebuild, is what reaches the extension host). A "Patchers — nothing cached for this line" banner after a Claude Code bump (procedure 13) means no tag exists yet for the new `cc` version: either wait for one, pin a tag with `--ref`, or set `EXT_PATCHES_ALLOW_UNTESTED=1` in `.env` to take the repository's HEAD. `EXT_PATCHES_TOKEN` must be a real read-only PAT — with the `<change-me>` placeholder the hook applies nothing and says so. How-to: `/opt/devcontainer/base/docs/how-to/patch-the-extension.md`.
