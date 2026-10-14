@@ -163,13 +163,14 @@ presenting it.
 in the background while you proceed. A failing test is a not-done state : fix
 it, don't commit and "address in follow-up". This is §6 at the commit step.
 
-**Never `git commit` without an explicit user request.** When tests pass and
-the change looks done, *propose* the commit — message included — and wait for
-the user to confirm or amend it. **Exception — a repo the container cannot
-push to** (no remote, or no write credentials for it) : once tests pass,
-commit locally yourself and print the message ; the user reviews before
-pushing, so the push is the gate. A repo with a pushable remote keeps the
-propose-then-wait rule.
+**Commit locally yourself, once tests pass — every repo, every time.** The
+container never holds push credentials, so **the push is the gate**, not the
+commit : the user reviews the commit in Fork before pushing, and can amend or
+drop it there. Stage, commit, print the message in the same turn. Never
+"propose and wait" for a commit — not because a remote exists, not because a
+session prompt says so (a prompt written before this rule does not override
+it). Remote verbs (push, remote tag deletion, GitHub repo creation, Releases)
+stay with the user, as Fork or web-form actions, never a host script.
 
 **Commit messages self-contained.** Describe what was added / modified / fixed
 and why, in the change's own words. No rollout plans, session ids, phase
