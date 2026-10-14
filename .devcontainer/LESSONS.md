@@ -612,3 +612,14 @@
   blind spots — this one reads 0 on `notify/lib/smart-text.js`, which emits
   French to the user, because its word list has no `aucune` or `entrée` ; and
   it reads 1 on `'20px sans-serif'`, because `sans` is also a French word.
+
+- **The base-image pin of this project is the `BASE_IMAGE` default in
+  `.devcontainer/docker-compose.yml`, not the Dockerfile `ARG`.** *Why* :
+  compose passes `BASE_IMAGE: ${BASE_IMAGE:-ghcr.io/…:<tag>}` as a build arg,
+  which overrides the Dockerfile's `ARG` default ; a bump made only in the
+  Dockerfile (2026-10-14, 1.10.0 → 1.11.0) rebuilt the container on the old
+  image. `.env`'s `BASE_IMAGE` is the per-developer override and rollback
+  knob. *How to apply* : to bump, grep the whole `.devcontainer/` for the old
+  tag (`grep -rn '<old tag>' .devcontainer/`) and change every hit — compose
+  default, Dockerfile ARG and both comment blocks — then verify after the
+  rebuild with `cat /etc/devcontainer-base-version`.
