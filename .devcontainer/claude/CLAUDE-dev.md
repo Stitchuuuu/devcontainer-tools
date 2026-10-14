@@ -165,7 +165,11 @@ it, don't commit and "address in follow-up". This is §6 at the commit step.
 
 **Never `git commit` without an explicit user request.** When tests pass and
 the change looks done, *propose* the commit — message included — and wait for
-the user to confirm or amend it.
+the user to confirm or amend it. **Exception — a repo the container cannot
+push to** (no remote, or no write credentials for it) : once tests pass,
+commit locally yourself and print the message ; the user reviews before
+pushing, so the push is the gate. A repo with a pushable remote keeps the
+propose-then-wait rule.
 
 **Commit messages self-contained.** Describe what was added / modified / fixed
 and why, in the change's own words. No rollout plans, session ids, phase

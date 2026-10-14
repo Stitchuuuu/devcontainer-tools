@@ -43,11 +43,14 @@ packages/*/*.tgz
 # 1c6ade2 stays on feat/v3, and it lives on at meitogi/devcontainer-cli.
 # notifier was tracked here until 2026-10-07; its history up to 652e752
 # stays on feat/v3, and it lives on at meitogi/notifier.
+# vscode-notify (the Notify VS Code extension) was born as its own repo on
+# 2026-10-14 ; it lives on at meitogi/vscode-notify.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
 packages/vscode-ext-patch-starter/
 packages/devcontainer-cli/
 packages/notifier/
+packages/vscode-notify/
 
 # Scratch / experimentation
 .tmp/
