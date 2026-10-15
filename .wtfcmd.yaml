@@ -229,6 +229,23 @@
     {{ .dir }}{{ end }}{{ if .reapply }} --reapply{{ end }}{{ if .no_write_env }}
     --no-write-env{{ end }}
 
+- group: ext-patch
+  name: local
+  cwd: ./
+  desc: |
+    Apply the patchers of packages/claude-ext-patchs as they are in the tree,
+    committed or not — `wtf ext-patch update --dir` with the path filled in.
+    Starts again from the pristine extension and replaces the synced set, so
+    a later restore-ext-patches keeps them; a patcher present only in the
+    synced set is dropped. The pin in .devcontainer/.env is not touched.
+    Then: Developer: Reload Window.
+  flags:
+    - name: check
+      desc: Count the patchers and sentinels of the checkout, then stop.
+      default: ""
+      test: "$bool"
+  cmd: ext-patches-update --dir "$(pwd)/packages/claude-ext-patchs/patchers"{{ if .check }} --check{{ end }}
+
 # ---- shareglaude — receive a shared Claude Code token (user B side) --------
 # Runs INSIDE the devcontainer: it writes ~/.claude/.credentials.json and needs
 # platform.claude.com + api.anthropic.com, both allowlisted here. Deploying the
