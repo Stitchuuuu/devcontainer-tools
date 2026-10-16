@@ -51,6 +51,7 @@ packages/vscode-ext-patch-starter/
 packages/devcontainer-cli/
 packages/notifier/
 packages/vscode-notify/
+packages/webrtc-node-peer/
 
 # Scratch / experimentation
 .tmp/
