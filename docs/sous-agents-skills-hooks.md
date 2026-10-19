@@ -70,7 +70,8 @@ La passe décrite ci-dessous traite les `hook?`.
 La même démarche sert dans chaque projet. D'après la règle 1b, c'est un skill.
 Il peut vivre dans l'image de base, à côté de `prepare-plan`, et livrer son
 propre `hooks.json`, que `sync-skills` fusionne au démarrage du conteneur. Un
-prompt à coller marche aussi pour un premier essai.
+prompt à coller marche aussi pour un premier essai : c'est
+[claude-hooks-audit/prompt.md](claude-hooks-audit/prompt.md).
 
 ### Étape 1 — Lister les corrections
 
