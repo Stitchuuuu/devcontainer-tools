@@ -1,18 +1,4 @@
-# Audit du contexte Claude Code
-
-Ce kit mesure, pour un projet, combien de contexte Claude Code relit à chaque appel. Il produit le même rapport, le même tableau et le même diagramme que [l'exemple DevContainer Tools](exemple/rapport.md).
-
-## Utilisation
-
-1. Copie ce dossier `claude-context-audit/` à la racine du projet à auditer.
-2. Ouvre Claude Code dans ce projet et colle le prompt ci-dessous.
-
-Le rapport sort dans `claude-context-audit/<nom-du-projet>/`.
-
-## Le prompt
-
-````text
-Fais l'audit du contexte Claude Code de ce projet avec le kit dans claude-context-audit/. Lis d'abord claude-context-audit/LISEZMOI.md et l'exemple claude-context-audit/exemple/rapport.md : ton rapport doit avoir exactement la même forme.
+Fais l'audit du contexte Claude Code de ce projet avec le kit dans claude-context-audit/. Lis d'abord l'exemple claude-context-audit/exemple/rapport.md : ton rapport doit avoir exactement la même forme. Les options du script sont décrites en tête de claude-context-audit/audit.mjs.
 
 1. Choisis le nom d'usage du projet, tel qu'on l'écrit dans une phrase (par exemple « DevContainer Tools » plutôt que « devcontainer-tools »). Puis lance, depuis la racine du projet :
    node claude-context-audit/audit.mjs --name="<nom du projet>"
@@ -35,24 +21,3 @@ Fais l'audit du contexte Claude Code de ce projet avec le kit dans claude-contex
    Aucun cumul de tokens : on ne parle que du contexte par appel.
 
 Ne modifie rien dans le projet en dehors de claude-context-audit/<nom-du-projet>/.
-````
-
-## Le script seul
-
-`audit.mjs` n'a aucune dépendance (Node 18 ou plus) et ne fait que lire les transcripts. On peut le lancer sans Claude :
-
-```sh
-node claude-context-audit/audit.mjs --name="Mon projet"
-```
-
-Options :
-
-- `--name` : le nom affiché. Par défaut, le premier titre du README.md, sinon le `name` du package.json, sinon le nom du dossier.
-- `--out` : le dossier de sortie. Par défaut, `claude-context-audit/<nom-du-projet>/`.
-- un chemin en dernier argument : le dossier des transcripts. Par défaut, `~/.claude/projects/<slug du dossier courant>/`.
-
-Il affiche `donnees.md` et l'écrit avec les deux `.excalidraw`. Les images et `rapport.md` sont l'affaire de Claude, via le prompt.
-
-## Ce qui est mesuré
-
-Le contexte d'un appel, c'est ce que le modèle relit à cet appel : entrée + lecture de cache + écriture de cache. Ce n'est pas un cumul. Chaque réponse compte une fois et les sous-agents sont inclus. Le détail est dans la section « Méthode » de [l'exemple](exemple/rapport.md).
