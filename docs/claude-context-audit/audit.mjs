@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-// Audit du contexte Claude Code d'un projet, à partir des transcripts. Aucune dépendance (Node 18+).
-//
-// Usage, depuis la racine du projet audité :
-//   node <ce-dossier>/audit.mjs --name="Nom du projet" [--out=<dossier>] [dossier-transcripts]
-//
-//   --name    nom affiché ; défaut : 1er titre du README.md, sinon name du package.json, sinon nom du dossier
-//   --out     dossier de sortie ; défaut : <ce-dossier>/<nom-du-projet>/
-//   dossier   transcripts ; défaut : ~/.claude/projects/<slug du dossier courant>/
-//
-// Écrit dans --out : donnees.md (tableau, seuils, classement), context-table.excalidraw, context-chart.excalidraw.
-//
-// Contexte d'un appel = input + cache_read + cache_create : ce que le modèle relit à cet appel, pas un cumul.
-// Chaque réponse compte une fois (dédup par message.id : Claude Code recopie le même usage sur chaque
-// ligne d'une réponse en plusieurs blocs). Les transcripts des sous-agents sont inclus.
+/**
+ * @file Claude Code context audit for one project, read from its transcripts. No dependencies (Node 18+).
+ *
+ * Usage, from the root of the audited project:
+ *   node <this-folder>/audit.mjs --name="Project name" [--out=<folder>] [transcripts-folder]
+ *
+ *   --name              display name; default: first heading of README.md, else package.json name, else folder name
+ *   --out               output folder; default: <this-folder>/<project-name>/
+ *   transcripts-folder  default: ~/.claude/projects/<slug of the current folder>/
+ *
+ * Writes to --out: donnees.md (table, thresholds, ranking), context-table.excalidraw, context-chart.excalidraw.
+ * The generated files are in French.
+ *
+ * Context of a call = input + cache_read + cache_create: what the model re-reads on that call, not a running total.
+ * Each reply counts once (dedup by message.id: Claude Code repeats the same usage block on every line of a
+ * multi-block reply). Subagent transcripts are included.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,6 +23,11 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
+/**
+ * Value of a `--name=value` command-line option.
+ * @param {string} n option name, without the dashes
+ * @returns {string} the value, or '' when absent
+ */
 const opt = n => { const a = argv.find(x => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : ''; };
 const root = path.join(os.homedir(), '.claude/projects');
 const dir = argv.find(a => !a.startsWith('--')) || path.join(root, process.cwd().replace(/[^A-Za-z0-9]/g, '-'));
@@ -33,10 +41,33 @@ const name = opt('name') || (() => {
   try { const n = JSON.parse(fs.readFileSync('package.json', 'utf8')).name; if (n) return n; } catch {}
   return path.basename(process.cwd());
 })();
+/** Output folder; defaults to a slug of the project name next to this script. */
 const out = opt('out') || path.join(HERE, name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
 
-// ---------- lecture des transcripts ----------
-const CTX = {}; // famille -> { main: [], sub: [] } tailles de contexte par appel
+// ---------- transcripts ----------
+/**
+ * Context size of every call, by model family (opus, fable, sonnet, haiku).
+ * @type {Record<string, {main: number[], sub: number[]}>}
+ */
+const CTX = {};
+/**
+ * @typedef {object} Session
+ * @property {string} id session uuid
+ * @property {number[]} ctx context size of each main-thread call
+ * @property {Record<string, number>} peak largest main-thread context, by model family
+ * @property {Record<string, number>} calls number of calls, main thread and subagents, by model family
+ * @property {number} compacts number of /compact boundaries
+ * @property {string} [first] first timestamp
+ * @property {string} [last] last timestamp
+ * @property {string} [title] AI or custom title of the session
+ * @property {string} [prompt] first user prompt, fallback for the title
+ */
+/**
+ * Reads one transcript into a session, counting each reply once.
+ * @param {string} file path of the .jsonl transcript
+ * @param {Session} s session to fill
+ * @param {boolean} side true for a subagent transcript: its calls count for the family stats only
+ */
 const read = (file, s, side) => {
   const seen = {};
   for (const l of fs.readFileSync(file, 'utf8').split('\n')) {
@@ -64,6 +95,7 @@ const read = (file, s, side) => {
     if (!side) { s.ctx.push(ctx); if (!(s.peak[fam] >= ctx)) s.peak[fam] = ctx; }
   }
 };
+/** @type {Session[]} sessions with at least one main-thread call */
 const sessions = [];
 for (const f of fs.readdirSync(dir)) {
   if (!f.endsWith('.jsonl')) continue;
@@ -75,22 +107,48 @@ for (const f of fs.readdirSync(dir)) {
 }
 if (!sessions.length) { console.error(`Aucune session avec usage dans ${dir}`); process.exit(1); }
 
-// ---------- statistiques ----------
+// ---------- statistics ----------
+/**
+ * @typedef {object} Stats
+ * @property {number} n
+ * @property {number} min
+ * @property {number} p50
+ * @property {number} mean
+ * @property {number} p90
+ * @property {number} max
+ */
+/**
+ * Nearest-rank percentile.
+ * @param {number[]} a sorted values
+ * @param {number} p percentile, between 0 and 1
+ * @returns {number}
+ */
 const q = (a, p) => a[Math.min(a.length - 1, Math.max(0, Math.ceil(p * a.length) - 1))];
+/**
+ * @param {number[]} a values, in any order
+ * @returns {Stats}
+ */
 const stats = a => { a = [...a].sort((x, y) => x - y); return { n: a.length, min: a[0], p50: q(a, .5), mean: a.reduce((s, x) => s + x, 0) / a.length, p90: q(a, .9), max: a[a.length - 1] }; };
+/** @param {number} x tokens @returns {number} thousands of tokens, rounded */
 const K = x => Math.round(x / 1e3);
+/** @param {number} x tokens @returns {string} e.g. '238 k' */
 const k = x => K(x) + ' k';
+/** @param {number} x @returns {string} the number with a space every three digits, e.g. '16 738' */
 const nb = x => String(x).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+/** Model families, most calls first. */
 const fams = Object.keys(CTX).sort((a, b) => (CTX[b].main.length + CTX[b].sub.length) - (CTX[a].main.length + CTX[a].sub.length));
 const allMain = sessions.flatMap(s => s.ctx), allSub = fams.flatMap(f => CTX[f].sub);
 const peaks = sessions.map(s => Math.max(...s.ctx));
+/** A family gets its own row from this many sessions (main thread) or calls (subagents). */
 const MIN_SESSIONS = 3, MIN_SUB_CALLS = 100;
 
+/** @type {Array<[string, Stats, boolean]>} table rows: label, stats, indented sub-row */
 const rows = [[`Contexte max, ${nb(peaks.length)} sessions`, stats(peaks), false]];
 for (const f of fams) { const p = sessions.map(s => s.peak[f]).filter(Boolean); if (p.length >= MIN_SESSIONS) rows.push([`dont ${f}, ${nb(p.length)} sessions`, stats(p), true]); }
 rows.push([`Contexte par appel, fil principal (${nb(allMain.length)} appels)`, stats(allMain), false]);
 if (allSub.length) rows.push([`Contexte par appel, sous-agents (${nb(allSub.length)} appels)`, stats(allSub), false]);
 
+/** @param {number} t threshold in tokens @returns {number} main-thread calls above it */
 const over = t => allMain.filter(x => x > t).length;
 const compacted = sessions.filter(s => s.compacts).length;
 const first = sessions.reduce((a, s) => (s.first && s.first < a ? s.first : a), '9'), last = sessions.reduce((a, s) => (s.last && s.last > a ? s.last : a), '0');
@@ -98,7 +156,9 @@ const mainS = stats(allMain), subS = allSub.length ? stats(allSub) : null;
 const pct200 = Math.round(100 * over(2e5) / allMain.length);
 
 // ---------- donnees.md ----------
+/** @param {Session} s @returns {string} the session's topic, safe inside a table cell */
 const label = s => (s.title || s.prompt || '?').replace(/\s+/g, ' ').replace(/\|/g, '/').slice(0, 70);
+/** @param {Session} s @returns {string} the model family with the most calls */
 const dominant = s => { let b = null; for (const f in s.calls) if (!b || s.calls[f] > s.calls[b]) b = f; return b; };
 const md = [];
 md.push(`# Données de l'audit du contexte — ${name}`, '');
@@ -115,23 +175,41 @@ sessions.sort((x, y) => Math.max(...y.ctx) - Math.max(...x.ctx));
 md.push('', '## Sessions au plus gros contexte max (top 25)', '', '| # | session | date | modèle | ctx max | ctx médian | appels | compacts | sujet |', '|--:|---|---|---|--:|--:|--:|--:|---|');
 sessions.slice(0, 25).forEach((s, i) => { const t = stats(s.ctx); md.push(`| ${i + 1} | \`${s.id.slice(0, 8)}\` | ${(s.first || '').slice(0, 10)} | ${dominant(s)} | ${k(t.max)} | ${k(t.p50)} | ${t.n} | ${s.compacts} | ${label(s)} |`); });
 
-// ---------- mini constructeur Excalidraw ----------
+// ---------- minimal Excalidraw builder ----------
+/**
+ * Minimal Excalidraw v2 scene builder: emits the fields the app writes back, so a file opened and saved
+ * in excalidraw.com does not rewrite itself.
+ */
 const scene = () => {
   const els = []; let seed = 100000;
+  /**
+   * Adds an element with every common field set.
+   * @param {string} type
+   * @param {object} o fields overriding the defaults
+   */
   const base = (type, o) => {
     const e = { id: `e${els.length}`, type, x: 0, y: 0, width: 0, height: 0, angle: 0, strokeColor: '#1e1e1e', backgroundColor: 'transparent', fillStyle: 'solid', strokeWidth: 1, strokeStyle: 'solid', roughness: 1, opacity: 100, groupIds: [], frameId: null, roundness: null, seed: ++seed, version: 1, versionNonce: ++seed, isDeleted: false, boundElements: [], updated: 1717689600000, link: null, locked: false, index: '' };
     Object.assign(e, o); els.push(e); return e;
   };
+  /**
+   * Estimated rendered size of a text: Excalidraw does not wrap, so the longest line sets the width.
+   * @param {string} t
+   * @param {number} fs font size
+   * @param {number} font 5 = Excalifont (hand-drawn), 7 = Cascadia (monospace)
+   */
   const dims = (t, fs, font) => ({ w: Math.ceil(Math.max(...t.split('\n').map(l => l.length)) * fs * (font === 7 ? 0.7 : 0.6)), h: Math.ceil(t.split('\n').length * fs * 1.25) });
+  /** Free text, or a text bound to `containerId`. */
   const text = (x, y, t, { fs = 20, font = 7, color = '#1e1e1e', align = 'left', containerId = null } = {}) => {
     const { w, h } = dims(t, fs, font);
     const e = base('text', { x, y, width: w, height: h, strokeColor: color });
     Object.assign(e, { text: t, fontSize: fs, fontFamily: font, textAlign: align, verticalAlign: containerId ? 'middle' : 'top', baseline: fs - 2, lineHeight: 1.25, containerId, originalText: t, autoResize: true });
     return e;
   };
+  /** Rectangle; `o` overrides the defaults. */
   const rect = (x, y, w, h, o = {}) => base('rectangle', { x, y, width: w, height: h, ...o });
+  /** Vertical line from y1 to y2. */
   const line = (x, y1, y2, o = {}) => base('line', { x, y: y1, width: 0, height: y2 - y1, points: [[0, 0], [0, y2 - y1]], lastCommittedPoint: null, startBinding: null, endBinding: null, startArrowhead: null, endArrowhead: null, ...o });
-  // boîte avec texte lié (le texte suit la boîte dans l'app)
+  /** Rectangle with a bound text, which follows the box when it is moved in the app. */
   const box = (x, y, w, h, t, { bg = 'transparent', fs = 20, font = 7, align = 'center', color = '#1e1e1e', pad = 20, ...o } = {}) => {
     const r = rect(x, y, w, h, { backgroundColor: bg, ...o });
     const d = dims(t, fs, font);
@@ -139,6 +217,10 @@ const scene = () => {
     r.boundElements = [{ type: 'text', id: tx.id }];
     return r;
   };
+  /**
+   * Writes the scene, with fractional z-order indices a0…a9, aA…aZ, b0…
+   * @param {string} file
+   */
   const save = file => {
     els.forEach((e, i) => { e.index = String.fromCharCode(97 + Math.floor(i / 36)) + (i % 36 < 10 ? String(i % 36) : String.fromCharCode(55 + (i % 36))); });
     fs.writeFileSync(file, JSON.stringify({ type: 'excalidraw', version: 2, source: 'claude-context-audit', elements: els, appState: { viewBackgroundColor: '#ffffff', gridSize: 20, gridStep: 5, gridModeEnabled: false, lockedMultiSelections: {} }, files: {} }, null, 2) + '\n');
@@ -149,7 +231,7 @@ const scene = () => {
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, 'donnees.md'), md.join('\n') + '\n');
 
-// ---------- tableau ----------
+// ---------- table ----------
 {
   const S = scene(), X = 40, Y = 120, H = 60, W = 160;
   const W0 = Math.max(560, Math.ceil((Math.max(...rows.map(r => r[0].length + (r[2] ? 3 : 0)), name.length) * 14 + 60) / 20) * 20);
@@ -165,9 +247,10 @@ fs.writeFileSync(path.join(out, 'donnees.md'), md.join('\n') + '\n');
   S.save(path.join(out, 'context-table.excalidraw'));
 }
 
-// ---------- diagramme ----------
+// ---------- chart ----------
 {
-  const S = scene(), X0 = 220, px = v => X0 + K(v); // 1 px = 1 k tokens, axe 0 → 1 M
+  // 1 px = 1k tokens; the axis runs from 0 to 1M, starting at X0
+  const S = scene(), X0 = 220;
   const t = (x, y, s, o = {}) => S.text(x, y, s, { fs: 20, ...o });
   S.text(40, 40, `${name} : contexte relu à chaque appel`, { fs: 28, font: 5 });
   S.rect(40, 100, 40, 24, { backgroundColor: '#4dabf7' }); t(90, 102, 'médiane');
