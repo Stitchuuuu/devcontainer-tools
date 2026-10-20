@@ -77,9 +77,38 @@ for a in "$@"; do
 done
 want() { case "$WANT" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-docker info >/dev/null 2>&1 || { echo "docker daemon unreachable — run this on the host" >&2; exit 1; }
-
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+# Progress goes to stderr, and only on a terminal: every docker call below can
+# sit silent for minutes on a loaded daemon (a full disk makes it worse), and
+# silence reads as "hung". `tick` overwrites one line ; `untick` clears it.
+TTY=0; [ -t 2 ] && TTY=1
+tick()   { [ "$TTY" -eq 1 ] && printf '\r\033[K  … %s' "$1" >&2; return 0; }
+untick() { [ "$TTY" -eq 1 ] && printf '\r\033[K' >&2; return 0; }
+
+# wait_on <label> <outfile> <cmd…> — run a long, silent command in the
+# background with a live line: elapsed seconds, and how many lines it has
+# written so far (for a prune, that is the records deleted). Returns its exit
+# status ; its output is in <outfile>.
+wait_on() {
+    local label="$1" out="$2" pid t rc start=$SECONDS; shift 2
+    "$@" > "$out" 2>&1 &
+    pid=$!
+    # Polled every 0.2 s, not 1 s: most calls are quick, and a whole-second
+    # sleep would add a second to each of them.
+    while kill -0 "$pid" 2>/dev/null; do
+        tick "$label — $((SECONDS - start))s, $(wc -l < "$out" | tr -d ' ') lines so far"
+        sleep 0.2
+    done
+    wait "$pid"; rc=$?
+    t=$((SECONDS - start))
+    untick
+    [ "$t" -ge 3 ] && printf '  (%s took %ds)\n' "$label" "$t" >&2
+    return "$rc"
+}
+
+wait_on "contacting the docker daemon" "$TMP/info" docker info \
+    || { echo "docker daemon unreachable — run this on the host" >&2; exit 1; }
 
 hr()  { printf '\n\033[1m── %s\033[0m\n' "$1"; }
 act() { if [ "$APPLY" -eq 1 ]; then printf '  removing      %s\n' "$1"; else printf '  would remove  %s\n' "$1"; fi; }
@@ -103,25 +132,33 @@ prune_ids() {
         if [ -n "${got:-}" ] && [ "$got" -gt 0 ] 2>/dev/null; then
             hit=$((hit + 1)); freed=$((freed + got))
         fi
-        [ $((i % 25)) -eq 0 ] && printf '    %d/%s\n' "$i" "$total"
+        tick "pruning record $i/$total — $hit freed space so far"
     done < "$file"
+    untick
     printf '    asked %d records, %d actually freed space, %s reclaimed\n' "$i" "$hit" "$(gb "$freed")"
     [ "$hit" -lt "$i" ] && printf '    (%d freed nothing: already gone with a parent, or still referenced)\n' "$((i - hit))"
     return 0
 }
 
 printf '\033[1mdocker-reclaim\033[0m  mode=%s\n' "$([ "$APPLY" -eq 1 ] && echo APPLY || echo 'report only')"
-docker system df
+wait_on "docker system df" "$TMP/df" docker system df; cat "$TMP/df"
+
+# `docker system df -v` sizes every volume, and is the slowest call here. It
+# used to run once per builder and once per orphaned state volume ; read it
+# once. Sizes are only displayed, so a snapshot taken before removals is fine.
+wait_on "docker system df -v (sizing every volume)" "$TMP/dfv" docker system df -v
 
 # --------------------------------------------------------------------------
 hr "inactive buildx builders"
 N=0
+tick "listing buildx builders"
 for b in $(docker buildx ls --format '{{.Name}}' 2>/dev/null | grep -v '^NAME' | sed 's/\*$//'); do
     case "$b" in default|desktop-linux) continue ;; esac
+    tick "inspecting builder $b"
     docker buildx inspect "$b" 2>/dev/null | grep -q 'Driver: *docker-container' || continue
     VOL="buildx_buildkit_${b}0_state"
-    SZ=$(docker system df -v 2>/dev/null | awk -v v="$VOL" '$1==v{print $NF}')
-    N=$((N + 1)); act "builder $b (state ${SZ:-?})"
+    SZ=$(awk -v v="$VOL" '$1==v{print $NF}' "$TMP/dfv")
+    untick; N=$((N + 1)); act "builder $b (state ${SZ:-?})"
     if [ "$APPLY" -eq 1 ] && want builders; then
         docker buildx rm "$b" >/dev/null 2>&1 && echo "    ✔ builder gone" || echo "    ✘ failed"
         # `buildx rm` on an ALREADY-INACTIVE builder leaves its state volume
@@ -135,26 +172,33 @@ for b in $(docker buildx ls --format '{{.Name}}' 2>/dev/null | grep -v '^NAME' |
         fi
     fi
 done
+untick
 [ "$N" -eq 0 ] && echo "  (none)"
 
 # Orphans from an earlier run, or from a `buildx rm` done by hand: a state
 # volume whose builder no longer exists can never be reached again.
 for v in $(docker volume ls --format '{{.Name}}' | grep '^buildx_buildkit_'); do
     b="${v#buildx_buildkit_}"; b="${b%0_state}"
+    tick "checking orphaned state volume $v"
     docker buildx inspect "$b" >/dev/null 2>&1 && continue
-    SZ=$(docker system df -v 2>/dev/null | awk -v x="$v" '$1==x{print $NF}')
+    untick
+    SZ=$(awk -v x="$v" '$1==x{print $NF}' "$TMP/dfv")
     N=$((N + 1)); act "orphaned builder state $v (${SZ:-?}) — its builder is gone"
     if [ "$APPLY" -eq 1 ] && want builders; then
         docker volume rm "$v" >/dev/null 2>&1 && echo "    ✔ gone" || echo "    ✘ in use"
     fi
 done
+untick
 N_BUILDERS=$N
 
 # --------------------------------------------------------------------------
 hr "dangling images with no container"
 N=0
+tick "listing dangling images"
 for id in $(docker images -f "dangling=true" -q); do
+    tick "checking dangling image $id"
     USED=$(docker ps -a --filter "ancestor=$id" --format '{{.Names}}' | head -1)
+    untick
     [ -n "$USED" ] && { printf '  kept          %s (used by %s)\n' "$id" "$USED"; continue; }
     N=$((N + 1))
     act "image $id ($(gb "$(docker image inspect "$id" -f '{{.Size}}' 2>/dev/null)"))"
@@ -162,14 +206,14 @@ for id in $(docker images -f "dangling=true" -q); do
         docker rmi "$id" >/dev/null 2>&1 && echo "    ✔ gone" || echo "    ✘ in use"
     fi
 done
+untick
 [ "$N" -eq 0 ] && echo "  (none)"
 N_DANGLING=$N
 
 # --------------------------------------------------------------------------
 hr "anonymous volumes with zero links"
 N=0
-docker system df -v 2>/dev/null \
-  | awk '/^VOLUME NAME/{f=1;next} /^$/{f=0} f && NF>=3 {print $1"\t"$(NF-1)"\t"$NF}' > "$TMP/vols"
+awk '/^VOLUME NAME/{f=1;next} /^$/{f=0} f && NF>=3 {print $1"\t"$(NF-1)"\t"$NF}' "$TMP/dfv" > "$TMP/vols"
 while IFS=$'\t' read -r name links size; do
     [ "${links:-1}" = "0" ] || continue
     printf '%s' "$name" | grep -qE '^[0-9a-f]{64}$' || continue
@@ -217,18 +261,23 @@ normkey() {
 }
 
 : > "$TMP/histmap"
-for t in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>'); do
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>' > "$TMP/tags"
+NT=$(wc -l < "$TMP/tags" | tr -d ' '); IT=0
+for t in $(cat "$TMP/tags"); do
+    IT=$((IT + 1)); tick "reading image histories $IT/$NT — $t"
     docker history --no-trunc --format '{{json .CreatedBy}}' "$t" 2>/dev/null \
       | sed -e 's/^"//; s/"$//' -e 's/\\n/ /g; s/\\t/ /g; s/\\"/"/g; s/\\\\/\\/g' \
       | normkey \
       | awk -v img="$t" 'length($0) > 8 { print $0"\t"img }' >> "$TMP/histmap"
 done
+untick
 sort -u -o "$TMP/histmap" "$TMP/histmap"
 
 # One TSV line per cache record. Tabs are stripped from the description so it
 # can be the grouping key. A record is a candidate only when it is reclaimable
 # AND not shared with an image.
-docker builder du --verbose 2>/dev/null | awk '
+wait_on "docker builder du --verbose (listing every cache record)" "$TMP/du" docker builder du --verbose
+awk '
   function bytes(n,   u,v) {
     u=n; sub(/^[0-9.]+/,"",u); v=n+0
     if (u=="kB") return v*1000; if (u=="MB") return v*1000000
@@ -248,7 +297,7 @@ docker builder du --verbose 2>/dev/null | awk '
     if (id != "") printf "%s\t%s\t%s\t%.0f\t%s\t%s\n", desc, created, id, sz, shr, rec
     id=""; desc=""; created=""; sz=0; shr=""; rec=""
   }
-' > "$TMP/cache6" 2>/dev/null || true
+'  "$TMP/du" > "$TMP/cache6" 2>/dev/null || true
 
 # Column 7 is the join key, produced by piping column 1 through the SAME
 # normkey() the history side used. Duplicating that logic in a second awk is
@@ -385,18 +434,21 @@ else
     if [ "$APPLY" -eq 1 ] && want cache-dead; then
         echo
         echo "  pruning every record that backs no existing image (no size limit)…"
-        docker builder prune -f 2>&1 | tail -2
+        wait_on "docker builder prune" "$TMP/prune" docker builder prune -f
+        tail -2 "$TMP/prune"
     fi
 
     if [ "$APPLY" -eq 1 ] && want cache-trim; then
         echo
         echo "  trimming the whole cache to $CACHE_KEEP, least recently used first…"
-        docker builder prune -f --max-used-space="$CACHE_KEEP" 2>&1 | tail -2
+        wait_on "docker builder prune --max-used-space=$CACHE_KEEP" "$TMP/prune" \
+            docker builder prune -f --max-used-space="$CACHE_KEEP"
+        tail -2 "$TMP/prune"
     fi
 fi
 
 hr "after"
-docker system df
+wait_on "docker system df" "$TMP/df" docker system df; cat "$TMP/df"
 
 # --------------------------------------------------------------------------
 # What to actually run — spelled out, because the tables above require doing
