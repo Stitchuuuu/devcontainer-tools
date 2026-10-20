@@ -397,7 +397,12 @@
       desc: On the Mac, also every OTHER running devcontainer. No effect inside one.
       default: ""
       test: "$bool"
-  cmd: bash ./.devcontainer/host-helpers/cleanup.sh{{ if .apply }} --apply{{ end }}{{ if .all }} --all{{ end }}
+  # wtf runs cmd in the caller's cwd, which can be any subdirectory: find the
+  # helper by walking up instead of trusting a relative path.
+  cmd: |
+    d="$PWD"; while [ "$d" != / ] && [ ! -f "$d/.devcontainer/host-helpers/cleanup.sh" ]; do d=$(dirname "$d"); done
+    [ -f "$d/.devcontainer/host-helpers/cleanup.sh" ] || { echo "wtf cleanup: .devcontainer/host-helpers/cleanup.sh not found above $PWD" >&2; exit 1; }
+    bash "$d/.devcontainer/host-helpers/cleanup.sh"{{ if .apply }} --apply{{ end }}{{ if .all }} --all{{ end }}
 
 # ---- cours — the Canva bridge of apps/cours-kevledev -----------------------
 # HOST ONLY (the Mac's Terminal). Same command as in apps/cours-kevledev's own

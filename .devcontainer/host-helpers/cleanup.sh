@@ -54,9 +54,14 @@ if [ -f /.dockerenv ] && [ "${CLEANUP_ALLOW_NESTED:-0}" != 1 ]; then
         SWEEP="$ROOT/packages/devcontainer-sandbox/bin/devc-sweep"
     fi
     [ -n "$SWEEP" ] || { echo "cleanup: no devc-sweep in this container (image older than 1.12) — rebuild on 1.12+" >&2; exit 1; }
-    echo "wtf cleanup — in the devcontainer: this container (devc-sweep)."
-    echo "Run it on the Mac to also clean Docker Desktop (images, build cache)."
-    [ "$ALL" -eq 1 ] && echo "(--all only applies on the Mac — here it changes nothing.)"
+    printf '\033[1mwtf cleanup — DEVCONTAINER mode\033[0m\n'
+    echo "  Cleans THIS container only: abandoned temp dirs, scratch dirs of ended"
+    echo "  Claude sessions, transcripts > 30 days archived (devc-sweep)."
+    echo "  More can be reclaimed from the Mac, where \`wtf cleanup\` also cleans:"
+    echo "    - Docker Desktop: build cache, unused untagged images, idle builders,"
+    echo "      orphan anonymous volumes (often the bulk of the disk)"
+    echo "    - with --all, every other running devcontainer"
+    [ "$ALL" -eq 1 ] && echo "  (--all only applies on the Mac — here it changes nothing.)"
     echo
     exec "$SWEEP" $SWEEP_ARGS
 fi
