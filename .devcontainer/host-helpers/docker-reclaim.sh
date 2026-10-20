@@ -146,7 +146,7 @@ disk_totals() {
         if (vm) {
           printf "  %-16s %8.2f GB used of %.2f GB, %.2f GB free (%.0f%%)\n", "VM disk", used/1e9, size/1e9, free/1e9, used*100/size
           gap = used - acc
-          if (gap > 1e9) printf "  %-16s %8.2f GB   on the disk but in no docker figure (container logs, daemon state…)\n", "unaccounted", gap/1e9
+          if (gap > 1e9) printf "  %-16s %8.2f GB   on the disk but in no docker figure — with the containerd image store,\n                                  mostly the compressed copy of every image ; then container logs\n", "unaccounted", gap/1e9
           if (nested) print "  (nested daemon: its disk is the host daemon\x27s, so \"unaccounted\" is mostly the host\x27s own content)"
         } else print "  VM disk          unknown (no local image with df, or the disk is too full to start a container)"
       }' "$TMP/vm" "$TMP/dft"
