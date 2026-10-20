@@ -404,6 +404,63 @@
     [ -f "$d/.devcontainer/host-helpers/cleanup.sh" ] || { echo "wtf cleanup: .devcontainer/host-helpers/cleanup.sh not found above $PWD" >&2; exit 1; }
     bash "$d/.devcontainer/host-helpers/cleanup.sh"{{ if .apply }} --apply{{ end }}{{ if .all }} --all{{ end }}
 
+# ---- session — archived Claude conversations (devc-sweep archives them) -----
+# DEVCONTAINER ONLY. Scope: the project of the directory you run it from.
+# One archive = one session; restored ones are back in /resume.
+- group: session
+  name: archived
+  desc: |
+    List this project's archived conversations — date, size, title — newest
+    first. devc-sweep (wtf cleanup) archives conversations untouched for 30
+    days; they leave /resume until restored. Removes nothing.
+  flags:
+    - name: match
+      desc: Only titles containing this text (any case).
+      default: ""
+  cmd: |
+    d="$PWD"; while [ "$d" != / ] && [ ! -f "$d/.devcontainer/host-helpers/session.sh" ]; do d=$(dirname "$d"); done
+    [ -f "$d/.devcontainer/host-helpers/session.sh" ] || { echo "wtf session: .devcontainer/host-helpers/session.sh not found above $PWD" >&2; exit 1; }
+    bash "$d/.devcontainer/host-helpers/session.sh" archived{{ if .match }} --match {{ esc .match }}{{ end }}
+
+- group: session
+  name: show
+  desc: Read one archived conversation (what you and Claude said, tools folded) without restoring it.
+  args:
+    - name: id
+      desc: The session id, or its first characters (as listed by wtf session archived).
+  cmd: |
+    d="$PWD"; while [ "$d" != / ] && [ ! -f "$d/.devcontainer/host-helpers/session.sh" ]; do d=$(dirname "$d"); done
+    [ -f "$d/.devcontainer/host-helpers/session.sh" ] || { echo "wtf session: .devcontainer/host-helpers/session.sh not found above $PWD" >&2; exit 1; }
+    bash "$d/.devcontainer/host-helpers/session.sh" show {{ esc .id }}
+
+- group: session
+  name: restore
+  desc: |
+    Put archived conversations back in /resume. With no argument: a picker —
+    type to search titles, preview on the right, Tab to pick several, Ctrl-A
+    for all, Enter to restore. Never overwrites: an id already in /resume is
+    skipped and said so.
+  flags:
+    - name: all
+      desc: Every archived conversation of this project (lists them, then asks).
+      default: ""
+      test: "$bool"
+    - name: match
+      desc: With --all, only titles containing this text.
+      default: ""
+    - name: "yes"
+      desc: With --all, do not ask.
+      default: ""
+      test: "$bool"
+  args:
+    - name: ids
+      desc: Session ids (or their first characters) to restore directly.
+      is_array: true
+  cmd: |
+    d="$PWD"; while [ "$d" != / ] && [ ! -f "$d/.devcontainer/host-helpers/session.sh" ]; do d=$(dirname "$d"); done
+    [ -f "$d/.devcontainer/host-helpers/session.sh" ] || { echo "wtf session: .devcontainer/host-helpers/session.sh not found above $PWD" >&2; exit 1; }
+    bash "$d/.devcontainer/host-helpers/session.sh" restore{{ if .all }} --all{{ end }}{{ if .match }} --match {{ esc .match }}{{ end }}{{ if .yes }} --yes{{ end }}{{ range .ids }} {{ esc . }}{{ end }}
+
 # ---- cours — the Canva bridge of apps/cours-kevledev -----------------------
 # HOST ONLY (the Mac's Terminal). Same command as in apps/cours-kevledev's own
 # .wtfcmd.yaml, so it answers from the workspace root too.

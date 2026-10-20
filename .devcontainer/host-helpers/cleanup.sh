@@ -65,7 +65,7 @@ if [ -f /.dockerenv ] && [ "${CLEANUP_ALLOW_NESTED:-0}" != 1 ]; then
     echo "    - with --all, every other running devcontainer"
     [ "$ALL" -eq 1 ] && echo "  (--all only applies on the Mac — here it changes nothing.)"
     echo
-    DEVC_SWEEP_APPLY_HINT="$HINT" exec "$SWEEP" $SWEEP_ARGS
+    DEVC_SWEEP_APPLY_HINT="$HINT" DEVC_SWEEP_RESTORE_HINT="wtf session restore" exec "$SWEEP" $SWEEP_ARGS
 fi
 
 # ------------------------------------------------------------ on the Mac
@@ -119,11 +119,11 @@ sweep_in() {
     ver=$(docker image inspect -f '{{index .Config.Labels "org.stitchu.base.version"}}' "$img" 2>/dev/null)
     printf '\n\033[1m  %s\033[0m  (container %s, base %s)\n' "$name" "$c" "${ver:-?}"
     if docker exec "$c" test -x /usr/local/bin/devc-sweep 2>/dev/null; then
-        docker exec -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" -e DEVC_SWEEP_SUMMARY=1 "$c" \
+        docker exec -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" -e "DEVC_SWEEP_RESTORE_HINT=wtf session restore" -e DEVC_SWEEP_SUMMARY=1 "$c" \
             devc-sweep $SWEEP_ARGS | relay "project $name"
     elif [ -f "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" ]; then
         echo "    (image older than 1.12 — using this workspace's devc-sweep)"
-        docker exec -i -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" -e DEVC_SWEEP_SUMMARY=1 "$c" \
+        docker exec -i -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" -e "DEVC_SWEEP_RESTORE_HINT=wtf session restore" -e DEVC_SWEEP_SUMMARY=1 "$c" \
             bash -s -- $SWEEP_ARGS < "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" | relay "project $name"
     else
         echo "    skipped: image older than 1.12, no devc-sweep — rebuild it on 1.12+"
