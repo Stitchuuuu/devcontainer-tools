@@ -189,24 +189,30 @@ bold "── Summary"
 VERB=$([ "$APPLY" -eq 1 ] && echo "freed" || echo "can free")
 awk -v verb="$VERB" '
   function h(b) { return b >= 1e9 ? sprintf("%.1f GB", b/1e9) : (b >= 1e6 ? sprintf("%.0f MB", b/1e6) : sprintf("%.0f KB", b/1e3)) }
-  function part(kv, k,   a, i, x) { n = split(kv, a, " "); for (i = 1; i <= n; i++) { split(a[i], x, "="); if (x[1] == k) return x[2] } return "0" }
+  function part(kv, k,   a, i, x, n) { n = split(kv, a, " "); for (i = 1; i <= n; i++) { split(a[i], x, "="); if (x[1] == k) return x[2] } return "0" }
+  function row(label, size, detail) { n++; L[n] = label; S[n] = size; D[n] = detail; if (length(label) > w) w = length(label) }
   $1 == "project" {
-    name = $2
-    if ($3 == "offline") { printf "  %-28s not connected\n", "project " name; next }
-    if ($3 == "skipped") { printf "  %-28s skipped (image < 1.12)\n", "project " name; next }
+    name = "project " $2
+    if ($3 == "offline") { row(name, "-", "not connected"); next }
+    if ($3 == "skipped") { row(name, "-", "skipped (image < 1.12)"); next }
     rest = $0; sub(/^project [^ ]+ /, "", rest)
     split(part(rest, "tmp"), t, ":"); split(part(rest, "scratch"), sc, ":"); split(part(rest, "archive"), ar, ":")
     b = t[2] + sc[2] + ar[2]; total += b
-    printf "  %-28s %9s  (%d test temp dirs, %d ended sessions, %d conversations %s)\n", "project " name, h(b), t[1], sc[1], ar[1], (verb == "freed" ? "archived" : "to archive")
+    row(name, h(b), sprintf("%d test temp dirs, %d ended sessions, %d conversations %s", t[1], sc[1], ar[1], (verb == "freed" ? "archived" : "to archive")))
     next
   }
   $1 == "docker" {
     rest = $0; sub(/^docker /, "", rest)
     c = part(rest, "cache"); split(part(rest, "dangling"), d, ":")
-    b = c + d[2]; total += b
-    printf "  %-28s %9s  (build cache %s, %d unused images %s, %d builders, %d anon volumes)\n", "docker", h(b), h(c), d[1], h(d[2]), part(rest, "builders"), part(rest, "anon")
+    db = c + d[2]; total += db; dock = 1
+    ddet = sprintf("build cache %s, %d unused images %s, %d builders, %d anon volumes", h(c), d[1], h(d[2]), part(rest, "builders"), part(rest, "anon"))
   }
-  END { printf "  %-28s %9s  %s\n", "total", h(total), verb }
+  END {
+    if (dock) row("docker", h(db), ddet)
+    if (length("total") > w) w = length("total")
+    for (i = 1; i <= n; i++) printf "  %-" w "s  %8s  %s\n", L[i], S[i], D[i]
+    printf "  %-" w "s  %8s  %s\n", "total", h(total), verb
+  }
 ' "$SUM"
 echo
 echo "  left alone, on purpose:"
