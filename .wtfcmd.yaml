@@ -372,19 +372,19 @@
 
 - name: cleanup
   desc: |
-    Reclaim disk in one go. With no flag it REPORTS and removes nothing:
-    run it bare first, read, then --apply.
-    INSIDE a devcontainer it cleans that container only (devc-sweep, below).
-    On the Mac it covers Docker Desktop — and, with --all, every running
-    devcontainer too — touching only what is safe to lose:
-      1. Docker: build cache backing no image, untagged images no container
+    Reclaim disk, touching only what is safe to lose. Same command in the
+    devcontainer and on the Mac. With no flag it REPORTS and removes
+    nothing: run it bare first, read, then --apply.
+    In the devcontainer: devc-sweep for this container — abandoned test temp
+    dirs, scratch dirs of ended Claude sessions, transcripts older than 30
+    days ARCHIVED, not deleted (devc-sweep restore <id> brings one back).
+    On the Mac, it also sees Docker Desktop:
+      1. the same devc-sweep inside this project's devcontainer ("not
+         connected" when it is not running);
+      2. Docker: build cache backing no image, untagged images no container
          uses, idle buildx builders, anonymous volumes with zero links
-         (= wtf docker reclaim --cache-dead --dangling --builders --anon-volumes).
-      2. With --all, inside every RUNNING sandbox devcontainer: devc-sweep — abandoned
-         test temp dirs, scratch dirs of ended Claude sessions, and
-         transcripts older than 30 days ARCHIVED, not deleted
-         (devc-sweep restore <id> brings one back). Images older than 1.12
-         have no devc-sweep and are listed as skipped.
+         (= wtf docker reclaim --cache-dead --dangling --builders --anon-volumes);
+      3. with --all, devc-sweep in every other running devcontainer.
     It NEVER touches named volumes (databases, Claude configs), stopped
     containers, tagged images or live Claude sessions. Stopped containers
     that pin images are listed in the report for you to decide.
@@ -394,7 +394,7 @@
       default: ""
       test: "$bool"
     - name: all
-      desc: On the Mac, also run devc-sweep in every running devcontainer. No effect inside one.
+      desc: On the Mac, also every OTHER running devcontainer. No effect inside one.
       default: ""
       test: "$bool"
   cmd: bash ./.devcontainer/host-helpers/cleanup.sh{{ if .apply }} --apply{{ end }}{{ if .all }} --all{{ end }}
