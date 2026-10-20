@@ -113,6 +113,44 @@ wait_on "contacting the docker daemon" "$TMP/info" docker info \
 hr()  { printf '\n\033[1m── %s\033[0m\n' "$1"; }
 act() { if [ "$APPLY" -eq 1 ]; then printf '  removing      %s\n' "$1"; else printf '  would remove  %s\n' "$1"; fi; }
 gb()  { awk -v b="${1:-0}" 'BEGIN{printf "%.2fG", b/1000000000}'; }
+# Human sizes as docker prints them (143kB, 1.25GB, 0B) → bytes, on stdin.
+TOBYTES='function tob(s,  u,v) { u=s; sub(/^[0-9.]+/,"",u); v=s+0
+  if (u=="kB"||u=="KB") return v*1e3; if (u=="MB") return v*1e6
+  if (u=="GB") return v*1e9; if (u=="TB") return v*1e12; return v }'
+
+# The disk the daemon writes to, as the VM sees it: df inside a throwaway
+# container of an image already present (no pull, no network). Empty when no
+# local image has a df, or when the disk is too full to start a container.
+vm_disk() {
+    local img
+    for img in $(docker images --format '{{.ID}}' | head -5); do
+        docker run --rm --network none --entrypoint df "$img" -k / 2>/dev/null \
+            | awk 'NR==2 { printf "%.0f\t%.0f\t%.0f\n", $2*1024, $3*1024, $4*1024; ok=1 } END { exit !ok }' \
+            && return 0
+    done
+    return 1
+}
+
+# Totals: what the disk holds, what docker accounts for, and the gap — the
+# figure `docker system df` never prints, and the one that says whether a
+# prune can help at all.
+disk_totals() {
+    wait_on "measuring the VM disk" "$TMP/vm" vm_disk
+    docker system df --format '{{.Type}}\t{{.Size}}\t{{.Reclaimable}}' > "$TMP/dft" 2>/dev/null
+    awk -F'\t' -v nested="$([ -f /.dockerenv ] && echo 1 || echo 0)" "$TOBYTES"'
+      FILENAME ~ /vm$/ { size=$1; used=$2; free=$3; vm=1; next }
+      { b=tob($2); r=$3; sub(/ .*/,"",r); rb=tob(r); acc+=b; rec+=rb
+        printf "  %-16s %8.2f GB   reclaimable %8.2f GB\n", $1, b/1e9, rb/1e9 }
+      END {
+        printf "  %-16s %8.2f GB   reclaimable %8.2f GB\n", "TOTAL docker", acc/1e9, rec/1e9
+        if (vm) {
+          printf "  %-16s %8.2f GB used of %.2f GB, %.2f GB free (%.0f%%)\n", "VM disk", used/1e9, size/1e9, free/1e9, used*100/size
+          gap = used - acc
+          if (gap > 1e9) printf "  %-16s %8.2f GB   on the disk but in no docker figure (container logs, daemon state…)\n", "unaccounted", gap/1e9
+          if (nested) print "  (nested daemon: its disk is the host daemon\x27s, so \"unaccounted\" is mostly the host\x27s own content)"
+        } else print "  VM disk          unknown (no local image with df, or the disk is too full to start a container)"
+      }' "$TMP/vm" "$TMP/dft"
+}
 
 # Prune cache records one id at a time, and report what was ACTUALLY freed.
 # `docker builder prune` exits 0 even when it frees nothing, so trusting its
@@ -147,6 +185,53 @@ wait_on "docker system df" "$TMP/df" docker system df; cat "$TMP/df"
 # used to run once per builder and once per orphaned state volume ; read it
 # once. Sizes are only displayed, so a snapshot taken before removals is fine.
 wait_on "docker system df -v (sizing every volume)" "$TMP/dfv" docker system df -v
+
+# --------------------------------------------------------------------------
+hr "where the disk goes"
+disk_totals
+# Named volumes are never a target, so when they hold the space no prune will
+# help — say so with the numbers instead of letting "nothing reclaimable" read
+# as a mystery. dind-storage-* is a devcontainer's nested daemon: clean it
+# from INSIDE that devcontainer, where `docker` talks to it.
+echo
+echo "  largest volumes (never removed here — named volumes are data):"
+awk "$TOBYTES"'
+  /^VOLUME NAME/ { f=1; next } /^$/ { f=0 }
+  f && NF>=3 { printf "%.0f\t%s\t%s\n", tob($NF), $NF, $1 }' "$TMP/dfv" \
+  | sort -rn | head -8 | awk -F'\t' '{ printf "    %10s  %s%s\n", $2, $3, ($3 ~ /^dind-storage-/ ? "   ← nested docker: run wtf docker reclaim inside that devcontainer" : "") }'
+echo
+echo "  largest container writable layers (stopped containers are kept):"
+wait_on "sizing containers" "$TMP/ps" docker ps -a --size --format '{{.Names}}\t{{.Status}}\t{{.Size}}'
+awk -F'\t' "$TOBYTES"'{ s=$3; sub(/ .*/,"",s); printf "%.0f\t%s\t%s\t%s\n", tob(s), s, $1, $2 }' "$TMP/ps" \
+  | sort -rn | head -5 | awk -F'\t' '{ printf "    %10s  %s (%s)\n", $2, $3, $4 }'
+echo "  (a container's size is its own writable layer only — the \"virtual\" part"
+echo "   is its image, counted once under Images, never twice)"
+
+# An image any container still references cannot be removed — stopped ones
+# included. So old stopped containers are what keeps "reclaimable" at zero
+# while the images pile up. Advisory: it lists, it never removes a container.
+echo
+echo "  images held ONLY by stopped containers (removing those containers frees up to):"
+docker ps -aq > "$TMP/cids"
+if [ -s "$TMP/cids" ]; then
+    wait_on "inspecting containers" "$TMP/cinsp" \
+        sh -c 'docker inspect --format "{{.Image}}	{{.Name}}	{{.State.Running}}" $(cat "$1")' _ "$TMP/cids"
+    awk -F'\t' '{ n=$2; sub(/^\//,"",n)
+                  if ($3=="true") run[$1]=1; else held[$1]=held[$1] (held[$1]==""?"":", ") n }
+         END { for (i in held) if (!(i in run)) print i"\t"held[i] }' "$TMP/cinsp" > "$TMP/held"
+fi
+if [ -s "$TMP/held" ]; then
+    docker image inspect --format '{{.Id}}	{{.Size}}	{{join .RepoTags ","}}' $(cut -f1 "$TMP/held") 2>/dev/null > "$TMP/heldsz"
+    awk -F'\t' 'NR==FNR { sz[$1]=$2; tag[$1]=($3==""?"<none>":$3); next }
+         { printf "%.0f\t%s\t%s\t%s\n", sz[$1], substr($1,8,12), tag[$1], $2 }' "$TMP/heldsz" "$TMP/held" \
+      | sort -rn | awk -F'\t' '{ t+=$1; if (NR<=12) printf "    %7.2fG  %s %-28.28s ← %.70s\n", $1/1e9, $2, $3, $4 }
+          END { printf "    total up to %.2f GB over %d images (shared base layers count once, so less in practice)\n", t/1e9, NR }'
+    echo "    a random two-word name (quirky_brattain) is a docker run throwaway ; a"
+    echo "    compose name (<project>-app-1) is a project — remove by hand, if at all:"
+    echo "      docker rm <name> …   then re-run with --apply dangling"
+else
+    echo "    (none)"
+fi
 
 # --------------------------------------------------------------------------
 hr "inactive buildx builders"
@@ -448,7 +533,7 @@ else
 fi
 
 hr "after"
-wait_on "docker system df" "$TMP/df" docker system df; cat "$TMP/df"
+disk_totals
 
 # --------------------------------------------------------------------------
 # What to actually run — spelled out, because the tables above require doing
