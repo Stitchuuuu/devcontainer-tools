@@ -228,7 +228,7 @@ if [ -s "$TMP/held" ]; then
           END { printf "    total up to %.2f GB over %d images (shared base layers count once, so less in practice)\n", t/1e9, NR }'
     echo "    a random two-word name (quirky_brattain) is a docker run throwaway ; a"
     echo "    compose name (<project>-app-1) is a project — remove by hand, if at all:"
-    echo "      docker rm <name> …   then re-run with --apply dangling"
+    echo "      docker rm <name> …   then: wtf docker reclaim --dangling"
 else
     echo "    (none)"
 fi
@@ -541,14 +541,17 @@ disk_totals
 # something are listed; an empty target is omitted rather than shown at 0.
 if [ "$APPLY" -ne 1 ]; then
     hr "recommended"
-    PRINTED=0
-    [ "${N_BUILDERS:-0}" -gt 0 ] && { printf '  builders       %-3d found           →  %s --apply builders\n' "$N_BUILDERS" "$(basename "$0")"; PRINTED=1; }
-    [ "${N_DANGLING:-0}" -gt 0 ] && { printf '  dangling       %-3d found           →  %s --apply dangling\n' "$N_DANGLING" "$(basename "$0")"; PRINTED=1; }
-    [ "${N_ANONVOL:-0}" -gt 0 ] && { printf '  anon-volumes   %-3d found           →  %s --apply anon-volumes\n' "$N_ANONVOL" "$(basename "$0")"; PRINTED=1; }
-    [ "${CACHE_DEAD_N:-0}" -gt 0 ] && { printf '  cache-dead     %-8s (%d records)  →  %s --apply cache-dead\n' "$(gb "${CACHE_DEAD_B:-0}")" "$CACHE_DEAD_N" "$(basename "$0")"; PRINTED=1; }
-    if [ "$PRINTED" -eq 1 ]; then
+    # Spelled as the wtf command: that is how this script is run, and the
+    # flags map one to one (target `x` = `--x`).
+    FLAGS=""
+    [ "${N_BUILDERS:-0}" -gt 0 ] && { printf '  builders       %-3d found           →  wtf docker reclaim --builders\n' "$N_BUILDERS"; FLAGS="$FLAGS --builders"; }
+    [ "${N_DANGLING:-0}" -gt 0 ] && { printf '  dangling       %-3d found           →  wtf docker reclaim --dangling\n' "$N_DANGLING"; FLAGS="$FLAGS --dangling"; }
+    [ "${N_ANONVOL:-0}" -gt 0 ] && { printf '  anon-volumes   %-3d found           →  wtf docker reclaim --anon-volumes\n' "$N_ANONVOL"; FLAGS="$FLAGS --anon-volumes"; }
+    [ "${CACHE_DEAD_N:-0}" -gt 0 ] && { printf '  cache-dead     %-8s (%d records)  →  wtf docker reclaim --cache-dead\n' "$(gb "${CACHE_DEAD_B:-0}")" "$CACHE_DEAD_N"; FLAGS="$FLAGS --cache-dead"; }
+    if [ -n "$FLAGS" ]; then
         echo
-        echo "  nothing was removed — combine any of the above in one --apply call"
+        echo "  nothing was removed — all of the above in one go:"
+        echo "    wtf docker reclaim$FLAGS"
     else
         echo "  nothing worth removing right now"
     fi
