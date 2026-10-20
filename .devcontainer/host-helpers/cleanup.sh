@@ -40,6 +40,8 @@ for a in "$@"; do
     esac
 done
 SWEEP_ARGS=""; [ "$APPLY" -eq 1 ] && SWEEP_ARGS="--apply"
+# devc-sweep's closing hint names the command to type: here, this one.
+HINT="wtf cleanup --apply$([ "$ALL" -eq 1 ] && echo ' --all')"
 
 # ------------------------------------------------------------ inside a container
 # There `docker` is the nested daemon, not Docker Desktop: only this
@@ -63,7 +65,7 @@ if [ -f /.dockerenv ] && [ "${CLEANUP_ALLOW_NESTED:-0}" != 1 ]; then
     echo "    - with --all, every other running devcontainer"
     [ "$ALL" -eq 1 ] && echo "  (--all only applies on the Mac — here it changes nothing.)"
     echo
-    exec "$SWEEP" $SWEEP_ARGS
+    DEVC_SWEEP_APPLY_HINT="$HINT" exec "$SWEEP" $SWEEP_ARGS
 fi
 
 # ------------------------------------------------------------ on the Mac
@@ -93,10 +95,10 @@ sweep_in() {
     printf '\n\033[1m  %s\033[0m (base %s)\n' "$c" "${ver:-?}"
     if docker exec "$c" test -x /usr/local/bin/devc-sweep 2>/dev/null; then
         [ -t 1 ] && tty="-t"
-        docker exec $tty -u node "$c" devc-sweep $SWEEP_ARGS | sed 's/^/    /'
+        docker exec $tty -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" "$c" devc-sweep $SWEEP_ARGS | sed 's/^/    /'
     elif [ -f "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" ]; then
         echo "    (image older than 1.12 — using this workspace's devc-sweep)"
-        docker exec -i -u node "$c" bash -s -- $SWEEP_ARGS < "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" | sed 's/^/    /'
+        docker exec -i -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" "$c" bash -s -- $SWEEP_ARGS < "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" | sed 's/^/    /'
     else
         echo "    skipped: image older than 1.12, no devc-sweep — rebuild it on 1.12+"
     fi
