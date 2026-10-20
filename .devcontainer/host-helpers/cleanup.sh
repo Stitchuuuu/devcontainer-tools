@@ -7,15 +7,16 @@
 # running devcontainer ; INSIDE a devcontainer it runs devc-sweep for that
 # container only. Report only by default, both places.
 #
-#   cleanup.sh            report: what each part would reclaim, nothing removed
-#   cleanup.sh --apply    do it
+#   cleanup.sh                  report on Docker Desktop, nothing removed
+#   cleanup.sh --all            …and on every running devcontainer (devc-sweep)
+#   cleanup.sh --apply [--all]  do it
 #
 # What --apply does:
 #   1. Docker — docker-reclaim.sh --apply cache-dead dangling builders
 #      anon-volumes: build cache backing no image, untagged images no
 #      container uses, inactive buildx builders, anonymous volumes with zero
 #      links.
-#   2. Inside every RUNNING sandbox devcontainer (its image carries the
+#   2. With --all, inside every RUNNING sandbox devcontainer (its image carries the
 #      org.stitchu.base.version label): devc-sweep --apply as node —
 #      abandoned test temp dirs, scratch dirs of ended Claude sessions, and
 #      transcripts older than 30 days ARCHIVED (devc-sweep restore <id>).
@@ -28,11 +29,13 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APPLY=0
+ALL=0
 for a in "$@"; do
     case "$a" in
         --apply) APPLY=1 ;;
+        --all)   ALL=1 ;;
         -h|--help) sed -n '2,25p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
-        *) echo "cleanup: unknown argument: $a (only --apply)" >&2; exit 64 ;;
+        *) echo "cleanup: unknown argument: $a (--apply, --all)" >&2; exit 64 ;;
     esac
 done
 
@@ -51,6 +54,7 @@ if [ -f /.dockerenv ] && [ "${CLEANUP_ALLOW_NESTED:-0}" != 1 ]; then
     [ -n "$SWEEP" ] || { echo "cleanup: no devc-sweep in this container (image older than 1.12) — rebuild on 1.12+" >&2; exit 1; }
     echo "wtf cleanup — inside a devcontainer: this container only (devc-sweep)."
     echo "Docker Desktop itself (images, build cache, other projects) is cleaned from the Mac: wtf cleanup there."
+    [ "$ALL" -eq 1 ] && echo "(--all only applies on the Mac — here it changes nothing.)"
     echo
     if [ "$APPLY" -eq 1 ]; then exec "$SWEEP" --apply; else exec "$SWEEP"; fi
 fi
@@ -72,8 +76,11 @@ gb() { awk -v b="${1:-0}" 'BEGIN{printf "%.1f GB", b/1e9}'; }
 
 printf '\033[1mwtf cleanup\033[0m  mode=%s\n' "$([ "$APPLY" -eq 1 ] && echo 'APPLY' || echo 'report only — nothing is removed')"
 echo "  touches : build cache backing no image, untagged unused images, idle buildx"
-echo "            builders, orphan anonymous volumes ; in each running devcontainer,"
-echo "            abandoned temp dirs + ended sessions' scratch, transcripts > 30 days ARCHIVED"
+echo "            builders, orphan anonymous volumes"
+if [ "$ALL" -eq 1 ]; then
+    echo "            + in each running devcontainer: abandoned temp dirs, ended"
+    echo "            sessions' scratch, transcripts > 30 days ARCHIVED"
+fi
 echo "  never   : named volumes (databases, Claude configs), stopped containers,"
 echo "            tagged images, live Claude sessions"
 BEFORE=$(vm_used || echo "")
@@ -89,7 +96,8 @@ fi
 # --------------------------------------------------------------------------
 bold "── 2. Inside the running devcontainers"
 N=0
-for c in $(docker ps --format '{{.Names}}'); do
+[ "$ALL" -eq 1 ] || { echo "  not included — add --all to run devc-sweep in each running devcontainer"; N=-1; }
+[ "$ALL" -eq 1 ] && for c in $(docker ps --format '{{.Names}}'); do
     img=$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null)
     ver=$(docker image inspect -f '{{index .Config.Labels "org.stitchu.base.version"}}' "$img" 2>/dev/null)
     [ -n "$ver" ] || continue
@@ -121,5 +129,5 @@ else
 fi
 if [ "$APPLY" -ne 1 ]; then
     echo
-    echo "  nothing was removed — to do all of the above:  wtf cleanup --apply"
+    echo "  nothing was removed — to do all of the above:  wtf cleanup --apply$([ "$ALL" -eq 1 ] && echo ' --all')"
 fi

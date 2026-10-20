@@ -375,12 +375,12 @@
     Reclaim disk in one go. With no flag it REPORTS and removes nothing:
     run it bare first, read, then --apply.
     INSIDE a devcontainer it cleans that container only (devc-sweep, below).
-    On the Mac it covers Docker Desktop and every running devcontainer, and
-    touches only what is safe to lose:
+    On the Mac it covers Docker Desktop — and, with --all, every running
+    devcontainer too — touching only what is safe to lose:
       1. Docker: build cache backing no image, untagged images no container
          uses, idle buildx builders, anonymous volumes with zero links
          (= wtf docker reclaim --cache-dead --dangling --builders --anon-volumes).
-      2. Inside every RUNNING sandbox devcontainer: devc-sweep — abandoned
+      2. With --all, inside every RUNNING sandbox devcontainer: devc-sweep — abandoned
          test temp dirs, scratch dirs of ended Claude sessions, and
          transcripts older than 30 days ARCHIVED, not deleted
          (devc-sweep restore <id> brings one back). Images older than 1.12
@@ -393,7 +393,11 @@
       desc: Actually remove (and archive). Without it, nothing changes.
       default: ""
       test: "$bool"
-  cmd: bash ./.devcontainer/host-helpers/cleanup.sh{{ if .apply }} --apply{{ end }}
+    - name: all
+      desc: On the Mac, also run devc-sweep in every running devcontainer. No effect inside one.
+      default: ""
+      test: "$bool"
+  cmd: bash ./.devcontainer/host-helpers/cleanup.sh{{ if .apply }} --apply{{ end }}{{ if .all }} --all{{ end }}
 
 # ---- cours — the Canva bridge of apps/cours-kevledev -----------------------
 # HOST ONLY (the Mac's Terminal). Same command as in apps/cours-kevledev's own
