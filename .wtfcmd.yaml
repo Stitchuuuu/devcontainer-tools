@@ -372,9 +372,11 @@
 
 - name: cleanup
   desc: |
-    Reclaim the Docker Desktop disk in one go — HOST ONLY. With no flag it
-    REPORTS and removes nothing: run it bare first, read, then --apply.
-    It touches only what is safe to lose:
+    Reclaim disk in one go. With no flag it REPORTS and removes nothing:
+    run it bare first, read, then --apply.
+    INSIDE a devcontainer it cleans that container only (devc-sweep, below).
+    On the Mac it covers Docker Desktop and every running devcontainer, and
+    touches only what is safe to lose:
       1. Docker: build cache backing no image, untagged images no container
          uses, idle buildx builders, anonymous volumes with zero links
          (= wtf docker reclaim --cache-dead --dangling --builders --anon-volumes).

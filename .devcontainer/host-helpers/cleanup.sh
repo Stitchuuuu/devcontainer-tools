@@ -3,7 +3,9 @@
 # .devcontainer/host-helpers/cleanup.sh — `wtf cleanup`: reclaim the Docker
 # Desktop disk in one go, touching only what is safe to lose.
 #
-# Run on the HOST (macOS bash 3.2 compatible). Report only by default.
+# On the HOST (macOS bash 3.2 compatible) it covers Docker Desktop and every
+# running devcontainer ; INSIDE a devcontainer it runs devc-sweep for that
+# container only. Report only by default, both places.
 #
 #   cleanup.sh            report: what each part would reclaim, nothing removed
 #   cleanup.sh --apply    do it
@@ -34,13 +36,23 @@ for a in "$@"; do
     esac
 done
 
-# Inside a devcontainer `docker` is the nested daemon, not Docker Desktop:
-# the report would describe the wrong disk. CLEANUP_ALLOW_NESTED exists for
-# this script's own test only.
+# Inside a devcontainer `docker` is the nested daemon, not Docker Desktop, so
+# the Docker half would describe the wrong disk: there, `wtf cleanup` cleans
+# THIS container only, through devc-sweep — the image's copy (1.12+), else the
+# one in this workspace's sandbox checkout. CLEANUP_ALLOW_NESTED forces the
+# host path, for this script's own test only.
 if [ -f /.dockerenv ] && [ "${CLEANUP_ALLOW_NESTED:-0}" != 1 ]; then
-    echo "cleanup: run this on the Mac, not inside a devcontainer." >&2
-    echo "  Here, \`docker\` talks to the nested daemon. To clean this container: devc-sweep" >&2
-    exit 1
+    SWEEP=""
+    if command -v devc-sweep >/dev/null 2>&1; then
+        SWEEP="devc-sweep"
+    elif [ -x "$HERE/../../packages/devcontainer-sandbox/bin/devc-sweep" ]; then
+        SWEEP="$HERE/../../packages/devcontainer-sandbox/bin/devc-sweep"
+    fi
+    [ -n "$SWEEP" ] || { echo "cleanup: no devc-sweep in this container (image older than 1.12) — rebuild on 1.12+" >&2; exit 1; }
+    echo "wtf cleanup — inside a devcontainer: this container only (devc-sweep)."
+    echo "Docker Desktop itself (images, build cache, other projects) is cleaned from the Mac: wtf cleanup there."
+    echo
+    if [ "$APPLY" -eq 1 ]; then exec "$SWEEP" --apply; else exec "$SWEEP"; fi
 fi
 docker info >/dev/null 2>&1 || { echo "cleanup: docker daemon unreachable" >&2; exit 1; }
 
