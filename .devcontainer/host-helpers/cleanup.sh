@@ -85,22 +85,49 @@ vm_used() {
     return 1
 }
 
-# sweep_in <container> — devc-sweep inside it as node, or why not. The image's
-# copy (1.12+) ; on an older image, this workspace's copy streamed in through
-# stdin, so the project's own container is covered before its rebuild.
+SUM="$(mktemp)" || { echo "cleanup: mktemp failed (disk full?)" >&2; exit 1; }
+trap 'rm -f "$SUM"' EXIT
+
+# relay <tag> — show a part's output indented, and keep its machine-readable
+# @@ totals line (tagged) for the closing summary instead of printing it.
+relay() {
+    local tag="$1" line
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        case "$line" in
+            @@*) echo "$tag ${line#@@* }" >> "$SUM" ;;
+            *)   printf '    %s\n' "$line" ;;
+        esac
+    done
+}
+
+# project_of <container> — its compose project without the -claude-code suffix.
+project_of() {
+    local p
+    p=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$1" 2>/dev/null)
+    p="${p%-claude-code}"
+    echo "${p:-$1}"
+}
+
+# sweep_in <container> — devc-sweep inside it as node. The image's copy
+# (1.12+) ; on an older image, this workspace's copy streamed in through
+# stdin, so every project is covered before its rebuild.
 sweep_in() {
-    local c="$1" img ver tty=""
+    local c="$1" img ver name
+    name=$(project_of "$c")
     img=$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null)
     ver=$(docker image inspect -f '{{index .Config.Labels "org.stitchu.base.version"}}' "$img" 2>/dev/null)
-    printf '\n\033[1m  %s\033[0m (base %s)\n' "$c" "${ver:-?}"
+    printf '\n\033[1m  %s\033[0m  (container %s, base %s)\n' "$name" "$c" "${ver:-?}"
     if docker exec "$c" test -x /usr/local/bin/devc-sweep 2>/dev/null; then
-        [ -t 1 ] && tty="-t"
-        docker exec $tty -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" "$c" devc-sweep $SWEEP_ARGS | sed 's/^/    /'
+        docker exec -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" -e DEVC_SWEEP_SUMMARY=1 "$c" \
+            devc-sweep $SWEEP_ARGS | relay "project $name"
     elif [ -f "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" ]; then
         echo "    (image older than 1.12 — using this workspace's devc-sweep)"
-        docker exec -i -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" "$c" bash -s -- $SWEEP_ARGS < "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" | sed 's/^/    /'
+        docker exec -i -u node -e "DEVC_SWEEP_APPLY_HINT=$HINT" -e DEVC_SWEEP_SUMMARY=1 "$c" \
+            bash -s -- $SWEEP_ARGS < "$ROOT/packages/devcontainer-sandbox/bin/devc-sweep" | relay "project $name"
     else
         echo "    skipped: image older than 1.12, no devc-sweep — rebuild it on 1.12+"
+        echo "project $name skipped" >> "$SUM"
     fi
 }
 
@@ -111,12 +138,14 @@ DC_PROJECT="${DC_PROJECT:-devcontainer-tools}"
 SELF=$(docker ps --filter "label=com.docker.compose.project=${DC_PROJECT}-claude-code" \
                  --filter "label=com.docker.compose.service=app" --format '{{.Names}}' | head -1)
 
-printf '\033[1mwtf cleanup\033[0m  mode=%s\n' "$([ "$APPLY" -eq 1 ] && echo 'APPLY' || echo 'report only — nothing is removed')"
-echo "  touches : in the devcontainer, abandoned temp dirs, ended sessions' scratch,"
-echo "            transcripts > 30 days ARCHIVED ; in Docker, build cache backing no"
-echo "            image, untagged unused images, idle buildx builders, orphan anon volumes"
-echo "  never   : named volumes (databases, Claude configs), stopped containers,"
-echo "            tagged images, live Claude sessions"
+printf '\033[1mwtf cleanup — MAC mode\033[0m  %s\n' "$([ "$APPLY" -eq 1 ] && echo 'APPLY' || echo 'report only — nothing is removed')"
+echo "  In each project's devcontainer — see each section for why it is safe:"
+echo "    test temp dirs nobody removed, working files of ended Claude sessions,"
+echo "    conversations untouched for 30 days (ARCHIVED, restorable)."
+echo "  In Docker Desktop: build cache no image uses, untagged images no"
+echo "    container uses, idle buildx builders, anonymous volumes nothing links."
+echo "  Never: named volumes (databases, Claude configs), stopped containers,"
+echo "    tagged images, running Claude sessions."
 BEFORE=$(vm_used || echo "")
 
 # --------------------------------------------------------------------------
@@ -126,20 +155,21 @@ if [ -n "$SELF" ]; then
 else
     echo "  not connected — no running container for compose project ${DC_PROJECT}-claude-code."
     echo "  Open the devcontainer and re-run, or run \`wtf cleanup\` inside it."
+    echo "project ${DC_PROJECT} offline" >> "$SUM"
 fi
 
 # --------------------------------------------------------------------------
-bold "── 2. Docker"
+bold "── 2. Docker Desktop"
 if [ "$APPLY" -eq 1 ]; then
-    bash "$HERE/docker-reclaim.sh" --apply cache-dead dangling builders anon-volumes
+    DOCKER_RECLAIM_SUMMARY=1 bash "$HERE/docker-reclaim.sh" --apply cache-dead dangling builders anon-volumes | relay docker
 else
-    bash "$HERE/docker-reclaim.sh"
+    DOCKER_RECLAIM_SUMMARY=1 bash "$HERE/docker-reclaim.sh" | relay docker
 fi
 
 # --------------------------------------------------------------------------
 bold "── 3. Other running devcontainers"
 if [ "$ALL" -ne 1 ]; then
-    echo "  not included — add --all to run devc-sweep in every other running devcontainer"
+    echo "  not included — add --all to sweep every other running devcontainer too"
 else
     N=0
     for c in $(docker ps --format '{{.Names}}'); do
@@ -154,16 +184,47 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# The short version: one line per project, one for Docker, the total.
 bold "── Summary"
+VERB=$([ "$APPLY" -eq 1 ] && echo "freed" || echo "can free")
+awk -v verb="$VERB" '
+  function h(b) { return b >= 1e9 ? sprintf("%.1f GB", b/1e9) : (b >= 1e6 ? sprintf("%.0f MB", b/1e6) : sprintf("%.0f KB", b/1e3)) }
+  function part(kv, k,   a, i, x) { n = split(kv, a, " "); for (i = 1; i <= n; i++) { split(a[i], x, "="); if (x[1] == k) return x[2] } return "0" }
+  $1 == "project" {
+    name = $2
+    if ($3 == "offline") { printf "  %-28s not connected\n", "project " name; next }
+    if ($3 == "skipped") { printf "  %-28s skipped (image < 1.12)\n", "project " name; next }
+    rest = $0; sub(/^project [^ ]+ /, "", rest)
+    split(part(rest, "tmp"), t, ":"); split(part(rest, "scratch"), sc, ":"); split(part(rest, "archive"), ar, ":")
+    b = t[2] + sc[2] + ar[2]; total += b
+    printf "  %-28s %9s  (%d test temp dirs, %d ended sessions, %d conversations %s)\n", "project " name, h(b), t[1], sc[1], ar[1], (verb == "freed" ? "archived" : "to archive")
+    next
+  }
+  $1 == "docker" {
+    rest = $0; sub(/^docker /, "", rest)
+    c = part(rest, "cache"); split(part(rest, "dangling"), d, ":")
+    b = c + d[2]; total += b
+    printf "  %-28s %9s  (build cache %s, %d unused images %s, %d builders, %d anon volumes)\n", "docker", h(b), h(c), d[1], h(d[2]), part(rest, "builders"), part(rest, "anon")
+  }
+  END { printf "  %-28s %9s  %s\n", "total", h(total), verb }
+' "$SUM"
+echo
+echo "  left alone, on purpose:"
+echo "    $(docker volume ls -q | grep -cvE '^[0-9a-f]{64}$') named volume(s) — databases, Claude configs and conversations"
+echo "    $(docker ps -aq --filter status=exited --filter status=created | wc -l | tr -d ' ') stopped container(s), $(docker images --format '{{.Repository}}' | grep -cv '<none>') tagged image(s), every running Claude session"
+if [ "$APPLY" -eq 1 ]; then
+    echo "  ✓ done — nothing in use was touched."
+else
+    echo "  ✓ safe to apply: what is listed is unused cache, leftovers nothing reads,"
+    echo "    or conversations archived (restorable). Your data stays where it is."
+fi
 AFTER=$(vm_used || echo "")
 if [ -n "$AFTER" ] && [ "$APPLY" -ne 1 ]; then
     echo "  VM disk used : $(gb "$AFTER")"
 elif [ -n "$BEFORE" ] && [ -n "$AFTER" ]; then
-    echo "  VM disk used : $(gb "$BEFORE") → $(gb "$AFTER")  (freed $(gb $((BEFORE - AFTER))))"
-else
-    echo "  VM disk used : unknown (no local image could run df)"
+    echo "  VM disk used : $(gb "$BEFORE") → $(gb "$AFTER")  (measured: $(gb $((BEFORE - AFTER))) freed)"
 fi
 if [ "$APPLY" -ne 1 ]; then
     echo
-    echo "  nothing was removed — to do it:  wtf cleanup --apply$([ "$ALL" -eq 1 ] && echo ' --all')"
+    echo "  nothing was removed — to do it:  $HINT"
 fi

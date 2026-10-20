@@ -286,7 +286,9 @@ for id in $(docker images -f "dangling=true" -q); do
     untick
     [ -n "$USED" ] && { printf '  kept          %s (used by %s)\n' "$id" "$USED"; continue; }
     N=$((N + 1))
-    act "image $id ($(gb "$(docker image inspect "$id" -f '{{.Size}}' 2>/dev/null)"))"
+    ISZ=$(docker image inspect "$id" -f '{{.Size}}' 2>/dev/null); ISZ=${ISZ:-0}
+    DANGLING_B=$((${DANGLING_B:-0} + ISZ))
+    act "image $id ($(gb "$ISZ"))"
     if [ "$APPLY" -eq 1 ] && want dangling; then
         docker rmi "$id" >/dev/null 2>&1 && echo "    ✔ gone" || echo "    ✘ in use"
     fi
@@ -555,4 +557,9 @@ if [ "$APPLY" -ne 1 ]; then
     else
         echo "  nothing worth removing right now"
     fi
+fi
+
+# Machine-readable totals for a wrapper (wtf cleanup) that sums several parts.
+if [ "${DOCKER_RECLAIM_SUMMARY:-0}" = 1 ]; then
+    echo "@@docker-reclaim cache=${CACHE_DEAD_B:-0} dangling=${N_DANGLING:-0}:${DANGLING_B:-0} builders=${N_BUILDERS:-0} anon=${N_ANONVOL:-0}"
 fi
