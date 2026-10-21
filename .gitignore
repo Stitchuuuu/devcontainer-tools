@@ -45,6 +45,7 @@ packages/*/*.tgz
 # stays on feat/v3, and it lives on at meitogi/notifier.
 # vscode-notify (the Notify VS Code extension) was born as its own repo on
 # 2026-10-14 ; it lives on at meitogi/vscode-notify.
+# vscode is a clone of microsoft/vscode for upstream PRs from meitogi/vscode.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
 packages/vscode-ext-patch-starter/
@@ -52,6 +53,7 @@ packages/devcontainer-cli/
 packages/notifier/
 packages/vscode-notify/
 packages/webrtc-node-peer/
+packages/vscode/
 
 # Scratch / experimentation
 .tmp/
