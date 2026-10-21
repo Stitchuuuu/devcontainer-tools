@@ -511,3 +511,30 @@
   desc: |
     Follow the agent browser's logs on the Mac (supervisor, proxy, Chromium).
   cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh logs
+
+# ---- ctr — CTR Native Web (apps/ctr-native-web) ------------------------------
+# CONTAINER ONLY : the build needs the devcontainer's emsdk. Forward the printed
+# ports to the Mac (VS Code Ports panel, same numbers) to play in your browser.
+
+- group: ctr
+  name: online
+  desc: |
+    Online mode by hand : build the CTR_ONLINE web client, serve it, start a local
+    ctr-relay with a fresh key, print the address to open (host, then guest link).
+    Ctrl-C stops both. Defaults : release, page 8094, relay 8789.
+  args:
+    - name: config
+      desc: debug or release
+      default: release
+      test: ^(debug|release)$
+    - name: page
+      desc: Port of the page server
+      default: "8094"
+      test: ^[0-9]+$
+    - name: relay
+      desc: Port of the local ctr-relay
+      default: "8789"
+      test: ^[0-9]+$
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr online : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/online/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
