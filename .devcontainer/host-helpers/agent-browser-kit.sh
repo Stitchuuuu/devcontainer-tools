@@ -3,10 +3,14 @@
 # LaunchAgent on the Mac (devcontainer-sandbox 1.13.0+, T1 of ctr-native-web).
 # HOST ONLY : run it in the Mac's Terminal, from the workspace (wtf does that).
 #
-#   wtf agent-browser install     extract the kit from the image, then install
-#   wtf agent-browser status      launchd state, heartbeat, kit hash
-#   wtf agent-browser uninstall   remove the LaunchAgent and its folder
-#   wtf agent-browser logs        follow the supervisor, proxy and Chromium logs
+#   wtf agent-browser install [i…]    extract the kit from the image, then install
+#   wtf agent-browser status [i…]     launchd state, heartbeat, kit hash
+#   wtf agent-browser uninstall [i…]  remove the LaunchAgent and its folder
+#   wtf agent-browser logs [i]        follow the supervisor, proxy and Chromium logs
+#
+# Instances (letters) : without a list, install brings up every browser whose
+# proxy port is in .devcontainer/firewall/ports.txt (host:9223 → a,
+# host:9224 → b) ; status and uninstall cover every installed one.
 #
 # The kit is extracted from the devcontainer image (`agent-browser host-kit`),
 # so what launchd runs never came out of the container's writable tree. It
@@ -18,9 +22,10 @@
 set -euo pipefail
 
 action=${1:-}
+[ $# -gt 0 ] && shift
 case "$action" in
   install|status|uninstall|logs) ;;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
 
 [ "$(uname -s)" = Darwin ] || { echo "agent-browser-kit: host only — run it in the Mac's Terminal" >&2; exit 2; }
@@ -54,4 +59,4 @@ if [ "$action" = install ] && [ -z "${AGENT_BROWSER_CHROMIUM:-}" ]; then
     fi
   done
 fi
-exec bash "$kit/host-agent.sh" "$action"
+exec bash "$kit/host-agent.sh" "$action" "$@"

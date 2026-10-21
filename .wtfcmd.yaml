@@ -490,27 +490,50 @@
 - group: agent-browser
   name: install
   desc: |
-    Extract the kit from the devcontainer image and install the LaunchAgent.
-    Prints the origins it allows. Needs node 22+ and Chromium on the Mac.
-  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install
+    Extract the kit from the devcontainer image and install one LaunchAgent per
+    browser : without a list, every instance whose proxy port is in
+    .devcontainer/firewall/ports.txt (host:9223 → a, host:9224 → b, the second
+    browser). Prints, per instance, its origins and ports. Needs node 22+ and
+    Chromium on the Mac.
+  args:
+    - name: instances
+      desc: Browsers by letter (a, b…) ; none = every instance the firewall opens
+      is_array: true
+      test: ^[a-z]$
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install {{ range .instances }}{{ esc . }} {{ end }}
 
 - group: agent-browser
   name: status
   desc: |
-    launchd state, heartbeat and kit hash of the installed agent browser.
-  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh status
+    launchd state, heartbeat and kit hash of the installed agent browsers.
+  args:
+    - name: instances
+      desc: Browsers by letter (a, b…) ; none = every installed one
+      is_array: true
+      test: ^[a-z]$
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh status {{ range .instances }}{{ esc . }} {{ end }}
 
 - group: agent-browser
   name: uninstall
   desc: |
-    Remove the LaunchAgent and its folder under ~/Library/Application Support.
-  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh uninstall
+    Remove the LaunchAgents and their folders under ~/Library/Application Support.
+  args:
+    - name: instances
+      desc: Browsers by letter (a, b…) ; none = every installed one
+      is_array: true
+      test: ^[a-z]$
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh uninstall {{ range .instances }}{{ esc . }} {{ end }}
 
 - group: agent-browser
   name: logs
   desc: |
     Follow the agent browser's logs on the Mac (supervisor, proxy, Chromium).
-  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh logs
+  args:
+    - name: instance
+      desc: Which browser (a, b…)
+      default: a
+      test: ^[a-z]$
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh logs {{ esc .instance }}
 
 # ---- ctr — CTR Native Web (apps/ctr-native-web) ------------------------------
 # CONTAINER ONLY : the build needs the devcontainer's emsdk. Forward the printed

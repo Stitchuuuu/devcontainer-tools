@@ -31,6 +31,10 @@ host:9222
 # CDP-is-a-WebSocket reason as 9222. Baked at image build : rebuild.
 host:9223
 
+# Its second instance (agent-browser -i b) : a second headless Chromium with its
+# own proxy, for a game's host and guest in two browsers. Baked : rebuild.
+host:9224
+
 # Nested Docker daemon (dind sidecar) — agent-side release-check suites.
 # Same shape as CDP: the Docker API is an HTTP handshake immediately
 # hijacked into a raw stream for build/exec/attach, and mitmproxy breaks the
