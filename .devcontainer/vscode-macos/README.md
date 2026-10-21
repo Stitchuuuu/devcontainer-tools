@@ -18,17 +18,20 @@ window lives in a different fullscreen Space than the caller.
 The primary patch flips the default to `FocusMode.Force`, which routes
 through `electron.app.focus({ steal: true })` → NSApp SELF-activate.
 
-**Explorer right-click menu missing entries** (`explorer-context-keys-reset.py`).
+**Explorer right-click menu missing entries** (`resource-context-key-stale-guard.py`).
 
 Symptom : the explorer context menu sometimes lacks "Reveal in Finder",
 "Copy Relative Path" and other entries gated on `resourceScheme` /
 `resourcePath` ; right-clicking the same file again never fixes it, only
 a different file does. Cause : the explorer and Open Editors share one
 `ResourceContextKey` scope ; Open Editors rewrites it on every tab switch,
-and the explorer's `set()` is a no-op when the URI equals its own last
-value. The patch adds a `reset()` before that `set()` in
-`workbench.desktop.main.js` and recomputes that file's checksum in
+and `ResourceContextKey.set()` skips its write when the URI equals its
+own last value, without checking the shared keys still hold it. The
+patch keeps that skip but adds the check (one string compare) in
+`workbench.desktop.main.js`, and recomputes that file's checksum in
 `product.json` (else VS Code shows the "corrupt installation" banner).
+A bundle carrying the earlier revision (`explorer-context-keys-reset.py`,
+a `reset()` before the explorer's `set()`) is upgraded in place.
 Workaround without the patch : collapse the Open Editors section.
 Anchor validated on VS Code 1.127.0 and 1.142.0. Runs as part of
 `run-all.sh`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Patch VS Code core so the explorer rewrites its resource context keys on
-every right-click / focus change.
+Patch VS Code core so ResourceContextKey.set() only skips its write when
+the shared context keys still hold that resource.
 
 Symptom
 -------
@@ -25,8 +25,18 @@ Root cause (verified in source 1.127.0 and minified 1.142.0)
 
 Fix
 ---
-One `this.resourceContext.reset()` before the `set()` in
-`ExplorerView.setContextKeys`, so the explorer always rewrites the keys.
+Keep the early return, but compare against the truth as well :
+
+    !isEqual(this._value, v)
+  → !(isEqual(this._value, v) && this._resourceKey.get() == (v ? v.toString() : null))
+
+`_resourceKey.get()` reads the shared service, so it sees what the other
+view wrote. Cost : one string compare (URI.toString() is cached). `==`
+on purpose : a removed key reads `undefined`, a cleared one `null`.
+Fixes every ResourceContextKey sharing a scope, Open Editors included.
+
+Earlier revision of this patch (marker `devcontainer-explorer-ctxkeys-v1`,
+a reset() before the explorer's set()) is reverted in place if present.
 
 Workaround without the patch : collapse the "Open Editors" section.
 
@@ -43,8 +53,8 @@ VS Code auto-update overwrites patched files. Re-run after each update.
 
 Usage
 -----
-    python3 explorer-context-keys-reset.py
-    python3 explorer-context-keys-reset.py "/Applications/Visual Studio Code.app"
+    python3 resource-context-key-stale-guard.py
+    python3 resource-context-key-stale-guard.py "/Applications/Visual Studio Code.app"
 
 Exit codes
 ----------
@@ -66,19 +76,26 @@ from _common import (
 )
 
 
-MARKER = "/*devcontainer-explorer-ctxkeys-v1*/"
-BACKUP_SUFFIX = ".bak-devcontainer-explorer-ctxkeys"
+MARKER = "/*devcontainer-resource-ctxkey-guard-v1*/"
+BACKUP_SUFFIX = ".bak-devcontainer-resource-ctxkey"
+# Earlier revision : reset() before the explorer's set(). Stripped on sight.
+LEGACY_SNIPPET = "/*devcontainer-explorer-ctxkeys-v1*/this.resourceContext.reset(),"
 
 TARGET_REL = "out/vs/workbench/workbench.desktop.main.js"
 CHECKSUM_KEY = "vs/workbench/workbench.desktop.main.js"
 
-# Anchor validated as unique in workbench.desktop.main.js on VS Code
-# 1.127.0 and 1.142.0 (property names are not mangled there).
+# ResourceContextKey.set() — anchor validated as unique in
+# workbench.desktop.main.js on VS Code 1.127.0 and 1.142.0. The isEqual
+# helper is minified (`He` / `ke`), hence captured ; property names are not.
 PATTERN = re.compile(
-    r'(this\.explorerService\.findClosest\((\w+)\),)'
-    r'(this\.resourceContext\.set\(\2\))'
+    r'(set\((\w+)\)\{\2=\2\?\?void 0,!)'
+    r'(\w+\(this\._value,\2\))'
+    r'(&&\(this\._value=\2,this\._contextKeyService\.bufferChangeEvents\()'
 )
-REPLACEMENT = r'\1' + MARKER + r'this.resourceContext.reset(),\3'
+REPLACEMENT = (
+    r'\1(\3&&this._resourceKey.get()==(\2?\2.toString():null))'
+    + MARKER + r'\4'
+)
 
 
 def checksum(path):
@@ -124,8 +141,12 @@ def patch(app_res):
 
     print(f"→ Target : {target}")
     text = target.read_text(encoding="utf-8")
+    legacy = LEGACY_SNIPPET in text
+    if legacy:
+        text = text.replace(LEGACY_SNIPPET, "", 1)
+        print("→ Earlier revision found — reverted in place")
 
-    if MARKER in text:
+    if MARKER in text and not legacy:
         print(f"{YELLOW}Already patched (marker present) — no-op.{RESET}")
         # Still heal the checksum in case a previous run died in between.
         return update_product_checksum(app_res, target)
@@ -134,10 +155,10 @@ def patch(app_res):
     if n != 1:
         banner(
             "REGEX MISS" if n == 0 else "AMBIGUOUS ANCHOR",
-            f"{n} match(es) for ExplorerView.setContextKeys anchor in {target.name}",
+            f"{n} match(es) for ResourceContextKey.set() anchor in {target.name}",
             [
-                "VS Code has changed its compiled explorer view.",
-                "Search for 'setContextKeys(' + 'this.resourceContext.set(' and",
+                "VS Code has changed its compiled ResourceContextKey.",
+                "Search for 'this._value,' + '_contextKeyService.bufferChangeEvents(' and",
                 "craft a new pattern.",
             ],
         )
