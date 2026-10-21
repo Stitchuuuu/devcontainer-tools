@@ -26,6 +26,11 @@
 # upgrade. Direct TCP is the requirement, not a shortcut.
 host:9222
 
+# Agent browser proxy on the host (devcontainer-sandbox 1.13.0, T1) : the
+# container reaches the Mac's headless Chromium only through it. Same
+# CDP-is-a-WebSocket reason as 9222. Baked at image build : rebuild.
+host:9223
+
 # Nested Docker daemon (dind sidecar) — agent-side release-check suites.
 # Same shape as CDP: the Docker API is an HTTP handshake immediately
 # hijacked into a raw stream for build/exec/attach, and mitmproxy breaks the

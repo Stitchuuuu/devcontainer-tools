@@ -480,3 +480,28 @@
       default: ""
       test: "$bool"
   cmd: bash tools/canva/host/canva-browser.sh{{ if .steps }} --steps{{ end }}
+
+# ---- agent-browser — the agent's own headless Chromium on the Mac ---------
+# HOST ONLY (the Mac's Terminal). devcontainer-sandbox 1.13.0+ (T1) : a
+# LaunchAgent keeps a headless Chromium on the Mac's GPU that the container
+# drives through a proxy on host:9223 ; it never opens a window, never takes
+# the focus. The image must ship it : wtf base dev, then Rebuild Container.
+
+- group: agent-browser
+  name: install
+  desc: |
+    Extract the kit from the devcontainer image and install the LaunchAgent.
+    Prints the origins it allows. Needs node 22+ and Chromium on the Mac.
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install
+
+- group: agent-browser
+  name: status
+  desc: |
+    launchd state, heartbeat and kit hash of the installed agent browser.
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh status
+
+- group: agent-browser
+  name: uninstall
+  desc: |
+    Remove the LaunchAgent and its folder under ~/Library/Application Support.
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh uninstall
