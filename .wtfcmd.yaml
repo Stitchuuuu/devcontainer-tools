@@ -505,3 +505,9 @@
   desc: |
     Remove the LaunchAgent and its folder under ~/Library/Application Support.
   cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh uninstall
+
+- group: agent-browser
+  name: logs
+  desc: |
+    Follow the agent browser's logs on the Mac (supervisor, proxy, Chromium).
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh logs
