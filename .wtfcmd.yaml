@@ -563,6 +563,21 @@
     bash ./apps/ctr-native-web/web/online/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
 
 - group: ctr
+  name: bot
+  desc: |
+    A fake Online guest, « Bot », to test a race alone : the agent browser opens your room
+    link, joins your room, locks a character and drives one race (racing line on a debug
+    build). Serve with « wtf ctr online debug 8092 8787 » (the agent browser's ports), enter
+    your room, then run this before you confirm the track.
+  args:
+    - name: link
+      desc: The room link from the Online panel (quote it, it has a #)
+      test: ^https?://
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr bot : run it inside the devcontainer" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/online/bot.sh {{ esc .link }}
+
+- group: ctr
   name: shared
   desc: |
     Share mode by hand : build the single-player web client (solo's build), serve it,
