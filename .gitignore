@@ -46,6 +46,8 @@ packages/*/*.tgz
 # vscode-notify (the Notify VS Code extension) was born as its own repo on
 # 2026-10-14 ; it lives on at meitogi/vscode-notify.
 # vscode is a clone of microsoft/vscode for upstream PRs from meitogi/vscode.
+# ctr-native (web port) and ctr-modsdk (OnlineCTR reference) are clones of
+# CTR-tools repos ; the web port's work lives on their own branches.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
 packages/vscode-ext-patch-starter/
@@ -54,6 +56,8 @@ packages/notifier/
 packages/vscode-notify/
 packages/webrtc-node-peer/
 packages/vscode/
+packages/ctr-native/
+packages/ctr-modsdk/
 
 # Scratch / experimentation
 .tmp/
