@@ -538,3 +538,74 @@
   cmd: |
     [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr online : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
     bash ./apps/ctr-native-web/web/online/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
+
+- group: ctr
+  name: shared
+  desc: |
+    Share mode by hand : build the web client, serve it, start a local ctr-relay with a
+    fresh key, print the address to open (host shares, the guest link needs no disc).
+    Ctrl-C stops both. Defaults : release, page 8096, relay 8791.
+  args:
+    - name: config
+      desc: debug or release
+      default: release
+      test: ^(debug|release)$
+    - name: page
+      desc: Port of the page server
+      default: "8096"
+      test: ^[0-9]+$
+    - name: relay
+      desc: Port of the local ctr-relay
+      default: "8791"
+      test: ^[0-9]+$
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr shared : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/share/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
+
+- group: ctr
+  name: solo
+  desc: |
+    Single player by hand : build the web client, serve it, print the address to open
+    (drop your ctr-u.bin the first time). Ctrl-C stops the server. Defaults : release, page 8095.
+  args:
+    - name: config
+      desc: debug or release
+      default: release
+      test: ^(debug|release)$
+    - name: page
+      desc: Port of the page server
+      default: "8095"
+      test: ^[0-9]+$
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr solo : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    tree=./apps/ctr-native-web
+    build="$tree/build-web-{{ .config }}"
+    if ss -ltn | grep -q ":{{ .page }} "; then echo "wtf ctr solo : port {{ .page }} is already taken — wtf ctr solo {{ .config }} <page-port>" >&2; exit 1; fi
+    echo "== building the {{ .config }} web client in $build (a few minutes the first time)"
+    "$tree/web/build-web.sh" {{ esc .config }} -DCTR_ONLINE=OFF -DCTR_WEB_PRELOAD_DISC=OFF > "$build.log" 2>&1 \
+      || { tail -20 "$build.log"; echo "wtf ctr solo : build failed, full log $build.log" >&2; exit 1; }
+    echo ""
+    echo "Ready. In VS Code's Ports panel, forward {{ .page }} (same local number), then open :"
+    echo "    http://localhost:{{ .page }}/index.html"
+    echo "First time on this address : drop your ctr-u.bin (kept in the browser after that)."
+    echo "Keys : arrows, C = Cross, V = Circle, X = Square, Z = Triangle, Enter = Start, or a gamepad. Ctrl-C stops."
+    exec python3 "$tree/web/test/player/serve.py" "$build" {{ esc .page }}
+
+- group: ctr
+  name: solo
+  desc: |
+    The normal game (single player, no OnlineCTR) by hand : build the CTR_ONLINE=OFF web
+    client into its own build directory, serve it, print the address. Defaults : release,
+    port 8095.
+  args:
+    - name: config
+      desc: debug or release
+      default: release
+      test: ^(debug|release)$
+    - name: page
+      desc: Port of the page server
+      default: "8095"
+      test: ^[0-9]+$
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr solo : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/solo-dev.sh {{ esc .config }} {{ esc .page }}
