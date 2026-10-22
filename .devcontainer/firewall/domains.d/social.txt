@@ -33,8 +33,10 @@ docs.discord.com
 api.memegen.link
 memegen.link
 
-# --- Phase 3, optional : Threads (Meta) and LinkedIn Community Management ---
+# --- Phase 3, optional : Meta (Threads, Facebook page, Instagram) and LinkedIn ---
 [GET,POST] graph.threads.net
+[GET,POST] graph.facebook.com
+[GET,POST] graph.instagram.com
 developers.facebook.com
 [GET,POST] api.linkedin.com
 [GET,POST,PUT] www.linkedin.com

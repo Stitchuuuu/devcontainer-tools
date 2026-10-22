@@ -30,7 +30,8 @@ Trois produits, trois audiences, un seul compte par réseau :
 | 8 | Product Hunt | PurrPause seulement, lancement gratuit | one-shot | non |
 | 9 | YouTube Shorts | archive des GIF de démo, pas de chaîne | quand il y a un GIF | non (upload Studio) |
 | 10 | X | handle réservé ; 1 post / semaine pré-rempli par intent, lien en réponse ; **test de 3 mois** tranché sur les referrers GitHub | 1 / semaine | non : intent + Ctrl+V |
-| — | Threads | handle réservé, rien d'autre | — | — |
+| 11 | Facebook, Instagram | PurrPause seulement : les parents sont là, pas les devs ; un visuel par mois, groupes de parents FR à la main | 1 / mois | non : intent ou téléphone |
+| — | Threads, TikTok | handle réservé, rien d'autre | — | — |
 
 **Exclus de l'automatisation et pourquoi** : X (API payante à l'acte,
 liens à 0 engagement médian pour un compte gratuit, dashboard payant ;

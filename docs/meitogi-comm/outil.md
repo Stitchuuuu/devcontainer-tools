@@ -86,6 +86,9 @@ principal ; `status` passe `draft` → `ready` → `published`.
 | Reddit, HN | intent pré-rempli (titre, texte ou URL) | — | publier |
 | Threads | intent pré-rempli ; phase 3 : via l'Action, image par URL raw.githubusercontent.com | — | Ctrl+V, publier |
 | Product Hunt | copier | — | formulaire |
+| Facebook | intent lien + texte copié | phase 3 : page Facebook via l'API Graph | Ctrl+V, publier |
+| Instagram | télécharger l'image + texte copié | phase 3 : compte pro via l'API Graph, image par URL raw.githubusercontent.com, même app Meta que Threads | publier depuis le téléphone |
+| YouTube Shorts, TikTok | télécharger le MP4 + texte copié | — | upload depuis Studio ou l'app |
 
 ## Pré-remplissage des réseaux manuels
 
@@ -104,6 +107,8 @@ tous ces composeurs acceptent une image collée).
 | LinkedIn | `https://www.linkedin.com/feed/?shareActive=true&text=…` | texte, à vérifier au build |
 | Reddit | `https://www.reddit.com/r/<sub>/submit?title=…&selftext=true&text=…` | titre, texte |
 | Hacker News | `https://news.ycombinator.com/submitlink?u=…&t=…` | URL, titre |
+| Facebook | `https://www.facebook.com/sharer/sharer.php?u=…` | lien seulement ; le texte se colle, à vérifier au build |
+| Instagram, TikTok | aucun intent web | image ou vidéo enregistrée, publication depuis le téléphone |
 
 Aucun intent n'attache d'image : d'où le presse-papiers. Le post `.md`
 peut porter un `title` (Reddit, HN) et un `sub` (Reddit) en frontmatter.
@@ -167,7 +172,7 @@ Frontmatter parsé par une fonction de dix lignes, pas de dépendance.
 | `discord.com` | webhook | déjà dans `domains.local.txt` |
 | `api.github.com`, `github.com`, `raw.githubusercontent.com` | contents, dispatch, traffic, images publiques | baseline |
 | `api.memegen.link`, `memegen.link` | memes | `domains.d/social.txt` + local |
-| `graph.threads.net`, `api.linkedin.com`, `www.linkedin.com` | phase 3, optionnel | idem |
+| `graph.threads.net`, `graph.facebook.com`, `graph.instagram.com`, `api.linkedin.com`, `www.linkedin.com` | phase 3, optionnel | idem |
 | `docs.bsky.app`, `atproto.com`, `docs.joinmastodon.org`, `developers.forem.com`, `docs.discord.com`, `developers.facebook.com` | docs pour Claude pendant le build | idem |
 
 Volontairement absents : `api.x.com` (payant), `gql.hashnode.com`
