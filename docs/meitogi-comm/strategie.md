@@ -72,7 +72,8 @@ image, Dev.to seulement les articles.
 1. **45 min, rédaction** : lancer le prompt de posts ([prompt-posts.md](prompt-posts.md)),
    relire les brouillons dans la page, ajuster, programmer. Un seul visuel
    par semaine (GIF, capture, carte générée).
-2. **45 min, conversation** : répondre à chaque commentaire ; répondre à
+2. **45 min, conversation** : répondre à chaque commentaire, depuis
+   l'onglet Inbox de la page pour Bluesky et Mastodon ; répondre à
    2 ou 3 questions sur r/ClaudeAI, le Discord CTR-tools ou HN. C'est ce
    qui construit le karma et les 90 % de non-promo exigés sur Reddit.
 3. **15 min, divers** : ouvrir les boutons pré-remplis (X, et Reddit ou

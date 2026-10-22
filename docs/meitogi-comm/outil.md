@@ -119,6 +119,24 @@ détail par réseau noté dans le fichier à la publication.
 - Limites connues : Threads 250 posts / 24 h, Instagram de l'ordre de 50
   / 24 h, LinkedIn 150 / jour. Sans objet à deux posts par semaine.
 
+## Boîte de réception et réponses
+
+Répondre est la moitié du temps hebdomadaire ; la page l'absorbe pour les
+deux réseaux qui exposent leurs notifications gratuitement et avec CORS :
+
+- **Bluesky** : `app.bsky.notification.listNotifications` (mentions,
+  réponses, citations, nouveaux abonnés) ; une réponse est un
+  `createRecord` avec `reply.root` et `reply.parent`.
+- **Mastodon** : `GET /api/v1/notifications` ; une réponse est un statut
+  avec `in_reply_to_id`.
+- **Les autres** (X, LinkedIn, Threads, Reddit, HN) n'ont pas de lecture
+  gratuite : un bouton par réseau ouvre sa page de notifications.
+
+Un onglet « Inbox » liste tout ça par ordre inverse, avec une zone de
+réponse sous chaque entrée et un marquage « traité » stocké en
+`localStorage`. Pas de notification push : l'onglet se consulte pendant
+la session hebdo.
+
 ## Pré-remplissage des réseaux manuels
 
 Pas d'extension navigateur : les intents suffisent, et une extension qui
@@ -216,3 +234,4 @@ Volontairement absents : `api.x.com` (payant), `gql.hashnode.com`
 4. **Meta et LinkedIn** : Threads, page Facebook, Instagram, LinkedIn dans `publish.mjs` ; `refresh-tokens.yml` ; `linkedin:auth`.
 5. **images et rédaction** : `card.mjs`, memegen dans la page, le prompt de posts transformé en skill locale, premier lot de 6 posts.
 6. **bilan** : `review.mjs`, `metrics.md`, et la revue du premier mois.
+7. **boîte de réception et réponses** : notifications Bluesky et Mastodon dans la page, réponse en un clic, liens directs vers les autres réseaux.

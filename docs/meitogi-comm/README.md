@@ -30,8 +30,9 @@
 | [outil.md](outil.md) | Architecture de la page unique, formats, flux, commandes, analyse des domaines et du firewall |
 | [prompt-posts.md](prompt-posts.md) | Le prompt de mise à jour pour générer un lot de posts avec Claude |
 | [captures.md](captures.md) | Les captures et GIF à faire, par produit, avec formats et règles |
+| [backlog.md](backlog.md) | Le stock de départ : une quarantaine d'idées de posts par produit et pilier, et la part réponses |
 
 ## Suite
 
-La construction de l'outil tient en 4 à 5 sessions (voir la fin de
+La construction de l'outil tient en 7 sessions (voir la fin de
 [outil.md](outil.md)) : à scaffolder avec `/prepare-plan`.
