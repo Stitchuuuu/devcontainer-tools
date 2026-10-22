@@ -160,6 +160,25 @@ tous ces composeurs acceptent une image collée).
 Aucun intent n'attache d'image : d'où le presse-papiers. Le post `.md`
 peut porter un `title` (Reddit, HN) et un `sub` (Reddit) en frontmatter.
 
+Mécanique de la fenêtre, pour travailler côte à côte :
+
+- **Pas d'iframe** : tous ces réseaux envoient `frame-ancestors 'none'`
+  ou `X-Frame-Options: DENY`, le composeur refuse de s'afficher dans une
+  page d'une autre origine.
+- **Popup calée à droite** : `window.open(url, 'composer', 'popup,
+  width=W,height=H,left=screen.availWidth-W,top=0')`, même nom de
+  fenêtre pour tous les réseaux, donc une seule popup réutilisée.
+- **Bouton « Docker »** : une page ne peut pas se redimensionner
+  elle-même, seule une fenêtre ouverte par script le peut. Le bouton
+  rouvre la page dans une popup calée à gauche et ferme l'onglet
+  d'origine ; largeurs mémorisées dans `localStorage`. Sur téléphone, le
+  bouton n'apparaît pas.
+- **Glisser-déposer de la vignette** vers le composeur : Chrome le
+  permet si `dragstart` pose `DownloadURL` (`image/png:<nom>:<url>`), le
+  composeur reçoit alors un fichier. Firefox et Safari reçoivent un lien,
+  inutile. Le presse-papiers reste la voie universelle, l'image y est
+  copiée juste avant l'ouverture du composeur.
+
 Si un jour le Ctrl+V pèse, une **extension WebExtension minimale** (un
 content script par réseau qui injecte l'image dans le composeur) est
 l'étape suivante ; elle reste hors périmètre tant que l'intent fait le
