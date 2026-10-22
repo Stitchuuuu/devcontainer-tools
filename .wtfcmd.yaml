@@ -602,6 +602,22 @@
     bash ./apps/ctr-native-web/web/share/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
 
 - group: ctr
+  name: share-bot
+  desc: |
+    A fake Share guest, « Bot », to test a Share race alone : the agent browser opens your
+    guest link and plays P2 over it — browses the characters and locks one at random, drives
+    each race along the racing line and fires its items — until you stop sharing (or Ctrl-C).
+    Host with « wtf ctr shared debug 8091 8788 » (the agent browser's ports ; a release host
+    gets Cross held, no steering), Share → Copy guest link, then run this.
+  args:
+    - name: link
+      desc: The guest link from the Share panel (quote it, it has a #)
+      test: ^https?://
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr share-bot : run it inside the devcontainer" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/share/bot.sh {{ esc .link }}
+
+- group: ctr
   name: solo
   desc: |
     The normal game (single player, no OnlineCTR) by hand : build the CTR_ONLINE=OFF web
