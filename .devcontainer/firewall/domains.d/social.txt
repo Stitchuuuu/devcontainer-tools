@@ -1,0 +1,40 @@
+# =============================================================================
+# domains.d/social.txt — Meitogi social publishing (added 2026-10-22)
+# =============================================================================
+# Hosts the publishing scripts (Bluesky, Mastodon, Discord, Dev.to, memegen)
+# and their reference docs need from inside the devcontainer. The web page
+# runs in the user's own browser and is not subject to this firewall ; this
+# file only serves the CLI route and Claude reading the API docs.
+# Strictly free platforms — X (pay-per-post since 2026-02), Hashnode (API
+# Pro-only since 2026-06) and Reddit (approval-gated API) are absent on
+# purpose.
+# Already covered elsewhere and NOT repeated : github.com, api.github.com,
+# raw.githubusercontent.com (baseline), dev.to, discord.com (domains.local).
+
+# --- Bluesky / AT Protocol — writes go to the PDS, reads to the AppView ---
+[GET,POST] bsky.social
+public.api.bsky.app
+docs.bsky.app
+atproto.com
+
+# --- Mastodon — prune to the instance actually chosen at signup ---
+[GET,POST] fosstodon.org
+[GET,POST] hachyderm.io
+[GET,POST] mastodon.social
+docs.joinmastodon.org
+
+# --- Dev.to / Forem API docs (dev.to itself is in domains.local.txt) ---
+developers.forem.com
+
+# --- Discord webhooks docs (discord.com itself is in domains.local.txt) ---
+docs.discord.com
+
+# --- Meme images — unauthenticated, small watermark, self-hostable ---
+api.memegen.link
+memegen.link
+
+# --- Phase 3, optional : Threads (Meta) and LinkedIn Community Management ---
+[GET,POST] graph.threads.net
+developers.facebook.com
+[GET,POST] api.linkedin.com
+[GET,POST,PUT] www.linkedin.com
