@@ -10,10 +10,12 @@ le profil README.
   que le texte reste lisible en vignette. La page et `card.mjs` dérivent
   les autres formats : 1200×675 (Bluesky, X, LinkedIn), 1080×1350 (Instagram
   4:5), 1080×1920 (Shorts, TikTok, recadrage centré ou fond flou).
-- **GIF ≤ 15 s, exporté aussi en MP4** : Bluesky et Mastodon acceptent la
-  vidéo ; un GIF dépasse vite le million d'octets de Bluesky.
-  `ffmpeg -i in.mov -vf "fps=12,scale=1200:-1" out.gif` et
-  `ffmpeg -i in.mov -vf "scale=1200:-2" -an out.mp4`.
+- **Vidéo : capturer brut, ne rien monter.** 16:9, 30 i/s, 20 à 40 s,
+  sans couper ni zoomer ; `scripts/video.mjs` coupe, sous-titre, recadre
+  en 9:16 et sort GIF + MP4 (voir la section Vidéo de
+  [outil.md](outil.md)). Les démos terminal ne se filment pas : VHS les
+  rend depuis un script. Un GIF reste sous 15 s et sous le million
+  d'octets de Bluesky ; le MP4 part en parallèle sur Bluesky et Mastodon.
 - **Anonymiser avant de capturer** : pas de jeton, pas de nom d'hôte
   maison, pas de chemin `/Users/<toi>`, pas d'onglet perso, prompt shell
   réduit à `$`. Fond d'écran neutre pour les captures Windows.

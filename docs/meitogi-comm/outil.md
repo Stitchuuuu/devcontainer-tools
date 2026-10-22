@@ -212,6 +212,51 @@ est ouverte dans le même navigateur, sinon on ressaisit les réglages.
 - **GIF** : enregistrement d'écran puis ffmpeg (déjà dans l'image) ;
   pour un Short, le même fichier en MP4 vertical.
 
+## Vidéo : capturer brut, monter par script
+
+Zéro compétence montage requise. On capture brut, un script fait le reste,
+et Claude écrit les textes.
+
+**Capturer** (toujours brut : 16:9, 30 i/s, 20 à 40 s, sans rien couper) :
+
+- Terminal et wizard Dev Sandbox : **pas de capture à la main**. VHS
+  (charmbracelet/vhs, open source) rend un GIF ou un MP4 depuis un
+  script `.tape` que Claude écrit : les frappes, les pauses, la taille
+  de fenêtre. Reproductible, refait à chaque release. VHS télécharge un
+  Chromium ; si le firewall le bloque, repli sur asciinema + agg
+  (enregistrement réel puis GIF, deux binaires cargo, pas de navigateur).
+- CTR dans le navigateur : le navigateur agent enregistre lui-même
+  (skill `agent-browser`), Claude lance la course et sort le MP4.
+- PurrPause sur Windows : Xbox Game Bar, `Win+G` puis `Win+Alt+R`,
+  intégré à Windows, gratuit. Sur macOS, `Cmd+Shift+5`. Sur téléphone,
+  l'enregistreur d'écran du système.
+
+**Monter** : `scripts/video.mjs`, des recettes ffmpeg sans interface,
+paramétrées par un petit fichier à côté de la capture :
+
+```
+clip: raw/ctr-race.mp4
+in: 00:04        out: 00:16        speed: 1.0
+title: "CTR in your browser"       # carte satori 1,5 s en ouverture
+captions:                          # incrustées, lisibles sans le son
+  00:00 Drop your own disc
+  00:05 Online race, WebRTC
+outputs: [landscape, portrait, gif]
+```
+
+Recettes : couper, accélérer, carte titre, sous-titres incrustés depuis
+un `.srt` que Claude écrit à partir du post, format portrait 9:16 par
+recadrage centré ou fond flou, GIF à palette optimisée sous le million
+d'octets de Bluesky, MP4 H.264 sans piste audio (les réseaux se
+regardent coupés) ou avec une piste MP3 si une voix est ajoutée un jour
+(Piper, synthèse vocale locale et libre, en option). Tous les rendus
+s'ouvrent dans l'aperçu VS Code.
+
+**Dans la page, en local** (session 8) : un panneau « Clip » lit la
+capture brute, un curseur pose le point d'entrée et de sortie, un champ
+par sous-titre, un clic « Rendre » appelle `video.mjs` via le serveur
+local. Pas de timeline, pas de pistes : c'est volontaire.
+
 ## Dépendances npm de l'app (versions à relever au moment de l'installation)
 
 `@atproto/api` (session, blob, facets pour les liens), `satori`,
@@ -254,3 +299,4 @@ Volontairement absents : `api.x.com` (payant), `gql.hashnode.com`
 5. **images et rédaction** : `card.mjs`, memegen dans la page, le prompt de posts transformé en skill locale, premier lot de 6 posts.
 6. **bilan** : `review.mjs`, `metrics.md`, et la revue du premier mois.
 7. **boîte de réception et réponses** : notifications Bluesky et Mastodon dans la page, réponse en un clic, liens directs vers les autres réseaux.
+8. **clip** : `video.mjs` (recettes ffmpeg, sous-titres, formats), VHS ou asciinema + agg pour le terminal, le panneau « Clip » du serveur local.

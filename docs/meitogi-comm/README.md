@@ -34,5 +34,5 @@
 
 ## Suite
 
-La construction de l'outil tient en 7 sessions (voir la fin de
+La construction de l'outil tient en 8 sessions (voir la fin de
 [outil.md](outil.md)) : à scaffolder avec `/prepare-plan`.
