@@ -29,6 +29,7 @@
 | [preparation.md](preparation.md) | Checklist des comptes à créer, du paramétrage, des secrets et des soumissions one-shot |
 | [outil.md](outil.md) | Architecture de la page unique, formats, flux, commandes, analyse des domaines et du firewall |
 | [prompt-posts.md](prompt-posts.md) | Le prompt de mise à jour pour générer un lot de posts avec Claude |
+| [captures.md](captures.md) | Les captures et GIF à faire, par produit, avec formats et règles |
 
 ## Suite
 
