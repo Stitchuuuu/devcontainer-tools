@@ -40,7 +40,7 @@ apps/megaphone/                  repo public meitogi/megaphone
 ```
 ---
 date: 2026-11-03T09:00+01:00
-networks: [bluesky, mastodon, linkedin]
+networks: all            # ou une liste : [bluesky, mastodon, threads, linkedin, facebook, instagram, discord]
 image: img/sandbox-dns.png
 alt: Terminal showing dnsmasq answering REFUSED to an unlisted domain
 tags: [ClaudeCode, devcontainer, infosec]
@@ -51,14 +51,18 @@ Outbound DNS in Dev Sandbox answers REFUSED for anything not on the
 allowlist. Not NXDOMAIN: REFUSED. The agent learns in one query that the
 network is not negotiable.
 
-## linkedin
-(variante longue, sans lien dans le corps ; le lien va en premier commentaire)
+## long
+(variante longue pour LinkedIn et Facebook, sans lien dans le corps ; le
+lien va en premier commentaire)
 ```
 
 Règles appliquées par la page et par le script : Bluesky 300 caractères,
-lien transformé en facet, `tags` ignorés ; Mastodon 500 caractères, tags
-ajoutés en fin ; LinkedIn prend la variante `## linkedin` sinon le texte
-principal ; `status` passe `draft` → `ready` → `published`.
+lien transformé en facet, `tags` ignorés ; Mastodon et Threads 500
+caractères, tags ajoutés en fin ; LinkedIn et Facebook prennent la
+variante `## long` sinon le texte principal ; Instagram saute le post
+s'il n'y a pas d'`image` ; `networks: all` vaut tous les réseaux
+automatisés ; `status` passe `draft` → `ready` → `published`, avec le
+détail par réseau noté dans le fichier à la publication.
 
 ## Quatre flux
 
@@ -69,7 +73,10 @@ principal ; `status` passe `draft` → `ready` → `published`.
    `ready` avec une date (commit via la même API), ou **publie tout de
    suite** sur Bluesky, Mastodon, Discord en direct.
 3. **L'Action publie** : chaque heure, `publish.mjs` prend les `ready`
-   échus, poste, déplace dans `published/`, commite. Dev.to idem.
+   échus, poste sur Bluesky, Mastodon, Threads, Facebook, Instagram,
+   LinkedIn, Discord et Dev.to, déplace dans `published/`, commite. Un
+   réseau en échec n'arrête pas les autres : il est noté dans le fichier
+   et retenté à l'heure suivante.
 4. **Le manuel pré-rempli** : X, LinkedIn, Reddit, HN, Threads. Un bouton
    par réseau copie l'image dans le presse-papiers puis ouvre le composeur
    du réseau déjà rempli par son URL d'intent (section suivante). Il reste
@@ -82,13 +89,35 @@ principal ; `status` passe `draft` → `ready` → `published`.
 | Discord | direct | oui | — |
 | Dev.to | via dispatch de l'Action (pas de CORS en POST) | oui | — |
 | X | intent pré-rempli | — | Ctrl+V l'image, publier ; lien en réponse |
-| LinkedIn | intent pré-rempli | — | Ctrl+V l'image, publier ; lien en premier commentaire |
 | Reddit, HN | intent pré-rempli (titre, texte ou URL) | — | publier |
-| Threads | intent pré-rempli ; phase 3 : via l'Action, image par URL raw.githubusercontent.com | — | Ctrl+V, publier |
+| Threads | intent en secours | oui, image par URL raw.githubusercontent.com | — |
 | Product Hunt | copier | — | formulaire |
-| Facebook | intent lien + texte copié | phase 3 : page Facebook via l'API Graph | Ctrl+V, publier |
-| Instagram | télécharger l'image + texte copié | phase 3 : compte pro via l'API Graph, image par URL raw.githubusercontent.com, même app Meta que Threads | publier depuis le téléphone |
+| Facebook, page | intent en secours | oui, API Graph, même app Meta | — |
+| Instagram, compte pro | — | oui, API Graph, image par URL raw.githubusercontent.com ; saute sans image | — |
+| LinkedIn | intent en secours | oui, API Posts, reconsentement tous les 60 jours | — |
 | YouTube Shorts, TikTok | télécharger le MP4 + texte copié | — | upload depuis Studio ou l'app |
+
+## L'app Meta et LinkedIn : jetons et rafraîchissement
+
+- **Une app Meta** (developers.facebook.com, gratuite) porte Threads,
+  la page Facebook et le compte Instagram pro. Ton propre compte y est
+  ajouté comme testeur : aucune revue d'app, aucune vérification
+  d'entreprise tant que seul ton compte publie.
+- **Threads** : jeton long de 60 jours, rafraîchi par un workflow mensuel
+  `refresh-tokens.yml` qui réécrit le secret avec `gh secret set` (un
+  PAT `GH_PAT` à portée Secrets sur ce seul repo).
+- **Facebook et Instagram** : le jeton de page dérivé d'un jeton
+  utilisateur long n'expire pas. Instagram publie en deux appels
+  (`/media` avec `image_url`, puis `/media_publish`) ; l'image doit être
+  publique, d'où le commit dans `posts/img/` et l'URL raw.
+- **LinkedIn** : app rattachée à une page entreprise Meitogi, produit
+  « Share on LinkedIn » ; jeton de 60 jours sans rafraîchissement
+  automatique pour une app self-serve. `npm run linkedin:auth` ouvre
+  l'URL de consentement, prend le code, échange et pose le secret : deux
+  minutes tous les deux mois, rappelées par l'Action quand il reste dix
+  jours.
+- Limites connues : Threads 250 posts / 24 h, Instagram de l'ordre de 50
+  / 24 h, LinkedIn 150 / jour. Sans objet à deux posts par semaine.
 
 ## Pré-remplissage des réseaux manuels
 
@@ -108,7 +137,7 @@ tous ces composeurs acceptent une image collée).
 | Reddit | `https://www.reddit.com/r/<sub>/submit?title=…&selftext=true&text=…` | titre, texte |
 | Hacker News | `https://news.ycombinator.com/submitlink?u=…&t=…` | URL, titre |
 | Facebook | `https://www.facebook.com/sharer/sharer.php?u=…` | lien seulement ; le texte se colle, à vérifier au build |
-| Instagram, TikTok | aucun intent web | image ou vidéo enregistrée, publication depuis le téléphone |
+| TikTok | aucun intent web | vidéo enregistrée, publication depuis l'app |
 
 Aucun intent n'attache d'image : d'où le presse-papiers. Le post `.md`
 peut porter un `title` (Reddit, HN) et un `sub` (Reddit) en frontmatter.
@@ -181,8 +210,9 @@ Volontairement absents : `api.x.com` (payant), `gql.hashnode.com`
 
 ## Sessions de construction (à scaffolder avec `/prepare-plan`)
 
-1. **socle** : repo, `index.html` réglages + liste + éditeur + prévisualisation, format des posts, `brand.mjs`.
+1. **socle** : repo, `index.html` réglages + liste + éditeur + prévisualisation par réseau, format des posts, `brand.mjs`.
 2. **publication directe** : Bluesky (facets, blob), Mastodon, Discord depuis la page ; `publish.mjs` en CLI, `.env`.
-3. **planification** : `publish.yml` cron + dispatch, Pages, Dev.to, bouton « copier » LinkedIn et consorts.
-4. **images et rédaction** : `card.mjs`, memegen dans la page, le prompt de posts transformé en skill locale, premier lot de 6 posts.
-5. **bilan** : `review.mjs`, `metrics.md`, et la revue du premier mois.
+3. **planification et intents** : `publish.yml` cron + dispatch, Pages, Dev.to, les boutons pré-remplis et le presse-papiers.
+4. **Meta et LinkedIn** : Threads, page Facebook, Instagram, LinkedIn dans `publish.mjs` ; `refresh-tokens.yml` ; `linkedin:auth`.
+5. **images et rédaction** : `card.mjs`, memegen dans la page, le prompt de posts transformé en skill locale, premier lot de 6 posts.
+6. **bilan** : `review.mjs`, `metrics.md`, et la revue du premier mois.

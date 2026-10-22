@@ -16,29 +16,40 @@ Trois produits, trois audiences, un seul compte par réseau :
 | CTR Native Web | Crash Team Racing in your browser, with online play. Bring your own disc | retro gaming, décompilation, WebAssembly |
 | PurrPause | A break reminder with a dancing cat, built for teenagers' PCs | parents, LinkedIn FR |
 
-## 2. Réseaux, par priorité
+## 2. Réseaux : partout, automatisé au maximum
 
-| Rang | Réseau | Rôle | Cadence | Automatisé ? |
+Le même post part partout. La seule différence entre réseaux est le niveau
+d'automatisation, donc le temps par post : zéro pour ceux que l'outil
+publie, trente secondes pour ceux ouverts pré-remplis, trois minutes pour
+un upload vidéo.
+
+| Réseau | Automatisation | Temps / post | Mise en place, une fois | Rôle |
 |---|---|---|---|---|
-| 1 | GitHub + awesome lists | la vraie surface de découverte de Dev Sandbox | one-shot | non (formulaires) |
-| 2 | Bluesky | réseau principal : pas de pénalité lien, feeds thématiques, stats gratuites | 2 / semaine | oui, direct depuis la page |
-| 3 | Mastodon (fosstodon ou hachyderm) | miroir de Bluesky avec 3 à 5 hashtags | 2 / semaine | oui, direct depuis la page |
-| 4 | LinkedIn | post natif (image ou carrousel PDF, jamais de lien) ; réseau FR existant | 1 / semaine | non : bouton « copier » dans la page |
-| 5 | Discord CTR-tools, r/ClaudeAI, r/SideProject | événementiel, après avoir répondu à des questions | au lancement | non |
-| 6 | Hacker News | trois Show HN dans l'année | 1 / trimestre max | non |
-| 7 | Dev.to | un article de fond par trimestre | 1 / trimestre | oui, via l'Action |
-| 8 | Product Hunt | PurrPause seulement, lancement gratuit | one-shot | non |
-| 9 | YouTube Shorts | archive des GIF de démo, pas de chaîne | quand il y a un GIF | non (upload Studio) |
-| 10 | X | handle réservé ; 1 post / semaine pré-rempli par intent, lien en réponse ; **test de 3 mois** tranché sur les referrers GitHub | 1 / semaine | non : intent + Ctrl+V |
-| 11 | Facebook, Instagram | PurrPause seulement : les parents sont là, pas les devs ; un visuel par mois, groupes de parents FR à la main | 1 / mois | non : intent ou téléphone |
-| — | Threads, TikTok | handle réservé, rien d'autre | — | — |
+| Bluesky | directe depuis la page, et Action | 0 | 10 min | principal dev |
+| Mastodon | directe et Action | 0 | 10 min | miroir dev, OSS, sécurité |
+| Threads | Action (API gratuite, app Meta, jeton rafraîchi par l'Action) | 0 | 1 h, avec Facebook et Instagram | indés, grand public |
+| Facebook, page | Action (API Graph, même app Meta, jeton de page sans expiration) | 0 | compris ci-dessus | PurrPause, parents FR |
+| Instagram, compte pro | Action (même app ; image obligatoire, sinon le post saute) | 0 | compris ci-dessus | PurrPause, visuels CTR |
+| LinkedIn | Action (API gratuite, page entreprise ; reconsentement de 2 min tous les 60 jours) | 0 | 1 h | pro FR, Dev Sandbox |
+| Discord | webhook | 0 | 5 min | annonces |
+| Dev.to | Action | 0 | 5 min | un article par trimestre |
+| X | intent pré-rempli, Ctrl+V (API payante) | 30 s | 5 min | portée loterie, test de 3 mois |
+| Reddit | intent pré-rempli ; demande d'accès API déposée (formulaire Responsible Builder, gratuit, souvent refusé) | 30 s | 10 min | vitrines, règle 90/10 |
+| Hacker News | intent pré-rempli | 30 s | 5 min | Show HN |
+| YouTube Shorts | upload Studio ; audit API demandé (gratuit) pour automatiser plus tard | 3 min | 10 min | archive des GIF, recherche |
+| TikTok | upload depuis l'app ; API réservée aux apps auditées | 3 min | 5 min | GIF CTR, humour |
+| Product Hunt | formulaire | one-shot | 5 min | PurrPause |
+| GitHub + awesome lists | formulaires | one-shot | 2 h | découverte de Dev Sandbox |
 
-**Exclus de l'automatisation et pourquoi** : X (API payante à l'acte,
-liens à 0 engagement médian pour un compte gratuit, dashboard payant ;
-reste accessible à la main, pré-rempli), Hashnode (API Pro),
-API Reddit (formulaire d'approbation), API YouTube (vidéos forcées en
-privé avant audit), Buffer / Typefully / Publer / Postiz hébergé (inutiles
-dès que la page publie elle-même), Mixpost (ni Bluesky ni API en Lite).
+Ordre de mise en place : Bluesky, Mastodon et Discord d'abord (session 2
+de l'outil) ; puis l'Action, les intents et Dev.to (session 3) ; puis
+l'app Meta et LinkedIn (session 4). Les demandes d'accès YouTube et
+Reddit se déposent dès le début : elles prennent des semaines et ne
+coûtent rien.
+
+**Hors périmètre, et pourquoi** : l'API X (payante à l'acte), Hashnode
+(API Pro depuis juin 2026), Buffer, Typefully, Publer, Postiz hébergé
+et Mixpost (inutiles dès que l'outil publie lui-même).
 
 ## 3. Piliers de contenu et ratio
 
@@ -54,15 +65,19 @@ d'humour au maximum par lot ; jamais deux posts produit de suite.
 
 ## 4. Rythme hebdomadaire (2 h)
 
+Deux posts par semaine, publiés partout à la fois. LinkedIn et Facebook
+reçoivent la variante longue, Instagram seulement les posts qui ont une
+image, Dev.to seulement les articles.
+
 1. **45 min, rédaction** : lancer le prompt de posts ([prompt-posts.md](prompt-posts.md)),
    relire les brouillons dans la page, ajuster, programmer. Un seul visuel
    par semaine (GIF, capture, carte générée).
 2. **45 min, conversation** : répondre à chaque commentaire ; répondre à
    2 ou 3 questions sur r/ClaudeAI, le Discord CTR-tools ou HN. C'est ce
    qui construit le karma et les 90 % de non-promo exigés sur Reddit.
-3. **15 min, divers** : publier le post LinkedIn et le meilleur post de la
-   semaine sur X depuis les boutons pré-remplis, uploader un Short s'il y
-   a un GIF, noter 2 idées dans `ideas.md`.
+3. **15 min, divers** : ouvrir les boutons pré-remplis (X, et Reddit ou
+   HN s'il y a lieu), uploader le GIF de la semaine en Short et sur
+   TikTok, noter 2 idées dans `ideas.md`.
 4. **15 min par mois** : le bilan (section 7).
 
 Tout ce qui n'est pas dans cette liste ne se fait pas.
@@ -115,8 +130,8 @@ question. Un Show HN sans traction peut être resoumis plus tard.
 Anglais partout, un compte par réseau. Les indés français qui marchent à
 l'international postent en anglais et signalent l'origine par un drapeau
 dans la bio (Marc Lou, Thomas Sanlis, Florian Rival, Rémi Verschelde).
-Français uniquement sur LinkedIn, et seulement pour PurrPause ou les posts
-destinés au réseau pro local. Pas de comptes séparés FR : double temps,
+Français uniquement dans la variante longue de LinkedIn et Facebook, et
+seulement pour PurrPause ou les posts destinés au réseau local. Pas de comptes séparés FR : double temps,
 fraction de la portée.
 
 ## 8. Mesure : 15 min par mois, quatre lignes dans `metrics.md`

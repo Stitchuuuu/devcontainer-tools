@@ -33,12 +33,16 @@ Rien ici ne coûte un centime.
 | Mastodon | choisir l'instance : fosstodon.org (OSS, vérifier si sur invitation), sinon hachyderm.io, sinon mastodon.social ; Preferences → Development → New application, scopes `write:statuses write:media read:accounts` | URL de l'instance + **access token** |
 | Dev.to | compte ; Settings → Extensions → DEV Community API Keys | **api key** |
 | GitHub | repo public `meitogi/megaphone` (public : Pages gratuit et minutes Actions illimitées sont réservés aux repos publics) ; Settings → Pages → source « GitHub Actions » ; Settings → Secrets and variables → Actions : les secrets du tableau C | un **fine-grained PAT** limité à ce repo : Contents read/write, Actions read/write, expiration 1 an |
-| Discord | optionnel : un salon « announcements » sur un serveur à toi → Integrations → Webhooks | **webhook URL** |
+| Discord | un salon « announcements » sur un serveur à toi → Integrations → Webhooks | **webhook URL** |
+| Meta (Threads, Facebook, Instagram) | compte developers.facebook.com ; une app « Meitogi megaphone » avec les cas d'usage Threads API, Facebook Login et Instagram ; App Roles → ton compte en testeur ; une **page Facebook** « Meitogi » ; un compte **Instagram professionnel** lié à cette page ; réserver le handle Threads | **app id**, **app secret**, jeton long Threads, **page id** + jeton de page, **ig user id** (les scripts de la session 4 guident chaque échange) |
+| LinkedIn | une **page entreprise** « Meitogi » ; une app sur developer.linkedin.com rattachée à cette page, produits « Share on LinkedIn » et « Sign In with LinkedIn using OpenID Connect » ; vérifier l'app depuis la page ; redirect URI = l'URL Pages de la page | **client id**, **client secret**, puis jeton via `npm run linkedin:auth` |
+| YouTube | chaîne Meitogi ; projet Google Cloud + client OAuth « desktop » ; **déposer la demande d'audit API** (gratuite, plusieurs semaines) ; en attendant, upload Studio | client OAuth, pour plus tard |
+| TikTok | réserver le handle, avatar, bio ; upload depuis l'app | — |
 | Hacker News | compte, dès maintenant : un compte ancien passe mieux ; commenter un peu avant le premier Show HN | — |
-| Reddit | compte ; répondre à des questions sur r/ClaudeAI pour atteindre 50 karma avant tout post vitrine | — |
+| Reddit | compte ; répondre à des questions sur r/ClaudeAI pour atteindre 50 karma avant tout post vitrine ; **déposer le formulaire Responsible Builder** pour une app « script » (gratuit, réponse incertaine) | client id + secret si accepté |
 | Product Hunt | compte dès maintenant, suivre quelques lancements | — |
 | Lobste.rs | demander une invitation sur le chat ; 70 jours sans auto-promo ensuite | — |
-| X, Threads, YouTube | réserver le handle `meitogi`, avatar, bio, lien GitHub, rien d'autre | — |
+| X | réserver le handle `meitogi`, avatar, bio, lien GitHub ; publication par intent | — |
 
 ## C. Paramétrage
 
@@ -50,8 +54,13 @@ Rien ici ne coûte un centime.
 | `BLUESKY_APP_PASSWORD` | l'app password | publish.yml |
 | `MASTODON_URL` | `https://fosstodon.org` | publish.yml |
 | `MASTODON_TOKEN` | l'access token | publish.yml |
-| `DEVTO_API_KEY` | optionnel | publish.yml |
-| `DISCORD_WEBHOOK` | optionnel | publish.yml |
+| `DEVTO_API_KEY` | la clé Dev.to | publish.yml |
+| `DISCORD_WEBHOOK` | l'URL du webhook | publish.yml |
+| `THREADS_USER_ID`, `THREADS_TOKEN` | jeton long, réécrit par refresh-tokens.yml | publish.yml |
+| `FB_PAGE_ID`, `FB_PAGE_TOKEN` | jeton de page, sans expiration | publish.yml |
+| `IG_USER_ID` | le compte pro lié à la page ; même jeton de page | publish.yml |
+| `LINKEDIN_PERSON_URN`, `LINKEDIN_TOKEN` | reposé tous les 60 jours par `linkedin:auth` | publish.yml |
+| `GH_PAT` | PAT fine-grained, Secrets write sur ce seul repo | refresh-tokens.yml |
 
 ### La page (une fois, par navigateur)
 
@@ -98,3 +107,8 @@ sur chaque navigateur (desktop, téléphone).
   r/ClaudeCode, r/vscode, r/emulation : relire la sidebar avant de poster.
 - Handle Bluesky via `meitogi.github.io` (section A).
 - Limite d'image Bluesky : 1 000 000 octets, 4 images max, alt obligatoire.
+- Publication Facebook et Instagram depuis une app Meta en mode
+  développement avec ton seul compte en testeur : attendu sans revue,
+  à confirmer au premier appel.
+- LinkedIn : publication possible avant la vérification de l'app par la
+  page, non confirmé.
