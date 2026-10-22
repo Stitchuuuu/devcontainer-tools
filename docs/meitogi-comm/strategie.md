@@ -29,10 +29,12 @@ Trois produits, trois audiences, un seul compte par réseau :
 | 7 | Dev.to | un article de fond par trimestre | 1 / trimestre | oui, via l'Action |
 | 8 | Product Hunt | PurrPause seulement, lancement gratuit | one-shot | non |
 | 9 | YouTube Shorts | archive des GIF de démo, pas de chaîne | quand il y a un GIF | non (upload Studio) |
-| — | X, Threads | handle réservé, rien d'autre | — | — |
+| 10 | X | handle réservé ; 1 post / semaine pré-rempli par intent, lien en réponse ; **test de 3 mois** tranché sur les referrers GitHub | 1 / semaine | non : intent + Ctrl+V |
+| — | Threads | handle réservé, rien d'autre | — | — |
 
-**Exclus et pourquoi** : X (API payante à l'acte, liens à 0 engagement
-médian pour un compte gratuit, dashboard payant), Hashnode (API Pro),
+**Exclus de l'automatisation et pourquoi** : X (API payante à l'acte,
+liens à 0 engagement médian pour un compte gratuit, dashboard payant ;
+reste accessible à la main, pré-rempli), Hashnode (API Pro),
 API Reddit (formulaire d'approbation), API YouTube (vidéos forcées en
 privé avant audit), Buffer / Typefully / Publer / Postiz hébergé (inutiles
 dès que la page publie elle-même), Mixpost (ni Bluesky ni API en Lite).
@@ -57,7 +59,8 @@ d'humour au maximum par lot ; jamais deux posts produit de suite.
 2. **45 min, conversation** : répondre à chaque commentaire ; répondre à
    2 ou 3 questions sur r/ClaudeAI, le Discord CTR-tools ou HN. C'est ce
    qui construit le karma et les 90 % de non-promo exigés sur Reddit.
-3. **15 min, divers** : coller le post LinkedIn, uploader un Short s'il y
+3. **15 min, divers** : publier le post LinkedIn et le meilleur post de la
+   semaine sur X depuis les boutons pré-remplis, uploader un Short s'il y
    a un GIF, noter 2 idées dans `ideas.md`.
 4. **15 min par mois** : le bilan (section 7).
 

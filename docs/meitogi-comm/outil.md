@@ -70,8 +70,10 @@ principal ; `status` passe `draft` → `ready` → `published`.
    suite** sur Bluesky, Mastodon, Discord en direct.
 3. **L'Action publie** : chaque heure, `publish.mjs` prend les `ready`
    échus, poste, déplace dans `published/`, commite. Dev.to idem.
-4. **Le manuel assisté** : LinkedIn, Reddit, HN, Product Hunt. La page
-   a un bouton « copier » par réseau et ouvre l'image à joindre.
+4. **Le manuel pré-rempli** : X, LinkedIn, Reddit, HN, Threads. Un bouton
+   par réseau copie l'image dans le presse-papiers puis ouvre le composeur
+   du réseau déjà rempli par son URL d'intent (section suivante). Il reste
+   un Ctrl+V et un clic « publier ».
 
 | Réseau | Depuis la page | Depuis l'Action / CLI | Manuel |
 |---|---|---|---|
@@ -79,9 +81,37 @@ principal ; `status` passe `draft` → `ready` → `published`.
 | Mastodon | direct | oui | — |
 | Discord | direct | oui | — |
 | Dev.to | via dispatch de l'Action (pas de CORS en POST) | oui | — |
-| LinkedIn | copier | — | coller, image, lien en commentaire |
-| Reddit, HN, Product Hunt | copier | — | coller |
-| Threads | phase 3 : via l'Action, image par URL raw.githubusercontent.com | — | — |
+| X | intent pré-rempli | — | Ctrl+V l'image, publier ; lien en réponse |
+| LinkedIn | intent pré-rempli | — | Ctrl+V l'image, publier ; lien en premier commentaire |
+| Reddit, HN | intent pré-rempli (titre, texte ou URL) | — | publier |
+| Threads | intent pré-rempli ; phase 3 : via l'Action, image par URL raw.githubusercontent.com | — | Ctrl+V, publier |
+| Product Hunt | copier | — | formulaire |
+
+## Pré-remplissage des réseaux manuels
+
+Pas d'extension navigateur : les intents suffisent, et une extension qui
+pilote le composeur de X se casse à chaque refonte du DOM. La page
+construit l'URL, l'ouvre dans un nouvel onglet, et a mis l'image dans le
+presse-papiers juste avant (`navigator.clipboard.write` avec le PNG ;
+tous ces composeurs acceptent une image collée).
+
+| Réseau | URL d'intent | Pré-remplit |
+|---|---|---|
+| X | `https://x.com/intent/post?text=…&url=…` | texte, lien |
+| Bluesky | `https://bsky.app/intent/compose?text=…` | texte (secours si la publication directe échoue) |
+| Mastodon | `https://<instance>/share?text=…` | texte (idem) |
+| Threads | `https://www.threads.net/intent/post?text=…` | texte, à vérifier au build |
+| LinkedIn | `https://www.linkedin.com/feed/?shareActive=true&text=…` | texte, à vérifier au build |
+| Reddit | `https://www.reddit.com/r/<sub>/submit?title=…&selftext=true&text=…` | titre, texte |
+| Hacker News | `https://news.ycombinator.com/submitlink?u=…&t=…` | URL, titre |
+
+Aucun intent n'attache d'image : d'où le presse-papiers. Le post `.md`
+peut porter un `title` (Reddit, HN) et un `sub` (Reddit) en frontmatter.
+
+Si un jour le Ctrl+V pèse, une **extension WebExtension minimale** (un
+content script par réseau qui injecte l'image dans le composeur) est
+l'étape suivante ; elle reste hors périmètre tant que l'intent fait le
+travail.
 
 ## En local et en ligne de commande
 
