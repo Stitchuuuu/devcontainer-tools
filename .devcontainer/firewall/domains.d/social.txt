@@ -34,7 +34,7 @@ api.memegen.link
 memegen.link
 
 # --- Phase 3, optional : Meta (Threads, Facebook page, Instagram) and LinkedIn ---
-[GET,POST] graph.threads.net
+[GET,POST] graph.threads.com
 [GET,POST] graph.facebook.com
 [GET,POST] graph.instagram.com
 developers.facebook.com
