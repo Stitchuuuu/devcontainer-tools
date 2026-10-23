@@ -540,35 +540,59 @@
 # ports to the Mac (VS Code Ports panel, same numbers) to play in your browser.
 
 - group: ctr
-  name: online
+  name: dev
   desc: |
-    Online mode by hand : build the CTR_ONLINE web client, serve it, start a local
-    ctr-relay with a fresh key, print the address to open (host, then guest link).
-    Ctrl-C stops both. Defaults : release, page 8094, relay 8789.
+    The page with hot reload : Vite's dev server on 8090 serves the page's sources (edit,
+    see it), the debug game from build-web-debug (built the first time ; « wtf ctr build »
+    rebuilds it, then reload the page). Online is in the one build, the VPS relay by
+    default ; relay=local also starts a ctr-relay on 8787 with a fresh key. The home's
+    « Second window » opens a guest beside the first, playing as Bot. Ctrl-C stops it.
+    Ports : apps/ctr-native-web/web/dev-ports.tsv (forward 8090, and 8787 with a local relay).
+  args:
+    - name: relay
+      desc: vps (default) or local
+      default: vps
+      test: ^(vps|local)$
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr dev : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/dev.sh dev relay={{ esc .relay }}
+
+- group: ctr
+  name: build
+  desc: |
+    (Re)build the one game (Online built in, solo by default) into build-web-<config> ; a
+    running « wtf ctr dev » picks it up on a page reload.
+  args:
+    - name: config
+      desc: debug or release
+      default: debug
+      test: ^(debug|release)$
+  cmd: |
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr build : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/dev.sh build {{ esc .config }}
+
+- group: ctr
+  name: prod
+  desc: |
+    The site as GitHub Pages gets it : the game built, the page's production bundle,
+    web/pages/assemble.sh's tree (release : checked by guard.sh), served on 8090.
   args:
     - name: config
       desc: debug or release
       default: release
       test: ^(debug|release)$
-    - name: page
-      desc: Port of the page server
-      default: "8094"
-      test: ^[0-9]+$
-    - name: relay
-      desc: Port of the local ctr-relay
-      default: "8789"
-      test: ^[0-9]+$
   cmd: |
-    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr online : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
-    bash ./apps/ctr-native-web/web/online/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
+    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr prod : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
+    bash ./apps/ctr-native-web/web/dev.sh prod {{ esc .config }}
 
 - group: ctr
   name: bot
   desc: |
     A fake Online guest, « Bot », to test a race alone : the agent browser opens your room
     link, joins your room, locks a character and drives one race (racing line on a debug
-    build). Serve with « wtf ctr online debug 8092 8787 » (the agent browser's ports), enter
-    your room, then run this before you confirm the track.
+    build). Serve with « wtf ctr dev relay=local » (8090 and 8787 : the agent browser's
+    ports), enter your room, then run this before you confirm the track. Alone in one
+    browser, the home's « Second window » does the same without the agent browser.
   args:
     - name: link
       desc: The room link from the Online panel (quote it, it has a #)
@@ -578,37 +602,13 @@
     bash ./apps/ctr-native-web/web/online/bot.sh {{ esc .link }}
 
 - group: ctr
-  name: shared
-  desc: |
-    Share mode by hand : build the single-player web client (solo's build), serve it,
-    start a local ctr-relay with a fresh key, print the address to open (host shares,
-    the guest link needs no disc).
-    Ctrl-C stops both. Defaults : release, page 8096, relay 8791.
-  args:
-    - name: config
-      desc: debug or release
-      default: release
-      test: ^(debug|release)$
-    - name: page
-      desc: Port of the page server
-      default: "8096"
-      test: ^[0-9]+$
-    - name: relay
-      desc: Port of the local ctr-relay
-      default: "8791"
-      test: ^[0-9]+$
-  cmd: |
-    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr shared : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
-    bash ./apps/ctr-native-web/web/share/dev.sh {{ esc .config }} {{ esc .page }} {{ esc .relay }}
-
-- group: ctr
   name: share-bot
   desc: |
     A fake Share guest, « Bot », to test a Share race alone : the agent browser opens your
     guest link and plays P2 over it — browses the characters and locks one at random, drives
     each race along the racing line and fires its items — until you stop sharing (or Ctrl-C).
-    Host with « wtf ctr shared debug 8091 8788 » (the agent browser's ports ; a release host
-    gets Cross held, no steering), Share → Copy guest link, then run this.
+    Host with « wtf ctr dev relay=local » (8090 and 8787 : the agent browser's ports ; a
+    release host gets Cross held, no steering), Share → Copy guest link, then run this.
   args:
     - name: link
       desc: The guest link from the Share panel (quote it, it has a #)
@@ -616,22 +616,3 @@
   cmd: |
     [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr share-bot : run it inside the devcontainer" >&2; exit 1; }
     bash ./apps/ctr-native-web/web/share/bot.sh {{ esc .link }}
-
-- group: ctr
-  name: solo
-  desc: |
-    The normal game (single player, no OnlineCTR) by hand : build the CTR_ONLINE=OFF web
-    client into its own build directory, serve it, print the address. Defaults : release,
-    port 8095.
-  args:
-    - name: config
-      desc: debug or release
-      default: release
-      test: ^(debug|release)$
-    - name: page
-      desc: Port of the page server
-      default: "8095"
-      test: ^[0-9]+$
-  cmd: |
-    [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr solo : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
-    bash ./apps/ctr-native-web/web/solo-dev.sh {{ esc .config }} {{ esc .page }}
