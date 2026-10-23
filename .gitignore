@@ -48,6 +48,8 @@ packages/*/*.tgz
 # vscode is a clone of microsoft/vscode for upstream PRs from meitogi/vscode.
 # ctr-modsdk is a clone of CTR-tools/CTR-ModSDK, the OnlineCTR reference read by
 # the browser port (apps/ctr-native-web).
+# signal (@meitogi/signal) was born as its own repo on 2026-10-23 ; it lives on
+# at meitogi/signal.
 packages/devcontainer-sandbox/
 packages/claude-ext-patchs/
 packages/vscode-ext-patch-starter/
@@ -55,6 +57,7 @@ packages/devcontainer-cli/
 packages/notifier/
 packages/vscode-notify/
 packages/webrtc-node-peer/
+packages/signal/
 packages/vscode/
 packages/ctr-modsdk/
 
