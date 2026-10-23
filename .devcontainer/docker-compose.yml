@@ -54,6 +54,11 @@ services:
         required: false
     networks:
       - default
+    # Direct WebRTC from the Mac's browser to a werift peer in here : the peer advertises
+    # 127.0.0.1:50100 and listens on its own address at 50101 (werift binds the extra advertised
+    # address first, on the lower port). Loopback only : nothing outside the Mac reaches it.
+    ports:
+      - "127.0.0.1:50100:50101/udp"
     volumes:
       - ..:/workspace:delegated
       - ./vscode-settings.jsonc:/workspace/.vscode/settings.json:bind

@@ -1,0 +1,15 @@
+# inbound.txt — ports a peer outside the container may open a new flow to
+#
+# Format: udp:<port> or tcp:<port>, one per line, no ranges. Comments: # at
+# start of line or inline. Baked at build, read at every boot : a change takes
+# a Rebuild Container, never reload-firewall.
+#
+# Who reaches a port is decided by the `ports:` line that publishes it in
+# docker-compose.yml ; any container on the compose network reaches it anyway.
+
+# Direct WebRTC from the Mac's browser to a werift peer in here (@meitogi/signal's
+# node side, test harness pinned to 50100-50101) : the peer advertises 127.0.0.1:50100
+# and listens on its container address one port above (werift binds the extra
+# advertised address first, on the lower port). Published as
+# 127.0.0.1:50100:50101/udp on `app`.
+udp:50101
