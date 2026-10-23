@@ -58,6 +58,7 @@ packages/notifier/
 packages/vscode-notify/
 packages/webrtc-node-peer/
 packages/signal/
+packages/signal-test-page/
 packages/vscode/
 packages/ctr-modsdk/
 

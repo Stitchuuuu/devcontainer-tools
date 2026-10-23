@@ -280,3 +280,10 @@
 [GET] api.github.com
   /repos/linuxkit/linuxkit             #   repo metadata
   /repos/linuxkit/linuxkit/*           #   releases, tags, commits, contents (kernel build files)
+
+# WebRTC peer in the container (plans/devcontainer-inbound-udp) : the STUN
+# server werift asks for its public mapping — the `udp:50101 out` line of
+# inbound.txt carries the datagrams, but the NAME still has to resolve here —
+# and the @meitogi/signal relay the peer and the phone meet on (wss://).
+stun.l.google.com
+signal.du.ranchchoco.boo

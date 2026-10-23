@@ -12,4 +12,10 @@
 # and listens on its container address one port above (werift binds the extra
 # advertised address first, on the lower port). Published as
 # 127.0.0.1:50100:50101/udp on `app`.
-udp:50101
+#
+# `out` : the same port may OPEN UDP flows to public addresses — STUN and ICE hole
+# punching, so a peer on the internet (a phone on 4G) connects direct. The cost : any
+# process in this container, Claude included, can bind 50101 and send UDP anywhere,
+# past the domain allowlist. Basic mode only ; the boot log warns. Drop the word the
+# day the internet case is no longer needed.
+udp:50101 out
