@@ -545,7 +545,7 @@
     The page with hot reload : Vite's dev server on 8090 serves the page's sources (edit,
     see it), the debug game from build-web-debug (built the first time ; « wtf ctr build »
     rebuilds it, then reload the page). Online is in the one build, the VPS relay by
-    default ; relay=local also starts a ctr-relay on 8787 with a fresh key. The home's
+    default ; relay=local also starts a ctr-relay on 8787 with a fresh key. Settings › Dev ›
     « Second window » opens a guest beside the first, playing as Bot. Ctrl-C stops it.
     Ports : apps/ctr-native-web/web/dev-ports.tsv (forward 8090, and 8787 with a local relay).
   args:
@@ -592,7 +592,7 @@
     link, joins your room, locks a character and drives one race (racing line on a debug
     build). Serve with « wtf ctr dev relay=local » (8090 and 8787 : the agent browser's
     ports), enter your room, then run this before you confirm the track. Alone in one
-    browser, the home's « Second window » does the same without the agent browser.
+    browser, Settings › Dev › « Second window » does the same without the agent browser.
   args:
     - name: link
       desc: The room link from the Online panel (quote it, it has a #)
