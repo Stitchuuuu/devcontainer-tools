@@ -167,15 +167,16 @@
   name: dev
   desc: |
     Build devcontainer-sandbox:dev, then select it in .devcontainer/.env.
-    Refuses (and names the line) when a BASE_IMAGE line of your own is
-    active. Then: Rebuild Container.
+    A BASE_IMAGE line of your own is parked (commented out, named) and
+    `wtf base published` puts it back. Then: Rebuild Container.
   cmd: bash ./.devcontainer/host-helpers/base-switch dev
 
 - group: base
   name: published
   desc: |
-    Remove the selection `wtf base dev` wrote: back to the published GHCR
-    base the Dockerfile pins. Then: Rebuild Container.
+    Remove the selection `wtf base dev` wrote: back to your own BASE_IMAGE
+    line if `dev` parked one, else to the published GHCR base the Dockerfile
+    pins. Then: Rebuild Container.
   cmd: bash ./.devcontainer/host-helpers/base-switch published
 
 # ---- ext-patch — the VS Code extension patchers of THIS container ---------

@@ -13,8 +13,9 @@
 # devcontainer-sandbox:dev exists only on this machine.
 #
 # Only .env is touched, and only the two lines this script writes (a marker
-# comment + BASE_IMAGE). A BASE_IMAGE line of your own is never edited: `dev`
-# refuses and names it.
+# comment + BASE_IMAGE). A BASE_IMAGE line of your own is never lost: `dev`
+# parks it (commented out behind a marker, named in the output) and
+# `published` puts it back exactly as it was.
 #
 # HOST ONLY — inside the devcontainer, docker is the nested dind, which VS Code
 # never builds from. --simulate lifts that guard; BASE_SWITCH_ENV points at
@@ -64,8 +65,25 @@ tree_version() { sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$REPO/package.jso
 
 # The BASE_IMAGE compose will use: the last active line of .env, else the pin.
 active_line() { grep -nE '^[[:space:]]*BASE_IMAGE=' "$ENV_FILE" | tail -1 || true; }
+# A pin of the user's own, parked by `dev` : the line as it was, behind this prefix.
+PARK="# parked by wtf base dev — "
+parked_lines() { grep -nF "$PARK" "$ENV_FILE" || true; }
 selected()    { local l; l="$(active_line)"; if [ -n "$l" ]; then echo "${l#*BASE_IMAGE=}"; else echo "$PINNED"; fi; }
 ours()        { grep -qxF "$MARK" "$ENV_FILE" && grep -qx "BASE_IMAGE=$IMG" "$ENV_FILE"; }
+
+rewrite() {                 # rewrite <awk program> [awk -v args…] : in place, keeps mode and owner
+  local prog="$1"; shift
+  local tmp="$ENV_FILE.base-switch.$$"
+  awk "$@" "$prog" "$ENV_FILE" > "$tmp"
+  cat "$tmp" > "$ENV_FILE"
+  rm -f "$tmp"
+}
+park_user_lines() {         # every active BASE_IMAGE line → commented out behind PARK
+  rewrite '$0 ~ /^[[:space:]]*BASE_IMAGE=/ { print park $0; next } { print }' -v park="$PARK"
+}
+unpark_user_lines() {       # the reverse, byte for byte
+  rewrite 'index($0, park) == 1 { print substr($0, length(park) + 1); next } { print }' -v park="$PARK"
+}
 
 drop_ours() {
   local tmp="$ENV_FILE.base-switch.$$"
@@ -99,6 +117,8 @@ cmd_status() {
   elif [ "$sel" = "$PINNED" ] && [ -z "$(active_line)" ]; then echo "base     : $sel — published, the Dockerfile pin"
   else echo "base     : $sel — set by your own line in .devcontainer/.env:$(active_line | cut -d: -f1)"
   fi
+  local parked; parked="$(parked_lines)"
+  [ -n "$parked" ] && echo "parked   : your own pin, line ${parked%%:*} (${parked##*BASE_IMAGE=}) — wtf base published restores it"
   built="$(image_tree)"; now="$(tree_id)"
   if [ -z "$built" ]; then echo "dev image: not built — wtf base build (or wtf base dev to build and select it)"
   elif [ "$built" = "$now" ]; then echo "dev image: up to date (tree $now)"
@@ -113,12 +133,13 @@ case "$CMD" in
     cmd_build
     if ours; then rebuild_hint; else echo "→ not selected yet: wtf base dev"; fi ;;
   dev)
-    l="$(active_line)"
-    if [ -n "$l" ] && ! ours; then
-      die "line ${l%%:*} of .devcontainer/.env already sets ${l#*:} — comment it out, then rerun: wtf base dev"
-    fi
     cmd_build
     if ! ours; then
+      l="$(active_line)"
+      if [ -n "$l" ]; then
+        park_user_lines
+        echo "· line ${l%%:*} of .devcontainer/.env set ${l#*:} — parked (commented out), wtf base published puts it back"
+      fi
       printf '%s\nBASE_IMAGE=%s\n' "$MARK" "$IMG" >> "$ENV_FILE"
       echo "✓ .devcontainer/.env now selects $IMG"
     fi
@@ -126,7 +147,12 @@ case "$CMD" in
   published)
     if ours; then
       drop_ours
-      echo "✓ .devcontainer/.env back on the published base: $(selected)"
+      if [ -n "$(parked_lines)" ]; then
+        unpark_user_lines
+        echo "✓ .devcontainer/.env back on your own pin: $(selected) (line $(active_line | cut -d: -f1), restored as it was)"
+      else
+        echo "✓ .devcontainer/.env back on the published base: $(selected)"
+      fi
       echo "→ VS Code: Rebuild Container."
     elif [ -n "$(active_line)" ]; then
       echo "· not set by wtf base dev — your own line selects $(selected); left as is"
