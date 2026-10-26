@@ -52,7 +52,9 @@
 		"**/__pycache__/**": true,
 		"**/.venv/**": true,
 		"**/.tmp/**": true,
-		"**/plans/**": true
+		"**/plans/**": true,
+		"**/.claude/worktrees/**": true,
+		"**/build-web-*/**": true
 	},
 	"search.exclude": {
 		"**/node_modules": true,
@@ -68,7 +70,9 @@
 		"**/*.tar": true,
 		"**/*.zip": true,
 		"**/.tmp": true,
-		"**/plans": true
+		"**/plans": true,
+		"**/.claude/worktrees": true,
+		"**/build-web-*": true
 	},
 
 	// ─── TIER 2 (medium) — needs TIER 1 above ────────────────────
