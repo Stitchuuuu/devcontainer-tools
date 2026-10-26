@@ -1,6 +1,6 @@
 {
 	// ─────────────────────────────────────────────────────────────
-	// Docker FS overflow guard — DISABLED BY DEFAULT
+	// Docker FS overflow guard — TIER 1 ON
 	// ─────────────────────────────────────────────────────────────
 	// Uncomment ONE tier below based on how much Docker Desktop's
 	// virtual FS (VirtioFS/gRPCFS) is suffering. Tiers are cumulative:
@@ -37,37 +37,39 @@
 
 	// ─── TIER 1 (lower) ──────────────────────────────────────────
 	//
-	// "files.watcherExclude": {
-	// 	"**/.git/objects/**": true,
-	// 	"**/.git/subtree-cache/**": true,
-	// 	"**/node_modules/**": true,
-	// 	"**/vendor/**": true,
-	// 	"**/dist/**": true,
-	// 	"**/build/**": true,
-	// 	"**/.next/**": true,
-	// 	"**/.cache/**": true,
-	// 	"**/coverage/**": true,
-	// 	"**/.turbo/**": true,
-	// 	"**/target/**": true,
-	// 	"**/__pycache__/**": true,
-	// 	"**/.venv/**": true
-	// 	// ,"**/YOUR_DENSE_DIR/**": true
-	// },
-	// "search.exclude": {
-	// 	"**/node_modules": true,
-	// 	"**/vendor": true,
-	// 	"**/dist": true,
-	// 	"**/build": true,
-	// 	"**/.next": true,
-	// 	"**/coverage": true,
-	// 	"**/target": true,
-	// 	"**/__pycache__": true,
-	// 	"**/.venv": true,
-	// 	"**/*.tar.gz": true,
-	// 	"**/*.tar": true,
-	// 	"**/*.zip": true
-	// 	// ,"**/YOUR_DENSE_DIR": true
-	// },
+	"files.watcherExclude": {
+		"**/.git/objects/**": true,
+		"**/.git/subtree-cache/**": true,
+		"**/node_modules/**": true,
+		"**/vendor/**": true,
+		"**/dist/**": true,
+		"**/build/**": true,
+		"**/.next/**": true,
+		"**/.cache/**": true,
+		"**/coverage/**": true,
+		"**/.turbo/**": true,
+		"**/target/**": true,
+		"**/__pycache__/**": true,
+		"**/.venv/**": true,
+		"**/.tmp/**": true,
+		"**/plans/**": true
+	},
+	"search.exclude": {
+		"**/node_modules": true,
+		"**/vendor": true,
+		"**/dist": true,
+		"**/build": true,
+		"**/.next": true,
+		"**/coverage": true,
+		"**/target": true,
+		"**/__pycache__": true,
+		"**/.venv": true,
+		"**/*.tar.gz": true,
+		"**/*.tar": true,
+		"**/*.zip": true,
+		"**/.tmp": true,
+		"**/plans": true
+	},
 
 	// ─── TIER 2 (medium) — needs TIER 1 above ────────────────────
 	//
@@ -86,6 +88,13 @@
 	// "git.enabled": false,
 	//
 	// ─────────────────────────────────────────────────────────────
+
+	// ─── TypeScript server — lighter footprint ──────────────────
+	// One tsserver instead of two, a 1 GB heap cap instead of 3 GB, and no
+	// background @types download. Needs Reload Window.
+	"typescript.tsserver.useSyntaxServer": "never",
+	"typescript.tsserver.maxTsServerMemory": 1024,
+	"typescript.disableAutomaticTypeAcquisition": true,
 
 	"claudeCode.preferredLocation": "primary",
 	// Squares off the model + Remote Control pills (5px radius, 2px 8px
