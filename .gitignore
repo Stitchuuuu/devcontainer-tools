@@ -81,6 +81,13 @@ vendor/ms-vscode-remote.remote-containers/
 !.claude/rules/
 !.claude/rules/**
 !.claude/settings.local.json.example
+# Project defaults shared by every session in /workspace (JSON, no comments
+# inside): times on 24 hours in the Paris zone. The container clock is UTC, and
+# "auto" follows the webview's en-US locale, so the UI showed "2:05 PM" UTC.
+# Values: timeFormat auto | 12-hour | 24-hour | 24-hour-utc | a strftime
+# pattern such as "%d/%m %H:%M"; timeZone any IANA name. A personal override
+# goes in ~/.claude/settings.json or .claude/settings.local.json.
+!.claude/settings.json
 
 # VS Code — bind-mount via docker-compose, single tracked file
 .vscode/*
