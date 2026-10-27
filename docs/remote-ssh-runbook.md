@@ -161,6 +161,14 @@ seulement.
   process`) : **oui, le forward les amène sur le Mac 1**, et
   `s<k>.symptems.localhost` marche. Ils ne sont pas joignables depuis une autre
   machine : il faudrait un `ports:` publié hors loopback dans le compose.
+  Le **sandbox des agents** (Postgres 55420, SeaweedFS 55421, Redis 55422,
+  `docker/compose/agent-sandbox.yml`) n'est pas dans le devcontainer : il se
+  lance côté hôte (`wtf claude sandbox init`) et le container le joint par
+  `host.docker.internal`, c'est-à-dire **le Mac 2**. Lance-le donc sur le Mac 2,
+  dans son Terminal, comme tu le fais ici aujourd'hui (il faut `wtf` installé
+  côté hôte là-bas). Il est jetable : rien à copier, `volumes` ne le liste pas.
+  Il publie sur toutes les interfaces : sur le Mac 2 aussi, il sera joignable
+  depuis le réseau local.
 
 Notifications : elles s'afficheront sur l'écran **du Mac 2** tant que le daemon
 n'est pas remplacé par l'extension Notify.
