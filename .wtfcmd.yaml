@@ -617,3 +617,31 @@
   cmd: |
     [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr share-bot : run it inside the devcontainer" >&2; exit 1; }
     bash ./apps/ctr-native-web/web/share/bot.sh {{ esc .link }}
+
+# ---- mem — live memory of this devcontainer --------------------------------
+# Host OR container: devc mem reads /proc in the container, and from the host
+# runs the same collector through docker exec. Runs the CLI of this tree
+# (packages/devcontainer-cli), not the published one, so it is current with
+# the source; build it first if dist/ is missing (npm run build there).
+
+- name: mem
+  cwd: ./
+  desc: |
+    Live memory of the devcontainer, and what takes it, grouped by what each
+    process is (VS Code extension host, Claude Code, tsserver, extensions…).
+  flags:
+    - name: once
+      desc: Print one snapshot and exit.
+      default: ""
+      test: "$bool"
+    - name: procs
+      desc: List every process under its group.
+      default: ""
+      test: "$bool"
+    - name: json
+      desc: Raw snapshots, one JSON object per line.
+      default: ""
+      test: "$bool"
+  cmd: >-
+    node ./packages/devcontainer-cli/bin/devc.mjs mem{{ if .once }} --once{{
+    end }}{{ if .procs }} --procs{{ end }}{{ if .json }} --json{{ end }}
