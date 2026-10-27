@@ -161,12 +161,19 @@ seulement.
   process`) : **oui, le forward les amène sur le Mac 1**, et
   `s<k>.symptems.localhost` marche. Ils ne sont pas joignables depuis une autre
   machine : il faudrait un `ports:` publié hors loopback dans le compose.
-  Le **sandbox des agents** (Postgres 55420, SeaweedFS 55421, Redis 55422,
-  `docker/compose/agent-sandbox.yml`) n'est pas dans le devcontainer : il se
-  lance côté hôte (`wtf claude sandbox init`) et le container le joint par
-  `host.docker.internal`, c'est-à-dire **le Mac 2**. Lance-le donc sur le Mac 2,
-  dans son Terminal, comme tu le fais ici aujourd'hui (il faut `wtf` installé
-  côté hôte là-bas). Il est jetable : rien à copier, `volumes` ne le liste pas.
+  Le **sandbox des agents** (`docker/compose/agent-sandbox.yml` : Redis 55422
+  commun, Postgres 55420 avec une base par worktree, SeaweedFS 55421 avec un
+  bucket par worktree) n'est pas dans le devcontainer : il tourne côté hôte et
+  le container le joint par `host.docker.internal`, c'est-à-dire **le Mac 2**
+  après le déménagement. Donc :
+  1. **avant** `seed` et `volumes`, arrête-le sur ce Mac (Docker Desktop, ou
+     comme tu l'arrêtes d'habitude) : une base copiée en marche est incohérente ;
+  2. `volumes`, lancé depuis le dossier de symptems, liste aussi ses volumes
+     (il trouve tout stack compose lancé depuis un dossier du projet) :
+     réponds **oui**, ce sont les données des agents ; ses mots de passe
+     (`.tmp/agent-sandbox/`) partent avec `seed` ;
+  3. sur le Mac 2, relance-le côté hôte comme ici (`wtf claude sandbox init`,
+     avec `wtf` installé sur l'hôte là-bas).
   Il publie sur toutes les interfaces : sur le Mac 2 aussi, il sera joignable
   depuis le réseau local.
 
