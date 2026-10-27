@@ -182,7 +182,12 @@ n'est pas remplacé par l'extension Notify.
 
 ## 6. Au quotidien (sur le Mac 1)
 
-Ramener les commits de Claude, puis relire et pousser dans Fork :
+Ramener les branches et les commits de Claude, puis relire et pousser dans
+Fork. Sans quitter VS Code : dans la fenêtre Remote-SSH, `Cmd+Shift+P` →
+**Terminal: Create New Integrated Terminal (Local)** ouvre un terminal **sur le
+Mac 1**. Les branches que Claude a créées apparaissent dans Fork, tes branches
+avancent toutes seules (aucun merge) ; **Push** part vers GitHub, une branche
+neuve comprise.
 
 Depuis ce workspace :
 
