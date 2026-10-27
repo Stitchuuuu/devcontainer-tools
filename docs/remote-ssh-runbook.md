@@ -182,6 +182,17 @@ n'est pas remplacé par l'extension Notify.
 
 ## 6. Au quotidien (sur le Mac 1)
 
+**Le bouton « Sync Mac 2 » dans Fork (une fois)** : Fork → Préférences →
+**Custom Commands** → **+**. Nom : `Sync Mac 2`. Action : lancer un
+script / processus, `/bin/bash` avec les arguments
+`-lc "bash ~/remote-sync.sh pull mac2"`, lancé **dans le dossier du repo**
+(sans argument, le script travaille sur le dossier où il est lancé). Ensuite :
+menu du repo → **Sync Mac 2**, puis Push. Le nom exact des champs de Fork est à
+confirmer à l'écran le jour J (TEST-PLAN-2, M7). Le temps réel, sans clic,
+viendra avec l'extension Devcontainer Sandbox (plus tard).
+
+Sans Fork, la même chose à la main :
+
 Ramener les branches et les commits de Claude, puis relire et pousser dans
 Fork. Sans quitter VS Code : dans la fenêtre Remote-SSH, `Cmd+Shift+P` →
 **Terminal: Create New Integrated Terminal (Local)** ouvre un terminal **sur le
