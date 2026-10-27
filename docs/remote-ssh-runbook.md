@@ -29,7 +29,17 @@ cp packages/devcontainer-sandbox/docs/how-to/remote-sync.sh ~/remote-sync.sh
 ## 1. Préparer le Mac 2 (sur le Mac 2)
 
 Guide public, étape 1 : Remote Login activé, Docker Desktop lancé, Node 18+
-(nvm ou Homebrew), puis :
+(nvm ou Homebrew). Pour que le Mac 2 réponde quand tu ouvres un projet — le
+container, lui, démarre tout seul à l'ouverture et s'arrête quand tu fermes la
+fenêtre :
+
+- Docker Desktop → Settings → General → **Start Docker Desktop when you sign
+  in** ; une session ouverte sur le Mac 2 (après un redémarrage, Docker ne
+  tourne qu'une fois la session ouverte) ;
+- Réglages → Batterie / Économiseur d'énergie → **empêcher la suspension
+  automatique** quand l'écran est éteint, et **Réveiller pour l'accès réseau**.
+
+Puis :
 
 ```
 xcode-select --install
