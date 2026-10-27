@@ -9,10 +9,20 @@ pourquoi de chaque étape, et les pièges, sont dans le guide public :
 - **Mac 1** : ce MacBook — la fenêtre VS Code, Fork, les identifiants GitHub.
 - **Mac 2** : le nouveau Mac — les fichiers des projets, Docker, les containers.
 
-Toutes les commandes Mac 1 se lancent dans le **Terminal macOS**, à la racine
-de ce workspace. Elles supposent que ragnarokonline et symptems sont **à côté**
-de ce workspace (même dossier parent) ; sinon, remplace `../ragnarokonline` et
-`../symptems` par leur chemin (glisse le dossier dans le Terminal).
+Les commandes Mac 1 se lancent dans le **Terminal macOS**, à deux endroits :
+
+- **depuis ce workspace** : ce workspace (`.`) et ragnarokonline, son voisin
+  (`../ragnarokonline`) ;
+- **depuis le dossier de symptems**, qui est ailleurs : tape `cd ` (avec
+  l'espace), glisse le dossier symptems du Finder dans le Terminal, Entrée.
+  Sans argument, le script travaille sur le dossier où il est lancé.
+
+Une fois, depuis ce workspace, copie le script dans ton home pour l'avoir
+partout :
+
+```
+cp packages/devcontainer-sandbox/docs/how-to/remote-sync.sh ~/remote-sync.sh
+```
 
 ---
 
@@ -51,8 +61,16 @@ La deuxième doit afficher une version. Dans VS Code : extension **Remote - SSH*
 
 Copie des dossiers, au même chemin absolu sur le Mac 2 :
 
+Depuis ce workspace :
+
 ```
-bash packages/devcontainer-sandbox/docs/how-to/remote-sync.sh seed mac2 . ../ragnarokonline ../symptems
+bash ~/remote-sync.sh seed mac2 . ../ragnarokonline
+```
+
+Depuis le dossier de symptems :
+
+```
+bash ~/remote-sync.sh seed mac2
 ```
 
 Copie des volumes Docker — le script pose une question par volume. Réponds
@@ -68,8 +86,16 @@ d'après le **point de montage** affiché :
 | `/var/lib/docker` (dind) | images du Docker imbriqué | **non** — des dizaines de Go, se re-télécharge |
 | tout autre cache | — | non |
 
+Depuis ce workspace :
+
 ```
-bash packages/devcontainer-sandbox/docs/how-to/remote-sync.sh volumes mac2 . ../ragnarokonline ../symptems
+bash ~/remote-sync.sh volumes mac2 . ../ragnarokonline
+```
+
+Depuis le dossier de symptems :
+
+```
+bash ~/remote-sync.sh volumes mac2
 ```
 
 Un volume partagé entre projets (le login Claude, si `CLAUDE_CREDS_VOLUME` est
@@ -78,14 +104,22 @@ est gardé.
 
 Puis brancher chaque repo sur le Mac 2 (ajoute la remote `mac2` partout) :
 
+Depuis ce workspace :
+
 ```
-bash packages/devcontainer-sandbox/docs/how-to/remote-sync.sh pull mac2 . ../ragnarokonline ../symptems
+bash ~/remote-sync.sh pull mac2 . ../ragnarokonline
+```
+
+Depuis le dossier de symptems :
+
+```
+bash ~/remote-sync.sh pull mac2
 ```
 
 ## 4. Ouvrir un projet sur le Mac 2 (sur le Mac 1)
 
 Avec la commande `code` installée (VS Code : *Shell Command: Install 'code'
-command in PATH*), depuis la racine de ce workspace :
+command in PATH*), depuis ce workspace :
 
 ```
 code --remote ssh-remote+mac2 "$PWD"
@@ -93,8 +127,10 @@ code --remote ssh-remote+mac2 "$PWD"
 ```
 code --remote ssh-remote+mac2 "$(cd ../ragnarokonline && pwd -P)"
 ```
+Et depuis le dossier de symptems :
+
 ```
-code --remote ssh-remote+mac2 "$(cd ../symptems && pwd -P)"
+code --remote ssh-remote+mac2 "$PWD"
 ```
 
 Puis **Dev Containers : Reopen in Container**. Sans `code` : Remote-SSH :
@@ -133,14 +169,30 @@ n'est pas remplacé par l'extension Notify.
 
 Ramener les commits de Claude, puis relire et pousser dans Fork :
 
+Depuis ce workspace :
+
 ```
-bash packages/devcontainer-sandbox/docs/how-to/remote-sync.sh pull mac2 . ../ragnarokonline ../symptems
+bash ~/remote-sync.sh pull mac2 . ../ragnarokonline
+```
+
+Depuis le dossier de symptems :
+
+```
+bash ~/remote-sync.sh pull mac2
 ```
 
 Après un amend ou un drop dans Fork, une fois poussé :
 
+Depuis ce workspace :
+
 ```
-bash packages/devcontainer-sandbox/docs/how-to/remote-sync.sh push-back mac2 . ../ragnarokonline ../symptems
+bash ~/remote-sync.sh push-back mac2 . ../ragnarokonline
+```
+
+Depuis le dossier de symptems :
+
+```
+bash ~/remote-sync.sh push-back mac2
 ```
 
 Il affiche, par branche, les commits que le Mac 2 perdrait et la commande
@@ -149,8 +201,16 @@ Il affiche, par branche, les commits que le Mac 2 perdrait et la commande
 
 ## 7. Si le remote casse : retour en local (sur le Mac 1)
 
+Depuis ce workspace :
+
 ```
-bash packages/devcontainer-sandbox/docs/how-to/remote-sync.sh pull mac2 --wip . ../ragnarokonline ../symptems
+bash ~/remote-sync.sh pull mac2 --wip . ../ragnarokonline
+```
+
+Depuis le dossier de symptems :
+
+```
+bash ~/remote-sync.sh pull mac2 --wip
 ```
 
 Les commits reviennent, le travail non commité aussi (`git stash apply
