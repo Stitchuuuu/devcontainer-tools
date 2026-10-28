@@ -265,8 +265,10 @@ le récapitulatif est en fin de document.
       aux apps qui tournent **dans** Reddit, installées par les modos d'un
       subreddit ; il ne publie pas ailleurs.
 
-- [ ] Ensuite, à la main : répondre sur r/ClaudeAI jusqu'à ~50 karma avant
-      tout post vitrine.
+- [ ] Ensuite : répondre sur r/ClaudeAI jusqu'à ~50 karma avant tout post
+      vitrine. **Reddit Scout** trouve les fils et prépare un brouillon
+      (userscript, README de l'app, § Reddit Scout) ; tu relis et postes
+      toi-même.
 
 ### YouTube
 
