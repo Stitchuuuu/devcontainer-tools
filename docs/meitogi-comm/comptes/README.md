@@ -127,6 +127,9 @@ la main, chaque bio garde la marge.
 4. **Après le push du repo** (l'URL Pages sert de redirect) : Meta
    (Threads, Facebook, Instagram) puis LinkedIn, avec les deux assistants
    `npm run meta:auth` et `npm run linkedin:auth`.
+5. **Une fois tout créé, les semaines suivantes** : faire vivre les
+   comptes avant le premier post vitrine — karma Reddit avec Reddit Scout,
+   commentaires sur Hacker News (section 5).
 
 Chaque clé va dans les **secrets du repo**
 (https://github.com/meitogi/megaphone/settings/secrets/actions, une fois
@@ -247,28 +250,64 @@ le récapitulatif est en fin de document.
 
 - [ ] Compte : https://www.reddit.com/register/ — username `meitogi`,
       avatar `avatar-400.png`, bio **Reddit** (Settings → Profile)
-- [ ] Demande d'accès API : depuis novembre 2025 il n'y a plus de
-      création d'app en libre-service ; la demande passe par le
-      formulaire du support développeur
-      (https://support.reddithelp.com/hc/en-us/requests/new, catégorie
-      demande d'accès API). Une source tierce, **non confirmée**, dit que
-      Reddit cesse d'en accepter le **31 octobre 2026** : à déposer
-      tout de suite ou jamais. Refus fréquents ; rien ne dépend de la
-      réponse (Reddit reste en intent pré-rempli). Texte à coller :
+- [ ] Demande d'accès API. Depuis novembre 2025, plus de création d'app en
+      libre-service : formulaire du support développeur,
+      https://support.reddithelp.com/hc/en-us/requests/new. Une source
+      tierce, **non confirmée**, dit que Reddit cesse d'en accepter le
+      **31 octobre 2026**. Refus fréquents ; rien ne dépend de la réponse
+      (Reddit reste en post pré-rempli dans Megaphone). Le formulaire
+      demande un lien vers le code : **pousser `meitogi/megaphone` avant**
+      si possible, sinon le lien est un 404.
 
-      ```
-      Personal "script" app for one account (u/meitogi). Use: submit my own posts about my open-source projects to subreddits whose rules allow it, a few times per quarter, after manual review of each post. No reading or collecting of other users' data, no voting, no commenting automation. Expected volume: under 20 requests per month. Code is public at github.com/meitogi/megaphone. Devvit does not fit this use case: a Devvit app runs inside the subreddits that install it, and its user actions (posting as the user) require an explicit manual action in Reddit's UI and rule out automated posting. I post my own reviewed, scheduled posts to communities I do not moderate, from a GitHub Actions workflow outside Reddit.
-      ```
+      Champ par champ :
 
-      Si le formulaire demande « pourquoi pas Devvit » : la dernière
-      phrase y répond. Devvit (https://developers.reddit.com/docs/) sert
-      aux apps qui tournent **dans** Reddit, installées par les modos d'un
-      subreddit ; il ne publie pas ailleurs.
+      - *What is your inquiry?* → **I'm a developer and want to build a
+        Reddit App that does not work in the Devvit ecosystem.**
+      - *Reddit account name* → `meitogi`
+      - *What benefit/purpose will the bot/app have for Redditors?*
 
-- [ ] Ensuite : répondre sur r/ClaudeAI jusqu'à ~50 karma avant tout post
-      vitrine. **Reddit Scout** trouve les fils et prépare un brouillon
-      (userscript, README de l'app, § Reddit Scout) ; tu relis et postes
-      toi-même.
+        ```
+        Honestly, the same as a post made by hand: an open-source developer sharing his own projects (a hardened devcontainer for AI coding agents, a WebAssembly port of a PS1 racing game decompilation, small dev tools) in the communities where they are on-topic. The app adds no content of its own; it only lets me publish a post I already wrote and reviewed at a set time, alongside the other networks I post to, instead of copy-pasting it by hand. No engagement automation of any kind.
+        ```
+
+      - *Provide a detailed description of what the Bot/App will be doing
+        on the Reddit platform.*
+
+        ```
+        A personal "script" app used by one account, u/meitogi, from my publishing tool (Megaphone: a GitHub repository where each post is a Markdown file, published by a GitHub Actions workflow).
+
+        What it does:
+        - Authenticates as u/meitogi with a script-type OAuth app.
+        - Submits a self or link post to one subreddit (POST /api/submit), only for posts I wrote and reviewed myself, only in subreddits whose rules allow sharing open-source work, after I read the sidebar.
+        - Reads back the permalink of that post (GET /api/info) so my tool records where it was published.
+
+        What it never does: read or collect other users' content or profiles, vote, comment, send messages, follow, or post to a subreddit I have not chosen for that post.
+
+        Example: a "Show-and-tell" post on r/ClaudeAI about a new release of my devcontainer, title and body written by me, scheduled for Tuesday 15:00 UTC; the workflow submits it once and stores its URL.
+
+        Volume: a few posts per quarter, under 20 API requests per month.
+        ```
+
+      - *What is missing from Devvit that prevents building on that
+        platform?*
+
+        ```
+        Devvit apps act inside the subreddits that install them, and user actions (posting as the user) must come from an explicit manual action in Reddit's UI; automated posting is ruled out. My use case is the opposite: a post I wrote, published at a scheduled time to a community I do not moderate, triggered from outside Reddit by a GitHub Actions workflow. Devvit has no way to do that without a moderator installing my app in each target subreddit, which would be inappropriate for an occasional self-post.
+        ```
+
+        Vérifié sur la doc Devvit (pages Reddit API et User Actions :
+        « only on an explicit manual action », « No automated actions »).
+
+      - *Provide a link to source code or platform that will access the
+        API.* → `https://github.com/meitogi/megaphone`
+      - *What subreddits do you intend to use the bot/app in?*
+
+        ```
+        r/ClaudeAI, r/ClaudeCode, r/devcontainers, r/docker, r/emulation, r/WebAssembly, r/vscode — only where the rules allow it, checked before each post.
+        ```
+
+      - *If applicable, what username will you be operating this Bot/App
+        under?* → `meitogi`
 
 ### YouTube
 
@@ -296,10 +335,7 @@ Profil complet, rien de publié.
 | TikTok | https://www.tiktok.com/signup (le profil se règle dans l'app) | TikTok | `avatar-1024.png` | — |
 | Hacker News | https://news.ycombinator.com/login → « Create Account » ; le champ « about » sur ta page user | Reddit | — | — |
 | Product Hunt | https://www.producthunt.com → « Sign up » | accroche | `avatar-1024.png` | — |
-| Lobste.rs | sur invitation : https://lobste.rs/chat, demander poliment ; ensuite 70 jours sans auto-promo | — | — | — |
-
-Hacker News : un compte ancien passe mieux pour un Show HN ; commenter un
-peu avant.
+| Lobste.rs | sur invitation : https://lobste.rs/chat, demander poliment | — | — | — |
 
 ## 4. Meta et LinkedIn (après le push)
 
@@ -352,6 +388,23 @@ héberger l'app, que LinkedIn exige rattachée à une page.
       `refresh-tokens.yml` prévient 10 jours avant
 - Secrets (posés par l'assistant) : `LINKEDIN_PERSON_URN`,
   `LINKEDIN_TOKEN`, `LINKEDIN_EXPIRES`
+
+## 5. Faire vivre les comptes (une fois tout créé)
+
+Rien de vitrine tant que les comptes n'ont pas un peu d'historique.
+
+- [ ] **Reddit, ~50 karma sur r/ClaudeAI** avant tout post vitrine, en
+      répondant à de vraies questions. **Reddit Scout** (README de l'app,
+      § Reddit Scout) : un userscript sur reddit.com qui liste les fils
+      récents de tes 7 subreddits où tu as quelque chose à dire, et
+      prépare un brouillon via `npm run ui`. Il ne poste rien : tu relis,
+      tu mets à ta façon, tu postes. Quelques réponses par semaine
+      suffisent, pas de rafale.
+- [ ] **Hacker News** : commenter un peu ; un compte qui a un historique
+      passe mieux pour le premier Show HN.
+- [ ] **Lobste.rs**, si l'invitation arrive : 70 jours sans auto-promo.
+- [ ] **Product Hunt** : suivre quelques lancements avant celui de
+      PurrPause.
 
 ---
 
