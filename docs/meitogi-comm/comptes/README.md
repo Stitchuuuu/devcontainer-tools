@@ -254,6 +254,19 @@ le récapitulatif est en fin de document.
 
 - [ ] Compte : https://www.reddit.com/register/ — username `meitogi`,
       avatar `avatar-400.png`, bio **Reddit** (Settings → Profile)
+- [ ] Profil complet, https://www.reddit.com/settings/profile : un
+      profil vide sur un compte neuf est le premier indice « bot ».
+      - *Display name* → `Meitogi`
+      - *About* (191 / 200), la bio Reddit plus une ligne de
+        transparence, qui répond d'avance à « bot » :
+
+        ```
+        Solo dev from France. Open-source dev tools (Dev Sandbox), retro games in the browser (CTR), a dancing-cat break reminder. I draft some replies with Claude, then rewrite and post them myself.
+        ```
+
+      - *Banner* → `banner-1500x500.png` (Reddit recadre au centre)
+      - *Social links* → GitHub `https://github.com/meitogi`, puis
+        Bluesky une fois le compte créé
 - [x] Demande d'accès API — **refusée le 2026-10-28** (réponse type « Responsible
       Builder Policy and/or lacks necessary details »). Pas de nouvelle
       demande : rien n'en dépend. Gardé pour mémoire. Depuis novembre 2025, plus de création d'app en
