@@ -257,11 +257,13 @@ le récapitulatif est en fin de document.
 - [ ] Profil complet, https://www.reddit.com/settings/profile : un
       profil vide sur un compte neuf est le premier indice « bot ».
       - *Display name* → `Meitogi`
-      - *About* (191 / 200), la bio Reddit plus une ligne de
-        transparence, qui répond d'avance à « bot » :
+      - *About* (183 / 200), la bio Reddit plus une ligne de
+        transparence, qui répond d'avance à « bot » ; elle dit
+        « draft » aussi, pas seulement « polish », parce que c'est ce
+        que fait Scout :
 
         ```
-        Solo dev from France. Open-source dev tools (Dev Sandbox), retro games in the browser (CTR), a dancing-cat break reminder. I draft some replies with Claude, then rewrite and post them myself.
+        Solo dev from France. Open-source dev tools (Dev Sandbox), retro games in the browser (CTR), a dancing-cat break reminder. English is my second language, AI helps me draft and polish.
         ```
 
       - *Banner* → `banner-1500x500.png` (Reddit recadre au centre)
