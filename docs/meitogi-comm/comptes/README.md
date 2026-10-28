@@ -97,7 +97,7 @@ Solo dev from France. Open-source dev tools (Dev Sandbox), retro games in the br
 Le drapeau dans la bio (stratégie § 7) reste à ton choix : ajoute-le à
 la main, chaque bio garde la marge.
 
-### Liens de profil (Mastodon : 4 champs ; ailleurs, le premier seulement)
+### Liens de profil (Mastodon : 4 champs ; Bluesky : section « Links » ; ailleurs, le premier seulement)
 
 | Libellé | URL |
 |---|---|
@@ -144,6 +144,9 @@ le récapitulatif est en fin de document.
 - [ ] Profil (sur ta page de profil → « Edit profile ») : nom `Meitogi`,
       bio **longue**, avatar `avatar-1024.png`, bannière
       `banner-3000x1000.png`
+- [ ] Liens (même écran, section « Links », sous la bio depuis le
+      2026-10-22) : les 4 liens de profil, le libellé dans « title »,
+      GitHub en premier (l'ordre se règle en glissant)
 - [ ] Clé : https://bsky.app/settings/app-passwords → « Add App
       Password », nom `megaphone`, sans accès aux messages privés
 - Secrets : `BLUESKY_HANDLE` = `meitogi.bsky.social`,
