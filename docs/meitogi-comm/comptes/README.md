@@ -128,7 +128,7 @@ la main, chaque bio garde la marge.
    (Threads, Facebook, Instagram) puis LinkedIn, avec les deux assistants
    `npm run meta:auth` et `npm run linkedin:auth`.
 5. **Une fois tout créé, les semaines suivantes** : faire vivre les
-   comptes avant le premier post vitrine — karma Reddit avec Reddit Scout,
+   comptes avant le premier post vitrine — karma Reddit avec Scout,
    commentaires sur Hacker News (section 5).
 
 Chaque clé va dans les **secrets du repo**
@@ -396,14 +396,17 @@ héberger l'app, que LinkedIn exige rattachée à une page.
 Rien de vitrine tant que les comptes n'ont pas un peu d'historique.
 
 - [ ] **Reddit, ~50 karma sur r/ClaudeAI** avant tout post vitrine, en
-      répondant à de vraies questions. **Reddit Scout** (README de l'app,
-      § Reddit Scout) : un userscript sur reddit.com qui liste les fils
+      répondant à de vraies questions. **Scout** (README de l'app,
+      § Scout) : un userscript sur reddit.com qui liste les fils
       récents de tes 7 subreddits où tu as quelque chose à dire, et
       prépare un brouillon via `npm run ui`. Il ne poste rien : tu relis,
       tu mets à ta façon, tu postes. Quelques réponses par semaine
       suffisent, pas de rafale.
 - [ ] **Hacker News** : commenter un peu ; un compte qui a un historique
-      passe mieux pour le premier Show HN.
+      passe mieux pour le premier Show HN. Le même Scout marche sur
+      news.ycombinator.com, **mais HN interdit le texte généré ou retouché
+      par IA** (« Don't post generated text or AI-edited text ») : le
+      brouillon y sert de notes, le commentaire s'écrit à la main.
 - [ ] **Lobste.rs**, si l'invitation arrive : 70 jours sans auto-promo.
 - [ ] **Product Hunt** : suivre quelques lancements avant celui de
       PurrPause.
