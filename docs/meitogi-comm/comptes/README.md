@@ -257,8 +257,13 @@ le récapitulatif est en fin de document.
       réponse (Reddit reste en intent pré-rempli). Texte à coller :
 
       ```
-      Personal "script" app for one account (u/meitogi). Use: submit my own posts about my open-source projects to subreddits whose rules allow it, a few times per quarter, after manual review of each post. No reading or collecting of other users' data, no voting, no commenting automation. Expected volume: under 20 requests per month. Code is public at github.com/meitogi/megaphone.
+      Personal "script" app for one account (u/meitogi). Use: submit my own posts about my open-source projects to subreddits whose rules allow it, a few times per quarter, after manual review of each post. No reading or collecting of other users' data, no voting, no commenting automation. Expected volume: under 20 requests per month. Code is public at github.com/meitogi/megaphone. Devvit does not fit this use case: a Devvit app runs inside the subreddits that install it, and I post to communities I do not moderate, from a GitHub Actions workflow outside Reddit.
       ```
+
+      Si le formulaire demande « pourquoi pas Devvit » : la dernière
+      phrase y répond. Devvit (https://developers.reddit.com/docs/) sert
+      aux apps qui tournent **dans** Reddit, installées par les modos d'un
+      subreddit ; il ne publie pas ailleurs.
 
 - [ ] Ensuite, à la main : répondre sur r/ClaudeAI jusqu'à ~50 karma avant
       tout post vitrine.
