@@ -33,6 +33,17 @@ argent : profil et bannière se lisent d'un bloc. Les bannières X et
 Bluesky gardent le logo à droite du centre (l'avatar recouvre le coin
 bas-gauche). Source : `apps/megaphone/assets/meitogi-avatar.svg`.
 
+**Charger une image depuis la fenêtre « Ouvrir » du Mac** : dans le
+sélecteur de fichiers du navigateur, **⌘ ⇧ G** (« Aller au dossier »),
+coller le chemin ci-dessous, **Entrée**, puis choisir le fichier.
+
+```
+/Volumes/Data/dev/devcontainer-tools-v2/docs/meitogi-comm/comptes/images
+```
+
+Le sélecteur garde ce dossier pour les uploads suivants du même
+navigateur : le raccourci ne sert qu'une fois par navigateur.
+
 ### Bios (comptées, toutes sous la limite du réseau)
 
 **Longue** — Bluesky (228 / 256) :
