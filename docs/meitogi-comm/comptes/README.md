@@ -252,7 +252,9 @@ le récapitulatif est en fin de document.
 
 - [ ] Compte : https://www.reddit.com/register/ — username `meitogi`,
       avatar `avatar-400.png`, bio **Reddit** (Settings → Profile)
-- [ ] Demande d'accès API. Depuis novembre 2025, plus de création d'app en
+- [x] Demande d'accès API — **refusée le 2026-10-28** (réponse type « Responsible
+      Builder Policy and/or lacks necessary details »). Pas de nouvelle
+      demande : rien n'en dépend. Gardé pour mémoire. Depuis novembre 2025, plus de création d'app en
       libre-service : formulaire du support développeur,
       https://support.reddithelp.com/hc/en-us/requests/new. Une source
       tierce, **non confirmée**, dit que Reddit cesse d'en accepter le
