@@ -406,7 +406,12 @@ L'outil publie **sur ton profil personnel** (scope `w_member_social`,
 secret `LINKEDIN_PERSON_URN`) ; la page entreprise sert d'abord à
 héberger l'app, que LinkedIn exige rattachée à une page.
 
-- [ ] Page entreprise : https://www.linkedin.com/company/setup/new/ —
+Tout se fait depuis **ton vrai compte** : LinkedIn refuse de créer une
+page depuis un profil sans relations, et un profil perso au nom
+« Meitogi » enfreint ses règles (nom réel exigé) — supprime « Meitogi
+dev ». Conséquence : les posts de l'outil sortent sous ton nom.
+
+- [x] Page entreprise (créée le 2026-10-28) : https://www.linkedin.com/company/setup/new/ —
       nom `Meitogi`, URL `linkedin.com/company/meitogi`, site
       `https://github.com/meitogi`, slogan = **accroche**, logo
       `avatar-400.png`, couverture `linkedin-cover-1128x191.png`,
