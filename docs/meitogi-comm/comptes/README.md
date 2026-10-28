@@ -204,10 +204,25 @@ le récapitulatif est en fin de document.
 
 ### GitHub
 
-- [ ] Repo : https://github.com/new?owner=meitogi&name=megaphone&visibility=public
-      — **vide** (ni README, ni licence, ni .gitignore : le repo local
-      a déjà son historique), puis pousser `apps/megaphone/` depuis Fork
-      (README de l'app, § Publishing this repository)
+- [ ] Repo : https://github.com/new?owner=meitogi&name=megaphone&visibility=public&description=Write%2C%20preview%2C%20schedule%20and%20publish%20social%20posts%20on%20every%20network%20from%20one%20static%20page.%20The%20repo%20is%20the%20queue%2C%20GitHub%20Actions%20the%20scheduler%2C%20Pages%20the%20UI.%20Zero%20cost.
+      — le lien pré-remplit la description ; **vide** (ni README, ni
+      licence, ni .gitignore : le repo local a déjà son historique),
+      puis pousser `apps/megaphone/` depuis Fork (README de l'app,
+      § Publishing this repository). Description (166 / 350) :
+
+      ```
+      Write, preview, schedule and publish social posts on every network from one static page. The repo is the queue, GitHub Actions the scheduler, Pages the UI. Zero cost.
+      ```
+
+- [ ] « About » du repo (roue dentée à droite de
+      https://github.com/meitogi/megaphone, une fois poussé) : Website =
+      `https://meitogi.github.io/megaphone/`, cocher « Use your GitHub
+      Pages website » ; Topics :
+
+      ```
+      social-media scheduler github-actions github-pages bluesky mastodon threads linkedin static-site zero-cost
+      ```
+
 - [ ] Pages : https://github.com/meitogi/megaphone/settings/pages →
       Source « GitHub Actions »
 - [ ] **Deux** jetons fine-grained, https://github.com/settings/personal-access-tokens/new,
