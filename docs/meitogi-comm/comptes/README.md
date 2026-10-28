@@ -320,12 +320,42 @@ le récapitulatif est en fin de document.
       photo `avatar-1024.png`, bannière `youtube-banner-2560x1440.png`,
       description **Dev.to**, lien GitHub
 - [ ] Projet Google Cloud : https://console.cloud.google.com/projectcreate
-      (`meitogi-megaphone`), activer
-      https://console.cloud.google.com/apis/library/youtube.googleapis.com,
-      puis un client OAuth de type « Desktop app »
+      (`meitogi-megaphone`), puis activer l'API :
+      https://console.cloud.google.com/apis/library/youtube.googleapis.com
+      → « Activer »
+- [ ] Écran de consentement OAuth (Google Auth Platform, assistant en
+      étapes), champ par champ :
+  1. **Informations sur l'application** — nom `Meitogi megaphone` ;
+     adresse d'assistance : ton adresse (celle du compte Google) ; **pas
+     de logo** : en importer un oblige à faire valider l'app dès qu'elle
+     n'est plus en « Test ».
+  2. **Audience** — **Externe** (« Interne » n'existe que pour un compte
+     Google Workspace).
+  3. **Coordonnées du développeur** — ton adresse.
+  4. **Niveaux d'accès** (facultatif) — « Ajouter » →
+     `https://www.googleapis.com/auth/youtube.upload`, rien d'autre
+     (scope « sensible » : c'est lui qui déclenche l'avertissement
+     « application non validée »).
+  5. **ID client OAuth** — type **« Application de bureau »** (« Desktop
+     app »), nom `megaphone-cli`.
+  6. **Vos identifiants** — télécharger le JSON (client id + secret) ;
+     il va dans `apps/megaphone/.env` le jour où l'upload existe, jamais
+     dans le repo.
+- [ ] Ensuite, menu **Audience** : ajouter ton compte Google en
+      **utilisateur test** ; puis **« Publier l'application »** (état « En
+      production ») une fois l'upload codé. En « Test », le jeton de
+      rafraîchissement expire au bout de **7 jours** ; en production sans
+      validation, Google affiche « application non validée » à ton
+      consentement (« Paramètres avancés » → continuer), plafond 100
+      utilisateurs, et le jeton n'expire plus — c'est le bon réglage pour
+      un outil perso.
 - [ ] Audit : https://support.google.com/youtube/contact/yt_api_form —
       sans lui, toute vidéo envoyée par l'API reste **privée**.
-      Plusieurs semaines ; d'ici là, upload depuis Studio.
+      Plusieurs semaines ; d'ici là, upload depuis Studio. **Aucune session
+      de Megaphone ne code l'upload YouTube aujourd'hui** (Shorts = MP4
+      téléchargé + upload Studio) : l'audit demande de décrire une app qui
+      existe, donc le déposer maintenant risque un refus. Créer projet et
+      client OAuth ne coûte rien ; l'audit attend que l'upload soit codé.
 
 ## 3. Réserver les handles
 
