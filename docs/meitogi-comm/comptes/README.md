@@ -114,7 +114,9 @@ la main, chaque bio garde la marge.
 | Mastodon | libre sur hachyderm.io, mastodon.social, fosstodon.org | API `accounts/lookup` → 404 |
 | Dev.to | libre | API → 404 |
 | GitHub | **à toi** (compte utilisateur, 14 repos publics) ; `megaphone`, `meitogi` et `meitogi.github.io` n'existent pas encore | API |
-| X, Instagram, Threads, TikTok, Reddit, HN, Product Hunt, YouTube | non vérifiable d'ici | le formulaire d'inscription le dit |
+| X | pris → **`meitogi_dev`** | choisi à l'inscription |
+| Instagram, Threads | pris → **`meitogi_dev`** (Threads suit Instagram) | choisi à l'inscription |
+| TikTok, Reddit, HN, Product Hunt, YouTube | non vérifiable d'ici | le formulaire d'inscription le dit |
 
 ## Ordre
 
@@ -378,7 +380,8 @@ Profil complet, rien de publié.
 Dans cet ordre, car chaque étape s'appuie sur la précédente :
 
 - [ ] **Instagram** : https://www.instagram.com/accounts/emailsignup/ —
-      username `meitogi`, nom `Meitogi`, bio **courte**, avatar
+      username **`meitogi_dev`** (créé ; connexion desktop refusée le
+      2026-10-28, à retenter le lendemain), nom `Meitogi`, bio **courte**, avatar
       `avatar-1024.png`, lien GitHub ; puis Settings → « Account type and
       tools » → **Switch to professional account** (Creator ou Business)
 - [ ] **Page Facebook** : https://www.facebook.com/pages/create — nom
@@ -388,7 +391,7 @@ Dans cet ordre, car chaque étape s'appuie sur la précédente :
 - [ ] **Lier** Instagram à la page : paramètres de la page → Linked
       accounts → Instagram
 - [ ] **Threads** : https://www.threads.com → se connecter avec Instagram
-      `meitogi` (le handle suit), importer la bio
+      `meitogi_dev` (le handle suit), importer la bio
 - [ ] **App Meta** : https://developers.facebook.com/apps/creation/ — nom
       `Meitogi megaphone`, cas d'usage « Access the Threads API »,
       « Manage everything on your Page » (Facebook Login) et « Manage
