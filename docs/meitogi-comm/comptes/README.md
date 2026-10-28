@@ -434,7 +434,7 @@ dev ». Conséquence : les posts de l'outil sortent sous ton nom.
       `https://github.com/meitogi`, slogan = **accroche**, logo
       `avatar-400.png`, couverture `linkedin-cover-1128x191.png`,
       description **Dev.to**
-- [ ] App : https://www.linkedin.com/developers/apps/new — nom `Meitogi
+- [x] App : https://www.linkedin.com/developers/apps/new — nom `Meitogi
       megaphone`, page `Meitogi`, logo `avatar-400.png` ; onglet
       Products → « Share on LinkedIn » et « Sign In with LinkedIn using
       OpenID Connect » ; onglet Settings → « Verify » (lien à ouvrir
@@ -455,8 +455,12 @@ Rien de vitrine tant que les comptes n'ont pas un peu d'historique.
       § Scout) : un userscript sur reddit.com qui liste les fils
       récents de tes 7 subreddits où tu as quelque chose à dire, et
       prépare un brouillon via `npm run ui`. Il ne poste rien : tu relis,
-      tu mets à ta façon, tu postes. Quelques réponses par semaine
-      suffisent, pas de rafale.
+      tu mets à ta façon, tu postes. **Rythme** : 3 réponses par soir
+      vers 21 h (l'après-midi aux États-Unis), espacées, jamais en
+      rafale ; le bouton affiche `Scout n/3`. Un rappel quotidien
+      (app Rappels, URL https://www.reddit.com/r/ClaudeAI+ClaudeCode/new/).
+      Une fois ~50 karma atteint, retour au rythme hebdomadaire de la
+      stratégie (2 ou 3 réponses par semaine) et fin du rappel.
 - [ ] **Hacker News** : commenter un peu ; un compte qui a un historique
       passe mieux pour le premier Show HN. Le même Scout marche sur
       news.ycombinator.com, **mais HN interdit le texte généré ou retouché
