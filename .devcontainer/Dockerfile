@@ -9,7 +9,7 @@
 # The three published lines: 1.11.0-cc2.1.280 (default), 1.11.0-cc2.1.272,
 # 1.11.0-cc2.1.220.
 # -----------------------------------------------
-ARG BASE_IMAGE=ghcr.io/meitogi/devcontainer-sandbox:1.11.0-cc2.1.280
+ARG BASE_IMAGE=ghcr.io/meitogi/devcontainer-sandbox:1.14.1-cc2.1.310
 
 # -----------------------------------------------
 # Stage 1 — firewall bake (throwaway)
