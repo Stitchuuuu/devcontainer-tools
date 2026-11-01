@@ -9,8 +9,7 @@ services:
       # version pin and the rollback knob (see Dockerfile header).
       dockerfile: Dockerfile
       args:
-        # The three published lines: 1.11.0-cc2.1.280 (default), 1.11.0-cc2.1.272,
-        # 1.11.0-cc2.1.220.
+        # The two published lines: 1.14.1-cc2.1.310 (default), 1.14.1-cc2.1.280.
         BASE_IMAGE: ${BASE_IMAGE:-ghcr.io/meitogi/devcontainer-sandbox:1.14.1-cc2.1.310}
         # Whether the build bakes firewall/domains.local.txt and
         # firewall/policy.local.d/ into the image. Hardened default is 0 :
