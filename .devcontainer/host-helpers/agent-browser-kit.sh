@@ -4,6 +4,7 @@
 # HOST ONLY : run it in the Mac's Terminal, from the workspace (wtf does that).
 #
 #   wtf agent-browser install [i…]    extract the kit from the image, then install
+#   wtf agent-browser install --visible   the same, a real window on every start
 #   wtf agent-browser status [i…]     launchd state, heartbeat, kit hash
 #   wtf agent-browser uninstall [i…]  remove the LaunchAgent and its folder
 #   wtf agent-browser logs [i]        follow the supervisor, proxy and Chromium logs
@@ -25,7 +26,7 @@ action=${1:-}
 [ $# -gt 0 ] && shift
 case "$action" in
   install|status|uninstall|logs) ;;
-  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
 
 [ "$(uname -s)" = Darwin ] || { echo "agent-browser-kit: host only — run it in the Mac's Terminal" >&2; exit 2; }

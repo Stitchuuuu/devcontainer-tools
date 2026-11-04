@@ -496,12 +496,19 @@
     .devcontainer/firewall/ports.txt (host:9223 → a, host:9224 → b, the second
     browser). Prints, per instance, its origins and ports. Needs node 22+ and
     Chromium on the Mac.
+      wtf agent-browser install --visible   → a real window on every start (watch
+                                              the agent work) ; install again = headless
   args:
     - name: instances
       desc: Browsers by letter (a, b…) ; none = every instance the firewall opens
       is_array: true
       test: ^[a-z]$
-  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install {{ range .instances }}{{ esc . }} {{ end }}
+  flags:
+    - name: visible
+      desc: A real window on every start instead of headless, no .env edit (devcontainer-sandbox 1.17.0+).
+      default: ""
+      test: "$bool"
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install {{ if .visible }}--visible {{ end }}{{ range .instances }}{{ esc . }} {{ end }}
 
 - group: agent-browser
   name: status
