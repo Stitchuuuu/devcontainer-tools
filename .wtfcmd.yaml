@@ -630,6 +630,7 @@
 
 - group: pokopia
   name: rebuild
+  cwd: ./
   desc: |
     Rebuild with Python 3.15 after a pull : python3.15 (brew install python@3.15 when
     missing), a venv with capstone 5.x / lz4 / fonttools in ~/.local/share/pokopia-native,
