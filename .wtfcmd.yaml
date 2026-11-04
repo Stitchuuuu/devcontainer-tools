@@ -651,6 +651,34 @@
       default: ""
   cmd: bash ./scripts/pokopia-native/rebuild.sh {{ if .dump }}{{ esc .dump }}{{ end }}{{ if .ipa }} --ipa{{ end }}{{ if .team_id }} --team-id {{ esc .team_id }}{{ end }}
 
+# ---- nup — NUP containers (Switch 1/2 dumps, github.com/a55uka/nup) ---------
+# Where the .nup is (the Mac for a game drive) ; needs Python 3.14+.
+
+- group: nup
+  name: extract
+  cwd: ./
+  desc: |
+    A .nup into the dump layout it was packed from : base/, updates/<version>/,
+    dlc/<title id>/<n>/ — the folder pokopia-native's build takes. Every file is
+    checked against its SHA-256 ; run it again after a cut, it keeps what is done.
+    Self-tests its zstd first.
+      wtf nup extract "/Volumes/Data/backups/Game.nup"          → Game_dump beside it
+      wtf nup extract "/Volumes/Data/backups/Game.nup" --list   → the packages only
+  args:
+    - name: nup
+      desc: The .nup file (quote it if it has spaces)
+    - name: dest
+      desc: The output folder ; none = <game>_dump beside the .nup
+      default: ""
+  flags:
+    - name: list
+      desc: Print the packages and stop.
+      default: ""
+      test: "$bool"
+  cmd: |
+    py=$(command -v python3.15 || command -v python3.14) || { echo "wtf nup extract : needs python3.14+ (brew install python@3.15)" >&2; exit 1; }
+    "$py" ./scripts/nup-extract.py {{ esc .nup }}{{ if .dest }} {{ esc .dest }}{{ end }}{{ if .list }} --list{{ end }}
+
 # ---- mem — live memory of this devcontainer --------------------------------
 # Host OR container: devc mem reads /proc in the container, and from the host
 # runs the same collector through docker exec. Runs the CLI of this tree
