@@ -625,6 +625,31 @@
     [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr share-bot : run it inside the devcontainer" >&2; exit 1; }
     bash ./apps/ctr-native-web/web/share/bot.sh {{ esc .link }}
 
+# ---- pokopia — Pokopia Native (apps/pokopia-native) --------------------------
+# HOST ONLY (the Mac's Terminal) : the build needs Xcode, Metal, Apple silicon.
+
+- group: pokopia
+  name: rebuild
+  desc: |
+    Rebuild with Python 3.15 after a pull : python3.15 (brew install python@3.15 when
+    missing), a venv with capstone 5.x / lz4 / fonttools in ~/.local/share/pokopia-native,
+    nxs2.py doctor, setup (re-applies the Switch 2 patch when it changed), then build the
+    Mac app (+ the IPA with --ipa). Resumes where it stopped when run again. Log :
+    .tmp/pokopia-rebuild.log, last line « == pokopia-rebuild: OK » or « FAILED (…) ».
+  args:
+    - name: dump
+      desc: The dump folder ; none = the one Pokopia Native Builder.app remembers
+      default: ""
+  flags:
+    - name: ipa
+      desc: Also the iPhone IPA (needs the iOS toolchain ; sign it afterwards).
+      default: ""
+      test: "$bool"
+    - name: team-id
+      desc: Your Apple developer team ID, for the IPA.
+      default: ""
+  cmd: bash ./scripts/pokopia-native/rebuild.sh {{ if .dump }}{{ esc .dump }}{{ end }}{{ if .ipa }} --ipa{{ end }}{{ if .team_id }} --team-id {{ esc .team_id }}{{ end }}
+
 # ---- mem — live memory of this devcontainer --------------------------------
 # Host OR container: devc mem reads /proc in the container, and from the host
 # runs the same collector through docker exec. Runs the CLI of this tree
