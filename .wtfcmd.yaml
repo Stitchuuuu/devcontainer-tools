@@ -651,6 +651,24 @@
       default: ""
   cmd: bash ./scripts/pokopia-native/rebuild.sh {{ if .dump }}{{ esc .dump }}{{ end }}{{ if .ipa }} --ipa{{ end }}{{ if .team_id }} --team-id {{ esc .team_id }}{{ end }}
 
+- group: pokopia
+  name: refresh
+  cwd: ./
+  desc: |
+    Add the shaders the game made while you played (the apps record them in shdump/) and
+    rebuild the outputs : a couple of minutes, not the full build. Needs the venv of
+    « wtf pokopia rebuild ». iPhone recordings : pull them first (tools/phone_pull.py).
+    Log : .tmp/pokopia-refresh.log, last line « == pokopia-refresh: OK » or « FAILED (…) ».
+  args:
+    - name: build
+      desc: The build folder ; none = <dump>_native beside the dump Pokopia Native Builder.app remembers
+      default: ""
+  flags:
+    - name: team-id
+      desc: Your Apple developer team ID, to refresh the Xcode project for the IPA.
+      default: ""
+  cmd: bash ./scripts/pokopia-native/refresh.sh {{ if .build }}{{ esc .build }}{{ end }}{{ if .team_id }} --team-id {{ esc .team_id }}{{ end }}
+
 # ---- nup — NUP containers (Switch 1/2 dumps, github.com/a55uka/nup) ---------
 # Where the .nup is (the Mac for a game drive) ; needs Python 3.14+.
 
