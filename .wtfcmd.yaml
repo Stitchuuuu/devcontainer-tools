@@ -552,18 +552,14 @@
   desc: |
     The page with hot reload : Vite's dev server on 8090 serves the page's sources (edit,
     see it), the debug game from build-web-debug (built the first time ; « wtf ctr build »
-    rebuilds it, then reload the page). Netplay is in the one build, the VPS relay by
-    default ; relay=local also starts a ctr-relay on 8787 with a fresh key. Settings › Dev ›
-    « Second window » opens a guest beside the first, playing as Bot. Ctrl-C stops it.
-    Ports : apps/ctr-native-web/web/dev-ports.tsv (forward 8090, and 8787 with a local relay).
-  args:
-    - name: relay
-      desc: vps (default) or local
-      default: vps
-      test: ^(vps|local)$
+    rebuilds it, then reload the page). A ctr-relay starts on 8787 with a fresh key ; two
+    ready links are printed : that local relay, and the VPS one with the key from
+    apps/ctr-native-web/web/.relay-key. Settings › Dev › « Second window » opens a guest
+    beside the first, playing as Bot. Ctrl-C stops it.
+    Ports : apps/ctr-native-web/web/dev-ports.tsv (forward 8090 and 8787).
   cmd: |
     [ -d /workspace/.tmp/emsdk ] || { echo "wtf ctr dev : run it inside the devcontainer (it needs its emsdk)" >&2; exit 1; }
-    bash ./apps/ctr-native-web/web/dev.sh dev relay={{ esc .relay }}
+    bash ./apps/ctr-native-web/web/dev.sh dev
 
 - group: ctr
   name: build
@@ -583,7 +579,8 @@
   name: prod
   desc: |
     The site as GitHub Pages gets it : the game built, the page's production bundle,
-    web/pages/assemble.sh's tree (release : checked by guard.sh), served on 8090.
+    web/pages/assemble.sh's tree (release : checked by guard.sh), served on 8090, with a
+    local ctr-relay on 8787 ; the same two ready links as « wtf ctr dev ».
   args:
     - name: config
       desc: debug or release
@@ -598,7 +595,7 @@
   desc: |
     A fake Netplay guest, « Bot », to test a race alone : the agent browser opens your room
     link, joins your room, locks a character and drives one race (racing line on a debug
-    build). Serve with « wtf ctr dev relay=local » (8090 and 8787 : the agent browser's
+    build). Serve with « wtf ctr dev » (8090 and 8787 : the agent browser's
     ports), enter your room, then run this before you confirm the track. Alone in one
     browser, Settings › Dev › « Second window » does the same without the agent browser.
   args:
@@ -615,7 +612,7 @@
     A fake Share guest, « Bot », to test a Share race alone : the agent browser opens your
     guest link and plays P2 over it — browses the characters and locks one at random, drives
     each race along the racing line and fires its items — until you stop sharing (or Ctrl-C).
-    Host with « wtf ctr dev relay=local » (8090 and 8787 : the agent browser's ports ; a
+    Host with « wtf ctr dev » (8090 and 8787 : the agent browser's ports ; a
     release host gets Cross held, no steering), Share → Copy guest link, then run this.
   args:
     - name: link
