@@ -17,18 +17,21 @@
 # Ollama server on the host (port 11434) — used in local-direct mode
 # host:11434
 
-# Chromium DevTools Protocol on the host (`wtf browser`) — the visual design
-# loop (`wtf shot`) drives it to screenshot the running app and read back
-# getComputedStyle() values.
+# Chromium DevTools Protocol on the host, 9222 : either your own debug Chrome
+# (visual-loop drives it only with CDP_HOST=host.docker.internal CDP_PORT=9222 ;
+# by default it drives the agent browser below), or a temporary agent browser
+# when nothing else uses it : `wtf agent-browser run x --port 9222` on the Mac,
+# no Rebuild needed.
 #
 # This belongs here rather than in domains.txt despite the ⚠ above: CDP is an
 # HTTP handshake immediately upgraded to a WebSocket, and mitmproxy breaks the
 # upgrade. Direct TCP is the requirement, not a shortcut.
 host:9222
 
-# Agent browser proxy on the host (devcontainer-sandbox 1.13.0, T1) : the
-# container reaches the Mac's headless Chromium only through it. Same
-# CDP-is-a-WebSocket reason as 9222. Baked at image build : rebuild.
+# Agent browser proxy on the host (instance a) : the container reaches the
+# Mac's headless Chromium only through it. Same CDP-is-a-WebSocket reason as
+# 9222. Baked at image build : rebuild. The sites the browser itself loads are
+# not here — they are AGENT_BROWSER_ORIGINS in .env, enforced on the Mac.
 host:9223
 
 # Its second instance (agent-browser -i b) : a second headless Chromium with its
