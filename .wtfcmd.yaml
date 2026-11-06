@@ -483,10 +483,11 @@
   cmd: bash tools/canva/host/canva-browser.sh{{ if .steps }} --steps{{ end }}
 
 # ---- agent-browser — the agent's own headless Chromium on the Mac ---------
-# HOST ONLY (the Mac's Terminal). devcontainer-sandbox 1.13.0+ (T1) : a
-# LaunchAgent keeps a headless Chromium on the Mac's GPU that the container
-# drives through a proxy on host:9223 ; it never opens a window, never takes
-# the focus. The image must ship it : wtf base dev, then Rebuild Container.
+# HOST ONLY (the Mac's Terminal), except handoff (container). devcontainer-
+# sandbox 1.17.1 : a LaunchAgent keeps a headless Chromium on the Mac's GPU
+# that the container drives through a proxy on host:9223 (b on 9224) ; it
+# never takes the focus — a window only when the agent hands it to you
+# (handoff). Each verb is host-agent.sh's, from the kit in the image.
 
 - group: agent-browser
   name: install
@@ -495,7 +496,7 @@
     browser : without a list, every instance whose proxy port is in
     .devcontainer/firewall/ports.txt (host:9223 → a, host:9224 → b, the second
     browser). Prints, per instance, its origins and ports. Needs node 22+ and
-    Chromium on the Mac.
+    Chromium on the Mac. Re-run it after every base image bump.
       wtf agent-browser install --visible   → a real window on every start (watch
                                               the agent work) ; install again = headless
   args:
@@ -509,6 +510,80 @@
       default: ""
       test: "$bool"
   cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install {{ if .visible }}--visible {{ end }}{{ range .instances }}{{ esc . }} {{ end }}
+
+- group: agent-browser
+  name: start
+  desc: |
+    Turn installed agent browsers back on (after stop).
+  args:
+    - name: instances
+      desc: Browsers by letter (a, b…) ; none = a
+      is_array: true
+      test: ^[a-z]$
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh start {{ range .instances }}{{ esc . }} {{ end }}
+
+- group: agent-browser
+  name: stop
+  desc: |
+    Turn agent browsers off without uninstalling ; they stay off across logins
+    until start.
+  args:
+    - name: instances
+      desc: Browsers by letter (a, b…) ; none = every installed one
+      is_array: true
+      test: ^[a-z]$
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh stop {{ range .instances }}{{ esc . }} {{ end }}
+
+- group: agent-browser
+  name: list
+  desc: |
+    Every agent browser of the project — installed / loaded / stopped, pids,
+    proxy port, heartbeat — and other projects' on a clashing port.
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh list
+
+- group: agent-browser
+  name: run
+  desc: |
+    A temporary browser in this Terminal : no LaunchAgent, no icon ; Ctrl-C
+    stops it and deletes its profile (a sign-in there goes with it). Prints a
+    block to paste to the agent. Use a letter no instance uses and a port the
+    firewall already opens, so no Rebuild is needed :
+      wtf agent-browser run x --port 9222
+  args:
+    - name: instance
+      desc: A free letter (x, y…)
+      default: x
+      test: ^[a-z]$
+  flags:
+    - name: port
+      desc: A proxy port .devcontainer/firewall/ports.txt already opens.
+      default: ""
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh run {{ esc .instance }} --temp{{ if .port }} --port {{ esc .port }}{{ end }}
+
+- group: agent-browser
+  name: install-chromium
+  desc: |
+    Download a Chromium for the agent browser (the Mac snapshot), when none is found.
+  cmd: bash ./.devcontainer/host-helpers/agent-browser-kit.sh install-chromium
+
+- group: agent-browser
+  name: handoff
+  desc: |
+    CONTAINER. Give the agent browser to yourself : a real window on the Mac,
+    same profile, a banner with Done — to sign in to a site, solve a captcha,
+    look. Done (or closing the window) hands it back, headless again.
+  args:
+    - name: url
+      desc: Page to open ; default the page it shows
+      default: ""
+  flags:
+    - name: say
+      desc: The request shown in the banner.
+      default: ""
+    - name: instance
+      desc: Which browser (a, b…)
+      default: a
+  cmd: agent-browser -i {{ esc .instance }} handoff{{ if .url }} {{ esc .url }}{{ end }}{{ if .say }} --say {{ esc .say }}{{ end }}
 
 - group: agent-browser
   name: status

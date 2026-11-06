@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# agent-browser-kit.sh — installs / checks / removes the agent browser's
-# LaunchAgent on the Mac (devcontainer-sandbox 1.13.0+, T1 of ctr-native-web).
+# agent-browser-kit.sh — installs / runs / checks / removes the agent browser
+# on the Mac (devcontainer-sandbox 1.17.1 : host-agent.sh's verbs).
 # HOST ONLY : run it in the Mac's Terminal, from the workspace (wtf does that).
 #
 #   wtf agent-browser install [i…]    extract the kit from the image, then install
 #   wtf agent-browser install --visible   the same, a real window on every start
+#   wtf agent-browser start|stop [i…] on / off without uninstalling
+#   wtf agent-browser list            every instance : loaded, pids, port, heartbeat
 #   wtf agent-browser status [i…]     launchd state, heartbeat, kit hash
+#   wtf agent-browser run x --temp [--port N]   a temporary browser in this Terminal
+#   wtf agent-browser install-chromium          download a Chromium for it
 #   wtf agent-browser uninstall [i…]  remove the LaunchAgent and its folder
 #   wtf agent-browser logs [i]        follow the supervisor, proxy and Chromium logs
 #
 # Instances (letters) : without a list, install brings up every browser whose
 # proxy port is in .devcontainer/firewall/ports.txt (host:9223 → a,
-# host:9224 → b) ; status and uninstall cover every installed one.
+# host:9224 → b) — host-agent.sh's `install --all` ; status and uninstall
+# cover every installed one.
 #
 # The kit is extracted from the devcontainer image (`agent-browser host-kit`),
 # so what launchd runs never came out of the container's writable tree. It
@@ -25,8 +30,8 @@ set -euo pipefail
 action=${1:-}
 [ $# -gt 0 ] && shift
 case "$action" in
-  install|status|uninstall|logs) ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  install|start|stop|list|status|run|install-chromium|uninstall|logs) ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
 
 [ "$(uname -s)" = Darwin ] || { echo "agent-browser-kit: host only — run it in the Mac's Terminal" >&2; exit 2; }
@@ -36,7 +41,7 @@ project=$(sed -n 's/^DC_PROJECT=//p' "$root/.devcontainer/.env" | tail -1)
 [ -n "$project" ] || { echo "agent-browser-kit: no DC_PROJECT in .devcontainer/.env" >&2; exit 2; }
 kit="$HOME/Library/Application Support/agent-browser/$project/kit"
 
-if [ "$action" = install ]; then
+if [ "$action" = install ] || [ "$action" = run ]; then
   mkdir -p "$kit"
   echo "→ extracting the kit from the devcontainer image into $kit"
   docker compose -f "$root/.devcontainer/docker-compose.yml" run --rm --no-deps -T app agent-browser host-kit \
@@ -50,7 +55,7 @@ fi
 # (the environment wins over .env) : the kit's supervisor searches again under
 # launchd and misses a Playwright Chromium this shell finds. The robrowser
 # agent does the same (ROBROWSER_CHROMIUM baked at install).
-if [ "$action" = install ] && [ -z "${AGENT_BROWSER_CHROMIUM:-}" ]; then
+if { [ "$action" = install ] || [ "$action" = run ]; } && [ -z "${AGENT_BROWSER_CHROMIUM:-}" ]; then
   for app in /Applications/Chromium.app "$HOME/Applications/Chromium.app" \
     "$HOME"/Library/Caches/ms-playwright/chromium-*/chrome-mac*/Chromium.app; do
     if [ -x "$app/Contents/MacOS/Chromium" ]; then
@@ -59,5 +64,12 @@ if [ "$action" = install ] && [ -z "${AGENT_BROWSER_CHROMIUM:-}" ]; then
       break
     fi
   done
+fi
+# install without a letter : every instance the firewall opens (since 1.15.0
+# host-agent.sh's bare install is instance a only).
+if [ "$action" = install ]; then
+  letter=0
+  for a in "$@"; do case "$a" in [a-z]) letter=1 ;; esac; done
+  [ "$letter" = 1 ] || set -- --all "$@"
 fi
 exec bash "$kit/host-agent.sh" "$action" "$@"
