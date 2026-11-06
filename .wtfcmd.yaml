@@ -462,26 +462,6 @@
     [ -f "$d/.devcontainer/host-helpers/session.sh" ] || { echo "wtf session: .devcontainer/host-helpers/session.sh not found above $PWD" >&2; exit 1; }
     bash "$d/.devcontainer/host-helpers/session.sh" restore{{ if .all }} --all{{ end }}{{ if .match }} --match {{ esc .match }}{{ end }}{{ if .yes }} --yes{{ end }}{{ range .ids }} {{ esc . }}{{ end }}
 
-# ---- cours — the Canva bridge of apps/cours-kevledev -----------------------
-# HOST ONLY (the Mac's Terminal). Same command as in apps/cours-kevledev's own
-# .wtfcmd.yaml, so it answers from the workspace root too.
-
-- group: cours
-  name: navigateur
-  cwd: ./apps/cours-kevledev
-  desc: |
-    Launch the Canva bridge's Chromium (own profile, DevTools on port 9222,
-    every site blocked but tools/canva/host/allowlist.pac). Run it in the
-    Mac's Terminal, not VS Code's. Already running: relaunches nothing.
-      wtf cours navigateur
-      wtf cours navigateur --steps   → print the steps only
-  flags:
-    - name: steps
-      desc: Print the step list only, launch nothing.
-      default: ""
-      test: "$bool"
-  cmd: bash tools/canva/host/canva-browser.sh{{ if .steps }} --steps{{ end }}
-
 # ---- agent-browser — the agent's own headless Chromium on the Mac ---------
 # HOST ONLY (the Mac's Terminal), except handoff (container). devcontainer-
 # sandbox 1.17.1 : a LaunchAgent keeps a headless Chromium on the Mac's GPU
