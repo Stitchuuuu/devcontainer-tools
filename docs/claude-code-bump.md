@@ -129,9 +129,13 @@ un fichier sous `.tmp/` ; **pas de tag** : il vient après le gate du Mac.
   l'utilité (bare-check) ni du fonctionnement réel (patched-check).
 - Le patcher local du dogfood n'est couvert par aucune suite : il se teste à
   part, sur les deux versions.
-- **Un nouveau modèle absent du sélecteur, même sans patcher** : le CLI lit ses
-  lignes dans le catalogue signé `downloads.claude.ai/model-catalog/v1/`, et
-  retombe sinon sur la copie embarquée dans son binaire, en retard d'un modèle
-  (2.1.322 : « Fable 5.1 »). Le pare-feu de base l'autorise depuis
-  devcontainer-sandbox 1.18.0 ; si le modèle manque encore, regarde
-  `firewall-blocks` avant de toucher un patcher.
+- **Un nouveau modèle absent du sélecteur, sans patcher** : les lignes viennent
+  de la liste propre au compte, que le CLI récupère par `api.anthropic.com` et
+  garde dans `~/.claude/cache/model-catalog/`. Tant que ce cache est vide
+  (conteneur neuf, comme celui du bare-check), il affiche la liste embarquée
+  dans son binaire, en retard d'un modèle (2.1.322 : « Fable 5.1 »). Ouvre un
+  nouvel onglet Claude avant de conclure. Le catalogue public
+  (`downloads.claude.ai`) n'intervient pas : le pare-feu n'y est pour rien.
+  Pour le vérifier, lance une fois
+  `claude -p OK --model haiku --debug-file /tmp/c.log` et lis les lignes
+  `[servedCatalog]` du journal.
