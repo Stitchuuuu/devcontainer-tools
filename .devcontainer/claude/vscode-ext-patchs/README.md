@@ -13,6 +13,12 @@ What stays here :
   decision. It exists nowhere else: not in the image repo, not in the shared
   patcher repository.
 
+### model-timing-probe : re-anchored on 2.1.322 (2026-11-11)
+
+One anchor moved: the `pushStateUpdate` message gained a `configPending`
+property after `config`, and the probe now carries it through. Same counts on
+2.1.310 and 2.1.322: `mt-v2=7`, `[model-timing]=6` in `extension.js`.
+
 ### model-timing-probe : kept, re-anchored on 2.1.280 (2026-10-07)
 
 **Decision: keep it.** Both symptoms it measures shrank on 2.1.280 but did

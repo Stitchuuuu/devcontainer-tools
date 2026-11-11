@@ -307,11 +307,11 @@ P4B_PAT = re.compile(
 
 # --- 5 : what actually ships to the webview — values, not just counts.
 def _p5_sub(m):
-    msg_var, uuid_fn, config_var = m.groups()
+    msg_var, uuid_fn, config_var, pending = m.groups()
     return (
         f'let {msg_var}={{type:"request",channelId:"",requestId:{uuid_fn}(),'
         'request:{type:"update_state",state:this.getCurrentState(),'
-        f'config:{config_var}}}}};'
+        f'config:{config_var}{pending or ""}}}}};'
         + ext_probe(
             'this.logger.log('
             f'`{PREFIX} ${{new Date().toISOString()}} pushStateUpdate '
@@ -327,10 +327,11 @@ def _p5_sub(m):
     )
 
 
+# 2.1.322 adds `configPending` after `config`; it is carried through as is.
 P5_PAT = re.compile(
     r'let ([\w$]+)=\{type:"request",channelId:"",requestId:([\w$]+)\(\),'
     r'request:\{type:"update_state",state:this\.getCurrentState\(\),'
-    r'config:([\w$]+)\}\};this\.send\(\1\)'
+    r'config:([\w$]+)(,configPending:[\w$]+)?\}\};this\.send\(\1\)'
 )
 
 # --- 5b : the per-channel push — the blind spot that hid the real bug.
