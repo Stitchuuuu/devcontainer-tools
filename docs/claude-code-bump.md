@@ -129,3 +129,9 @@ un fichier sous `.tmp/` ; **pas de tag** : il vient après le gate du Mac.
   l'utilité (bare-check) ni du fonctionnement réel (patched-check).
 - Le patcher local du dogfood n'est couvert par aucune suite : il se teste à
   part, sur les deux versions.
+- **Un nouveau modèle absent du sélecteur, même sans patcher** : le CLI lit ses
+  lignes dans le catalogue signé `downloads.claude.ai/model-catalog/v1/`, et
+  retombe sinon sur la copie embarquée dans son binaire, en retard d'un modèle
+  (2.1.322 : « Fable 5.1 »). Le pare-feu de base l'autorise depuis
+  devcontainer-sandbox 1.18.0 ; si le modèle manque encore, regarde
+  `firewall-blocks` avant de toucher un patcher.
