@@ -129,13 +129,13 @@ un fichier sous `.tmp/` ; **pas de tag** : il vient après le gate du Mac.
   l'utilité (bare-check) ni du fonctionnement réel (patched-check).
 - Le patcher local du dogfood n'est couvert par aucune suite : il se teste à
   part, sur les deux versions.
-- **Un nouveau modèle absent du sélecteur, sans patcher** : les lignes viennent
-  de la liste propre au compte, que le CLI récupère par `api.anthropic.com` et
-  garde dans `~/.claude/cache/model-catalog/`. Tant que ce cache est vide
-  (conteneur neuf, comme celui du bare-check), il affiche la liste embarquée
-  dans son binaire, en retard d'un modèle (2.1.322 : « Fable 5.1 »). Ouvre un
-  nouvel onglet Claude avant de conclure. Le catalogue public
-  (`downloads.claude.ai`) n'intervient pas : le pare-feu n'y est pour rien.
-  Pour le vérifier, lance une fois
-  `claude -p OK --model haiku --debug-file /tmp/c.log` et lis les lignes
-  `[servedCatalog]` du journal.
+- **Un nouveau modèle absent du sélecteur, sans patcher : regarde la télémétrie
+  de VS Code.** Coupée, l'extension lance le CLI avec `DISABLE_TELEMETRY=1`
+  (ligne « telemetry setting is off » dans *Claude Code: Show Logs*) ; sans
+  feature flags, le CLI n'utilise pas la liste propre au compte
+  (`[servedCatalog] off (flag)`) et affiche les 5 lignes embarquées dans son
+  binaire, en retard d'un modèle (2.1.322 : « Fable · Fable 5.1 »). Ce n'est
+  ni le pare-feu ni le cache : c'est le verdict MISSING attendu, et
+  `opus-4-7-legacy-picker-fix` épingle le nouveau modèle à partir du binaire.
+  Pour comparer, envoie au CLI de l'extension la seule requête `initialize`,
+  avec puis sans `DISABLE_TELEMETRY=1`, et compte les `models` de la réponse.
